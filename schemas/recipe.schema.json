@@ -1,0 +1,423 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stillroom.dev/schemas/recipe/v0.json",
+  "title": "Stillroom Recipe",
+  "description": "A complete, reusable process for accomplishing a goal. Version 0: subject to breaking changes until 1.0.",
+  "type": "object",
+  "required": ["schemaVersion", "id", "name", "steps", "outputs"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "0",
+      "description": "Recipe format version. Bumped on breaking changes."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 64,
+      "description": "Stable identifier. Lowercase, hyphenated, matches the directory name."
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "default": "0.1.0",
+      "description": "Semantic version of this recipe, set by its author."
+    },
+    "description": { "type": "string", "maxLength": 2000 },
+    "author": { "$ref": "#/$defs/author" },
+    "license": { "type": "string" },
+    "runtime": {
+      "type": "object",
+      "description": "Which Stillroom runtime versions can execute this recipe.",
+      "properties": {
+        "minVersion": { "type": "string" },
+        "maxVersion": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+
+    "inputs": {
+      "type": "object",
+      "description": "Named inputs the user supplies when running the recipe.",
+      "additionalProperties": { "$ref": "#/$defs/inputSpec" }
+    },
+
+    "modelSlots": {
+      "type": "object",
+      "description": "Abstract model slots. Steps reference a slot; the runtime resolves a slot to an installed model before the run (pinned > recommended > capability resolve).",
+      "additionalProperties": { "$ref": "#/$defs/modelSlot" }
+    },
+
+    "permissions": {
+      "$ref": "#/$defs/permissions",
+      "description": "Everything this recipe may need. Shown to the user before install and before first run. Steps may only use a subset of this."
+    },
+
+    "skills": {
+      "type": "array",
+      "description": "Agent Skills bundled with the recipe, as paths relative to the recipe root (each a directory containing SKILL.md).",
+      "items": { "type": "string" }
+    },
+
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/step" }
+    },
+
+    "outputs": {
+      "type": "object",
+      "description": "Artifacts the recipe produces, keyed by name. Each points at a step output.",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/outputSpec" }
+    },
+
+    "budget": { "$ref": "#/$defs/budget" },
+
+    "tests": {
+      "type": "array",
+      "description": "Paths to test case files relative to the recipe root.",
+      "items": { "type": "string" }
+    }
+  },
+
+  "$defs": {
+    "author": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "url": { "type": "string", "format": "uri" }
+      },
+      "additionalProperties": false
+    },
+
+    "inputSpec": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["string", "text", "number", "boolean", "file", "files", "url", "urls", "directory", "json"]
+        },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "required": { "type": "boolean", "default": true },
+        "default": {},
+        "accept": {
+          "type": "array",
+          "description": "For file inputs: accepted extensions or media types.",
+          "items": { "type": "string" }
+        },
+        "schema": {
+          "type": "object",
+          "description": "For json inputs: a JSON Schema the value must satisfy."
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "capability": {
+      "type": "string",
+      "enum": [
+        "text",
+        "structured_output",
+        "tool_calling",
+        "thinking",
+        "vision",
+        "embedding",
+        "text_to_speech",
+        "speech_to_text",
+        "image_generation"
+      ]
+    },
+
+    "modelSlot": {
+      "type": "object",
+      "required": ["requires"],
+      "properties": {
+        "requires": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/capability" }
+        },
+        "preference": {
+          "type": "string",
+          "enum": ["accuracy", "speed", "cost", "local", "quality"],
+          "default": "accuracy",
+          "description": "Tie-breaker used only during capability resolve (step 3)."
+        },
+        "recommended": {
+          "type": "string",
+          "description": "Author's suggested model, as provider:model (e.g. ollama:qwen3:32b). Used in resolution step 2 if installed. Never required."
+        },
+        "minContext": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum context window in tokens the resolved model must offer."
+        },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "filesystem": {
+          "type": "object",
+          "properties": {
+            "read": { "type": "array", "items": { "type": "string" }, "description": "Path patterns. 'input' means paths the user supplied as inputs." },
+            "write": { "type": "array", "items": { "type": "string" }, "description": "Path patterns. 'output' means the run's output directory." }
+          },
+          "additionalProperties": false
+        },
+        "network": {
+          "type": "array",
+          "description": "Allowed hostnames. Empty or absent means no network. Model providers are governed separately by the user's provider settings.",
+          "items": { "type": "string" }
+        },
+        "cloudModels": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the recipe is allowed to resolve slots to cloud providers. The user's Local Only mode overrides this to false."
+        },
+        "shell": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether any step may execute local processes. Requires explicit user grant."
+        },
+        "credentials": {
+          "type": "array",
+          "description": "Named credentials the recipe needs, resolved from the user's keychain. Never stored in the recipe.",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "budget": {
+      "type": "object",
+      "properties": {
+        "maxCostPerRun": { "type": "number", "minimum": 0, "description": "In the user's currency. Run pauses and asks before exceeding." },
+        "maxTokensPerRun": { "type": "integer", "minimum": 0 },
+        "maxDurationSeconds": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+
+    "ref": {
+      "type": "string",
+      "pattern": "^\\$\\{(inputs|steps)\\.[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*\\}$",
+      "description": "A reference to a recipe input or a prior step's output, e.g. ${inputs.sources} or ${steps.extract.output.concepts}."
+    },
+
+    "value": {
+      "description": "A literal value or a reference.",
+      "anyOf": [
+        { "$ref": "#/$defs/ref" },
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "array" },
+        { "type": "object" }
+      ]
+    },
+
+    "stepBase": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "kind": { "type": "string", "enum": ["tool", "model", "agent", "recipe", "branch", "map"] },
+        "dependsOn": {
+          "type": "array",
+          "description": "Explicit ordering in addition to data dependencies implied by references.",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "when": {
+          "$ref": "#/$defs/ref",
+          "description": "If present, the step runs only when this reference resolves to a truthy value."
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/value" }
+        },
+        "outputSchema": {
+          "type": "object",
+          "description": "JSON Schema the step's output must satisfy. Required for model and agent steps that feed other steps."
+        },
+        "retry": {
+          "type": "object",
+          "properties": {
+            "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 10, "default": 1 },
+            "backoffSeconds": { "type": "number", "minimum": 0, "default": 0 }
+          },
+          "additionalProperties": false
+        },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "checkpoint": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the output is saved so later runs can skip this step if inputs are unchanged."
+        }
+      }
+    },
+
+    "toolStep": {
+      "description": "Deterministic. Always runs one registered capability (built-in, MCP tool, HTTP, local executable).",
+      "allOf": [
+        { "$ref": "#/$defs/stepBase" },
+        {
+          "properties": {
+            "kind": { "const": "tool" },
+            "tool": { "type": "string", "description": "Capability id, e.g. diagram.render or mcp:server-name/tool-name." }
+          },
+          "required": ["tool"]
+        }
+      ]
+    },
+
+    "modelStep": {
+      "description": "Deterministic model call: one prompt, one response, no tool use. Model comes from a slot.",
+      "allOf": [
+        { "$ref": "#/$defs/stepBase" },
+        {
+          "properties": {
+            "kind": { "const": "model" },
+            "slot": { "type": "string", "description": "Key in modelSlots." },
+            "prompt": { "type": "string", "description": "Path to a prompt file relative to the recipe root, e.g. prompts/summarize.md." },
+            "promptVersion": { "type": "string", "description": "Optional pinned prompt revision. Defaults to the file's current content." },
+            "params": {
+              "type": "object",
+              "properties": {
+                "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+                "maxTokens": { "type": "integer", "minimum": 1 },
+                "think": { "type": ["boolean", "string"] }
+              },
+              "additionalProperties": true
+            }
+          },
+          "required": ["slot", "prompt"]
+        }
+      ]
+    },
+
+    "agentStep": {
+      "description": "Agentic. The model may reason, call tools from the allowed list, and decide what to do next, inside the step envelope.",
+      "allOf": [
+        { "$ref": "#/$defs/stepBase" },
+        {
+          "properties": {
+            "kind": { "const": "agent" },
+            "slot": { "type": "string" },
+            "prompt": { "type": "string" },
+            "promptVersion": { "type": "string" },
+            "skills": { "type": "array", "items": { "type": "string" }, "description": "Skill names from the recipe's skills list this agent may load." },
+            "allowedTools": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Capability ids the agent may call. Empty means none."
+            },
+            "maxTurns": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 },
+            "maxToolCalls": { "type": "integer", "minimum": 0, "default": 20 },
+            "envelope": {
+              "type": "string",
+              "description": "Optional path to a step-envelope override. Defaults to the runtime's current envelope prompt."
+            },
+            "params": { "type": "object", "additionalProperties": true }
+          },
+          "required": ["slot", "prompt", "allowedTools"]
+        }
+      ]
+    },
+
+    "recipeStep": {
+      "description": "Runs another recipe as a nested step.",
+      "allOf": [
+        { "$ref": "#/$defs/stepBase" },
+        {
+          "properties": {
+            "kind": { "const": "recipe" },
+            "recipe": { "type": "string", "description": "Recipe id, or a path to a bundled recipe directory." },
+            "slotMap": {
+              "type": "object",
+              "description": "Maps the child's slot names to this recipe's slot names.",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "required": ["recipe"]
+        }
+      ]
+    },
+
+    "branchStep": {
+      "description": "Chooses one of several step lists based on a reference value.",
+      "allOf": [
+        { "$ref": "#/$defs/stepBase" },
+        {
+          "properties": {
+            "kind": { "const": "branch" },
+            "on": { "$ref": "#/$defs/ref" },
+            "cases": {
+              "type": "object",
+              "additionalProperties": { "type": "array", "items": { "$ref": "#/$defs/step" } }
+            },
+            "default": { "type": "array", "items": { "$ref": "#/$defs/step" } }
+          },
+          "required": ["on", "cases"]
+        }
+      ]
+    },
+
+    "mapStep": {
+      "description": "Runs a step list once per item of an array reference, with bounded concurrency.",
+      "allOf": [
+        { "$ref": "#/$defs/stepBase" },
+        {
+          "properties": {
+            "kind": { "const": "map" },
+            "over": { "$ref": "#/$defs/ref" },
+            "as": { "type": "string", "default": "item" },
+            "concurrency": { "type": "integer", "minimum": 1, "maximum": 32, "default": 4 },
+            "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } }
+          },
+          "required": ["over", "steps"]
+        }
+      ]
+    },
+
+    "step": {
+      "oneOf": [
+        { "$ref": "#/$defs/toolStep" },
+        { "$ref": "#/$defs/modelStep" },
+        { "$ref": "#/$defs/agentStep" },
+        { "$ref": "#/$defs/recipeStep" },
+        { "$ref": "#/$defs/branchStep" },
+        { "$ref": "#/$defs/mapStep" }
+      ]
+    },
+
+    "outputSpec": {
+      "type": "object",
+      "required": ["from", "type"],
+      "properties": {
+        "from": { "$ref": "#/$defs/ref" },
+        "type": {
+          "type": "string",
+          "enum": ["markdown", "text", "json", "html", "slides", "diagram", "image", "audio", "video", "file", "files"]
+        },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "editable": { "type": "boolean", "default": true }
+      },
+      "additionalProperties": false
+    }
+  }
+}

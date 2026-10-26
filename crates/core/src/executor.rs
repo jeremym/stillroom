@@ -112,6 +112,13 @@ impl Executor {
             Err(e) => return finish(run, Err(e)),
         };
 
+        // Optional inputs the caller left out resolve to their default (or null).
+        let mut req = req;
+        for (name, default) in req.recipe.optional_inputs() {
+            req.inputs.entry(name).or_insert(default);
+        }
+        let req = &req;
+
         let mut outputs: HashMap<String, Value> = HashMap::new();
         for (position, &i) in order.iter().enumerate() {
             let step = &req.recipe.steps[i];
@@ -137,7 +144,7 @@ impl Executor {
                 o(&rec);
             }
 
-            let result = self.run_step(step, &req, &mut rec, &outputs).await;
+            let result = self.run_step(step, req, &mut rec, &outputs).await;
             let now = Utc::now();
             rec.finished_at = Some(now);
             rec.duration_ms = rec.started_at.map(|s| (now - s).num_milliseconds().max(0) as u64);
@@ -165,6 +172,7 @@ impl Executor {
 
         // Collect declared outputs.
         let ctx = Context { inputs: &req.inputs, step_outputs: &outputs };
+        let mut run = run;
         for (name, spec) in &req.recipe.outputs {
             match refs::resolve_value(&Value::String(spec.from.clone()), &ctx) {
                 Ok(v) => {
@@ -208,12 +216,7 @@ impl Executor {
                 rec.model = Some(res.model_id.clone());
                 rec.prompt_path = Some(m.prompt.clone());
 
-                let user = match inputs.as_object() {
-                    Some(o) if o.len() == 1 && o.values().next().is_some_and(Value::is_string) => {
-                        o.values().next().and_then(Value::as_str).unwrap_or_default().to_string()
-                    }
-                    _ => serde_json::to_string_pretty(&inputs).unwrap_or_default(),
-                };
+                let user = user_message(&inputs);
                 let params = m.params.clone().unwrap_or_default();
                 let chat = ChatRequest {
                     messages: vec![
@@ -223,6 +226,7 @@ impl Executor {
                     json_schema: m.output_schema.clone(),
                     temperature: params.temperature,
                     max_tokens: params.max_tokens,
+                    context_length: params.context_length,
                 };
                 let resp = self
                     .models
@@ -231,16 +235,48 @@ impl Executor {
                     .map_err(|e| ExecError::Model { step: m.id.clone(), message: e.to_string() })?;
                 rec.prompt_tokens = resp.prompt_tokens;
                 rec.completion_tokens = resp.completion_tokens;
-                if m.output_schema.is_some() {
-                    serde_json::from_str::<Value>(&resp.content)
-                        .map_err(|e| ExecError::BadStructuredOutput { step: m.id.clone(), message: e.to_string() })
-                } else {
-                    Ok(Value::String(resp.content))
+                match &m.output_schema {
+                    Some(schema) => {
+                        let value = serde_json::from_str::<Value>(&resp.content)
+                            .map_err(|e| ExecError::BadStructuredOutput { step: m.id.clone(), message: e.to_string() })?;
+                        validate_against(schema, &value)
+                            .map_err(|message| ExecError::BadStructuredOutput { step: m.id.clone(), message })?;
+                        Ok(value)
+                    }
+                    None => Ok(Value::String(resp.content)),
                 }
             }
             other => Err(ExecError::Unsupported { step: other.id().into(), kind: other.kind_name() }),
         }
     }
+}
+
+/// Build the user message from resolved inputs. One string input is passed verbatim;
+/// otherwise each non-null input becomes a titled section, strings raw and other values as JSON.
+fn user_message(inputs: &Value) -> String {
+    let Some(obj) = inputs.as_object() else { return inputs.to_string() };
+    let present: Vec<(&String, &Value)> = obj.iter().filter(|(_, v)| !v.is_null()).collect();
+    if let [(_, v)] = present.as_slice() {
+        if let Some(s) = v.as_str() {
+            return s.to_string();
+        }
+    }
+    let mut out = String::new();
+    for (k, v) in present {
+        out.push_str(&format!("## {k}\n\n"));
+        match v {
+            Value::String(s) => out.push_str(s),
+            other => out.push_str(&format!("```json\n{}\n```", serde_json::to_string_pretty(other).unwrap_or_default())),
+        }
+        out.push_str("\n\n");
+    }
+    out.trim_end().to_string()
+}
+
+fn validate_against(schema: &Value, value: &Value) -> Result<(), String> {
+    let validator = jsonschema::validator_for(schema).map_err(|e| format!("bad output schema: {e}"))?;
+    let errors: Vec<String> = validator.iter_errors(value).map(|e| format!("{} at {}", e, e.instance_path)).collect();
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
 
 fn finish(mut run: Run, result: Result<(), ExecError>) -> Run {
@@ -304,6 +340,17 @@ mod tests {
         assert_eq!(run.outputs["summary"], Value::String("[test:echo] hello world".into()));
         assert_eq!(run.summary().prompt_tokens, 10);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn user_message_shapes() {
+        use serde_json::json;
+        assert_eq!(user_message(&json!({ "text": "hi" })), "hi");
+        assert_eq!(user_message(&json!({ "text": "hi", "focus": null })), "hi");
+        let m = user_message(&json!({ "text": "hi", "focus": "tokens" }));
+        assert!(m.starts_with("## focus\n\ntokens\n\n## text\n\nhi"), "{m}");
+        let j = user_message(&json!({ "spine": { "a": 1 } }));
+        assert!(j.contains("```json"), "{j}");
     }
 
     #[test]

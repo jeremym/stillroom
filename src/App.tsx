@@ -1,49 +1,41 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
-import type { ModelsResponse, Recipe, Run, RunSummary, RuntimeStatus, StepRecord } from "./types";
+import { api } from "./api";
+import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, StepRecord } from "./types";
+import { ModelsPanel } from "./components/ModelsPanel";
+import { RecipePanel } from "./components/RecipePanel";
+import { TracePanel } from "./components/TracePanel";
+import { ArtifactsPanel } from "./components/ArtifactsPanel";
+import { HistoryPanel } from "./components/HistoryPanel";
+import { UsagePanel } from "./components/UsagePanel";
 import "./App.css";
-
-const PIN_KEY = "stillroom.pins.summarize-file";
-
-function loadPins(): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(PIN_KEY) ?? "{}");
-  } catch {
-    return {};
-  }
-}
-
-function fmtMs(ms: number | null) {
-  if (ms == null) return "";
-  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
-}
 
 function App() {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [models, setModels] = useState<ModelsResponse | null>(null);
-  const [recipe, setRecipe] = useState<Recipe | null>(null);
-  const [file, setFile] = useState<string | null>(null);
-  const [pins, setPins] = useState<Record<string, string>>(loadPins);
+  const [recipes, setRecipes] = useState<RecipesResponse | null>(null);
   const [liveSteps, setLiveSteps] = useState<StepRecord[]>([]);
   const [run, setRun] = useState<Run | null>(null);
+  const [runRecipe, setRunRecipe] = useState<RecipeInfo | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<RunSummary[]>([]);
+  const [usage, setUsage] = useState<ModelUsage[]>([]);
 
   const refreshModels = useCallback(() => {
-    invoke<ModelsResponse>("list_models").then(setModels).catch((e) => setError(String(e)));
+    api.listModels().then(setModels).catch((e) => setError(String(e)));
   }, []);
-  const refreshHistory = useCallback(() => {
-    invoke<RunSummary[]>("list_runs", { limit: 20 }).then(setHistory).catch(() => {});
+  const refreshRuns = useCallback(() => {
+    api.listRuns(20).then(setHistory).catch(() => {});
+    api.usage().then(setUsage).catch(() => {});
+    api.runtimeStatus().then(setStatus).catch(() => {});
   }, []);
 
   useEffect(() => {
-    invoke<RuntimeStatus>("runtime_status").then(setStatus).catch((e) => setError(String(e)));
-    invoke<Recipe>("builtin_recipe").then(setRecipe).catch((e) => setError(String(e)));
+    api.runtimeStatus().then(setStatus).catch((e) => setError(String(e)));
+    api.listRecipes().then(setRecipes).catch((e) => setError(String(e)));
     refreshModels();
-    refreshHistory();
+    refreshRuns();
     const unlisten = listen<StepRecord>("run:step", (ev) => {
       setLiveSteps((prev) => {
         const next = prev.filter((s) => s.stepId !== ev.payload.stepId);
@@ -54,35 +46,17 @@ function App() {
     return () => {
       unlisten.then((f) => f());
     };
-  }, [refreshModels, refreshHistory]);
+  }, [refreshModels, refreshRuns]);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(PIN_KEY, JSON.stringify(pins));
-    } catch {
-      /* per-viewer convenience only */
-    }
-  }, [pins]);
-
-  async function pickFile() {
-    const picked = await open({
-      multiple: false,
-      directory: false,
-      filters: [{ name: "Text", extensions: ["txt", "md", "markdown"] }],
-    });
-    if (typeof picked === "string") setFile(picked);
-  }
-
-  async function startRun() {
-    if (!file) return;
+  async function startRun(recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>) {
     setRunning(true);
     setError(null);
     setRun(null);
+    setRunRecipe(recipe);
     setLiveSteps([]);
     try {
-      const result = await invoke<Run>("run_builtin", { args: { inputs: { file }, pins } });
-      setRun(result);
-      refreshHistory();
+      setRun(await api.runRecipe(recipe.id, inputs, pins));
+      refreshRuns();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -91,16 +65,15 @@ function App() {
   }
 
   async function openRun(id: string) {
-    const r = await invoke<Run | null>("get_run", { id });
+    const r = await api.getRun(id);
     if (r) {
       setRun(r);
+      setRunRecipe(recipes?.recipes.find((x) => x.id === r.recipeId) ?? null);
       setLiveSteps([]);
     }
   }
 
   const steps = run?.steps ?? liveSteps;
-  const textModels = models?.models.filter((m) => m.capabilities.includes("text")) ?? [];
-  const summary = run?.outputs?.summary;
 
   return (
     <main className="shell">
@@ -109,147 +82,26 @@ function App() {
         <p className="tagline">Describe the goal. Get the result. Open the door.</p>
       </header>
 
-      <section className="panel">
-        <h2>Models <span className="muted">(providers and installed models)</span></h2>
-        {models ? (
-          <>
-            <ul className="providers">
-              {models.providers.map((p) => (
-                <li key={p.id}>
-                  <span className={p.available ? "dot ok" : "dot bad"} />
-                  {p.label} <span className="muted">{p.baseUrl}</span>
-                  {!p.available && <span className="muted"> · not running</span>}
-                </li>
-              ))}
-            </ul>
-            {models.models.length > 0 ? (
-              <table>
-                <thead>
-                  <tr><th>Model</th><th>Size</th><th>Context</th><th>Capabilities</th></tr>
-                </thead>
-                <tbody>
-                  {models.models.map((m) => (
-                    <tr key={m.id}>
-                      <td>{m.name}</td>
-                      <td>{m.parameterSize ?? ""}</td>
-                      <td>{m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : ""}</td>
-                      <td className="muted">{m.capabilities.join(", ")}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <p className="muted">No models found. Start Ollama and pull a model, then refresh.</p>
-            )}
-            <button onClick={refreshModels}>Refresh</button>
-          </>
-        ) : (
-          <p className="muted">Looking for local model providers…</p>
-        )}
-      </section>
+      <ModelsPanel models={models} onRefresh={refreshModels} />
 
-      <section className="panel">
-        <h2>{recipe?.name ?? "Recipe"}</h2>
-        {recipe?.description && <p className="muted">{recipe.description}</p>}
-
-        <div className="row">
-          <button onClick={pickFile}>Choose file…</button>
-          <span className="mono">{file ?? "no file selected"}</span>
-        </div>
-
-        {recipe &&
-          Object.entries(recipe.modelSlots).map(([slot, spec]) => (
-            <div className="row" key={slot}>
-              <label>
-                <strong>{slot}</strong> <span className="muted">(model slot: needs {spec.requires.join(", ")})</span>
-                <select
-                  value={pins[slot] ?? ""}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setPins((p) => {
-                      const next = { ...p };
-                      if (v) next[slot] = v;
-                      else delete next[slot];
-                      return next;
-                    });
-                  }}
-                >
-                  <option value="">Auto (prefer {spec.preference ?? "accuracy"})</option>
-                  {textModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          ))}
-
-        <button className="primary" disabled={!file || running || textModels.length === 0} onClick={startRun}>
-          {running ? "Running…" : "Run"}
-        </button>
-        {error && <pre className="error">{error}</pre>}
-      </section>
-
-      {(steps.length > 0 || run) && (
-        <section className="panel">
-          <h2>How this was made <span className="muted">(execution trace)</span></h2>
-          {run && (
-            <p className="muted">
-              Run {run.id.slice(-8)} · {run.status}
-              {Object.values(run.resolutions ?? {}).map((r) => (
-                <span key={r.slot}> · {r.slot} → {r.modelId} ({r.via})</span>
-              ))}
-            </p>
-          )}
-          <table>
-            <thead>
-              <tr><th>#</th><th>Step</th><th>Kind</th><th>Status</th><th>Model</th><th>Tokens</th><th>Time</th></tr>
-            </thead>
-            <tbody>
-              {steps.map((s) => (
-                <tr key={s.stepId} className={s.status}>
-                  <td>{s.position + 1}</td>
-                  <td>{s.name ?? s.stepId}</td>
-                  <td className="muted">{s.kind}</td>
-                  <td>{s.status}</td>
-                  <td className="mono">{s.model ?? ""}</td>
-                  <td>{s.promptTokens != null ? `${s.promptTokens} → ${s.completionTokens ?? 0}` : ""}</td>
-                  <td>{fmtMs(s.durationMs)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {steps.some((s) => s.error) && (
-            <pre className="error">{steps.find((s) => s.error)?.error}</pre>
-          )}
-        </section>
+      {recipes && (
+        <RecipePanel recipes={recipes.recipes} models={models?.models ?? []} running={running} onRun={startRun} />
       )}
+      {recipes?.errors.map((e) => (
+        <pre key={e.path} className="error">{e.path}: {e.error}</pre>
+      ))}
+      {error && <pre className="error">{error}</pre>}
 
-      {typeof summary === "string" && (
-        <section className="panel">
-          <h2>Summary <span className="muted">(artifact)</span></h2>
-          <pre className="artifact">{summary}</pre>
-        </section>
-      )}
+      <TracePanel run={run} steps={steps} />
+      {run && run.status === "succeeded" && <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} />}
 
-      {history.length > 0 && (
-        <section className="panel">
-          <h2>Previous runs</h2>
-          <ul className="history">
-            {history.map((h) => (
-              <li key={h.id}>
-                <button className="link" onClick={() => openRun(h.id)}>
-                  {new Date(h.startedAt).toLocaleString()} · {h.recipeName} · {h.status} · {h.promptTokens + h.completionTokens} tokens
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <HistoryPanel history={history} onOpen={openRun} />
+      <UsagePanel usage={usage} />
 
       <footer className="muted mono">
-        {status ? `${status.schemaTitle} v0 · tools: ${status.tools.join(", ")} · ${status.runCount} runs · ${status.dbPath}` : "…"}
+        {status
+          ? `${status.schemaTitle} v0 · tools: ${status.tools.join(", ")} · ${status.runCount} runs · recipes from ${status.recipeRoots.join(" and ")}`
+          : "…"}
       </footer>
     </main>
   );

@@ -44,6 +44,8 @@ pub struct ChatRequest {
     pub json_schema: Option<serde_json::Value>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    /// Requested context window. Providers that support it honor it.
+    pub context_length: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

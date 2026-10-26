@@ -30,16 +30,6 @@ export interface ModelSlot {
   description?: string;
 }
 
-export interface Recipe {
-  id: string;
-  name: string;
-  description?: string;
-  inputs: Record<string, { type: string; label?: string; description?: string; accept?: string[] }>;
-  modelSlots: Record<string, ModelSlot>;
-  steps: Array<{ id: string; kind: string; name?: string }>;
-  outputs: Record<string, { from: string; type: string; label?: string }>;
-}
-
 export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
 export type RunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
@@ -93,4 +83,64 @@ export interface RuntimeStatus {
   dbPath: string;
   tools: string[];
   runCount: number;
+  recipeRoots: string[];
+}
+
+export type RecipeSource = "builtin" | "user";
+
+export interface InputSpec {
+  type: "string" | "text" | "number" | "boolean" | "file" | "files" | "url" | "urls" | "directory" | "json";
+  label?: string;
+  description?: string;
+  required?: boolean;
+  default?: unknown;
+  accept?: string[];
+}
+
+export interface StepInfo {
+  id: string;
+  kind: string;
+  name: string | null;
+  slot: string | null;
+  tool: string | null;
+}
+
+export interface OutputSpec {
+  from: string;
+  type: string;
+  label?: string;
+  description?: string;
+}
+
+export interface RecipeInfo {
+  id: string;
+  name: string;
+  version: string | null;
+  description: string | null;
+  source: RecipeSource;
+  path: string;
+  inputs: Record<string, InputSpec>;
+  modelSlots: Record<string, ModelSlot>;
+  steps: StepInfo[];
+  outputs: Record<string, OutputSpec>;
+}
+
+export interface RecipesResponse {
+  recipes: RecipeInfo[];
+  errors: { path: string; error: string }[];
+}
+
+export interface ModelUsage {
+  modelId: string;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalMs: number;
+}
+
+export interface RunEstimate {
+  basedOnRuns: number;
+  avgPromptTokens: number;
+  avgCompletionTokens: number;
+  avgDurationMs: number;
 }

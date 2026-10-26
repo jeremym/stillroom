@@ -19,6 +19,25 @@ pub struct Store {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    pub model_id: String,
+    pub calls: u64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunEstimate {
+    pub based_on_runs: usize,
+    pub avg_prompt_tokens: u64,
+    pub avg_completion_tokens: u64,
+    pub avg_duration_ms: u64,
+}
+
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
@@ -88,6 +107,51 @@ impl Store {
             out.push(run.summary());
         }
         Ok(out)
+    }
+
+    /// Every stored run, newest first. Fine while the store is small; replaced by
+    /// per-step tables when it is not.
+    pub fn all_runs(&self) -> Result<Vec<Run>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT json FROM runs ORDER BY started_at DESC")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
+    /// Token and time totals per model, across all runs.
+    pub fn usage_by_model(&self) -> Result<Vec<ModelUsage>, StoreError> {
+        let mut map: std::collections::BTreeMap<String, ModelUsage> = Default::default();
+        for run in self.all_runs()? {
+            for s in &run.steps {
+                let Some(model) = &s.model else { continue };
+                let u = map.entry(model.clone()).or_insert_with(|| ModelUsage { model_id: model.clone(), ..Default::default() });
+                u.calls += 1;
+                u.prompt_tokens += s.prompt_tokens.unwrap_or(0);
+                u.completion_tokens += s.completion_tokens.unwrap_or(0);
+                u.total_ms += s.duration_ms.unwrap_or(0);
+            }
+        }
+        Ok(map.into_values().collect())
+    }
+
+    /// Averages over previous successful runs of a recipe: a pre-run estimate.
+    pub fn estimate_for_recipe(&self, recipe_id: &str) -> Result<Option<RunEstimate>, StoreError> {
+        let runs: Vec<Run> = self
+            .all_runs()?
+            .into_iter()
+            .filter(|r| r.recipe_id == recipe_id && r.status == RunStatus::Succeeded)
+            .take(10)
+            .collect();
+        if runs.is_empty() {
+            return Ok(None);
+        }
+        let n = runs.len() as u64;
+        let sum = |f: &dyn Fn(&Run) -> u64| runs.iter().map(f).sum::<u64>() / n;
+        Ok(Some(RunEstimate {
+            based_on_runs: runs.len(),
+            avg_prompt_tokens: sum(&|r| r.steps.iter().filter_map(|s| s.prompt_tokens).sum()),
+            avg_completion_tokens: sum(&|r| r.steps.iter().filter_map(|s| s.completion_tokens).sum()),
+            avg_duration_ms: sum(&|r| r.steps.iter().filter_map(|s| s.duration_ms).sum()),
+        }))
     }
 
     pub fn count_by_status(&self, status: RunStatus) -> Result<i64, StoreError> {

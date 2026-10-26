@@ -1,0 +1,94 @@
+schemaVersion: "0"
+id: learning-kit
+name: Learning Kit
+version: 0.1.0
+description: Turns a document into a Knowledge Spine (concepts, claims, relationships), short notes, and flashcards. First slice of the showcase recipe.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, learning]
+
+inputs:
+  file:
+    type: file
+    label: Source document
+    description: A plain-text or Markdown file to learn from.
+    accept: [".txt", ".md", ".markdown"]
+  focus:
+    type: string
+    label: What do you want to understand?
+    description: Optional. Steers which concepts get the most attention.
+    required: false
+
+modelSlots:
+  analyst:
+    requires: [text, structured_output]
+    preference: accuracy
+    description: Reads the source and builds the Knowledge Spine.
+  writer:
+    requires: [text]
+    preference: accuracy
+    description: Turns the spine into notes and flashcards.
+
+permissions:
+  filesystem:
+    read: [input]
+
+steps:
+  - id: read
+    kind: tool
+    name: Read the source
+    tool: file.read
+    inputs:
+      path: ${inputs.file}
+
+  - id: extract
+    kind: model
+    name: Build the Knowledge Spine
+    slot: analyst
+    prompt: prompts/extract-spine.md
+    inputs:
+      text: ${steps.read.output.text}
+      focus: ${inputs.focus}
+    outputSchema: schemas/knowledge-spine.json
+    params:
+      temperature: 0.1
+      contextLength: 32768
+
+  - id: notes
+    kind: model
+    name: Write short notes
+    slot: writer
+    prompt: prompts/notes.md
+    inputs:
+      spine: ${steps.extract.output}
+    params:
+      temperature: 0.3
+      contextLength: 16384
+
+  - id: flashcards
+    kind: model
+    name: Write flashcards
+    slot: writer
+    prompt: prompts/flashcards.md
+    inputs:
+      spine: ${steps.extract.output}
+    outputSchema: schemas/flashcards.json
+    params:
+      temperature: 0.3
+      contextLength: 16384
+
+outputs:
+  spine:
+    from: ${steps.extract.output}
+    type: json
+    label: Knowledge Spine
+    description: Concepts, claims, and how they relate. Every other artifact is a view of this.
+  notes:
+    from: ${steps.notes.output}
+    type: markdown
+    label: Short notes
+  flashcards:
+    from: ${steps.flashcards.output}
+    type: json
+    label: Flashcards

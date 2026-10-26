@@ -1,12 +1,14 @@
-//! Stillroom desktop shell: wires the core executor, model router, and store to the webview.
+//! Stillroom desktop shell: wires the recipe library, executor, model router, and store to the webview.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use stillroom_core::store::{ModelUsage, RunEstimate};
 use stillroom_core::tools::ToolRegistry;
 use stillroom_core::trace::RunSummary;
-use stillroom_core::{resolve_slots, Executor, Recipe, Run, RunRequest, StepRecord, Store};
+use stillroom_core::{resolve_slots, Executor, RecipeInfo, RecipeLibrary, RecipeSource, Run, StepRecord, Store};
 use stillroom_models::ollama::Ollama;
 use stillroom_models::{InstalledModel, ModelRouter, ProviderStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -15,19 +17,15 @@ struct AppState {
     store: Mutex<Store>,
     router: Arc<ModelRouter>,
     tools: Arc<ToolRegistry>,
+    library: RecipeLibrary,
     db_path: String,
 }
 
-/// Recipes compiled into the app. Later: a recipe library on disk.
-struct BuiltinRecipe {
-    yaml: &'static str,
-    prompts: &'static [(&'static str, &'static str)],
-}
+type CmdResult<T> = Result<T, String>;
 
-const SUMMARIZE_FILE: BuiltinRecipe = BuiltinRecipe {
-    yaml: include_str!("../../recipes/summarize-file/recipe.yaml"),
-    prompts: &[("prompts/summarize.md", include_str!("../../recipes/summarize-file/prompts/summarize.md"))],
-};
+fn err<E: std::fmt::Display>(e: E) -> String {
+    e.to_string()
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,13 +34,14 @@ struct RuntimeStatus {
     db_path: String,
     tools: Vec<String>,
     run_count: i64,
+    recipe_roots: Vec<String>,
 }
 
 #[tauri::command]
-fn runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
-    let schema: Value = serde_json::from_str(stillroom_core::RECIPE_SCHEMA).map_err(|e| e.to_string())?;
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    let run_count = store.list_runs(10_000).map_err(|e| e.to_string())?.len() as i64;
+fn runtime_status(state: State<'_, AppState>) -> CmdResult<RuntimeStatus> {
+    let schema: Value = serde_json::from_str(stillroom_core::RECIPE_SCHEMA).map_err(err)?;
+    let store = state.store.lock().map_err(err)?;
+    let run_count = store.list_runs(10_000).map_err(err)?.len() as i64;
     let mut tools: Vec<String> = state.tools.ids().into_iter().map(String::from).collect();
     tools.sort();
     Ok(RuntimeStatus {
@@ -50,6 +49,7 @@ fn runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
         db_path: state.db_path.clone(),
         tools,
         run_count,
+        recipe_roots: state.library.roots().iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect(),
     })
 }
 
@@ -61,32 +61,56 @@ struct ModelsResponse {
 }
 
 #[tauri::command]
-async fn list_models(state: State<'_, AppState>) -> Result<ModelsResponse, String> {
+async fn list_models(state: State<'_, AppState>) -> CmdResult<ModelsResponse> {
     let router = state.router.clone();
     Ok(ModelsResponse { providers: router.statuses().await, models: router.list_all().await })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecipesResponse {
+    recipes: Vec<RecipeInfo>,
+    errors: Vec<RecipeLoadError>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecipeLoadError {
+    path: String,
+    error: String,
+}
+
 #[tauri::command]
-fn builtin_recipe() -> Result<Recipe, String> {
-    Recipe::from_yaml(SUMMARIZE_FILE.yaml).map_err(|e| e.to_string())
+fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
+    let scan = state.library.scan();
+    Ok(RecipesResponse {
+        recipes: scan.bundles.iter().map(|b| b.info()).collect(),
+        errors: scan
+            .errors
+            .into_iter()
+            .map(|(p, e)| RecipeLoadError { path: p.to_string_lossy().into_owned(), error: e })
+            .collect(),
+    })
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunArgs {
+    recipe_id: String,
     inputs: BTreeMap<String, Value>,
     #[serde(default)]
     pins: BTreeMap<String, String>,
 }
 
 #[tauri::command]
-async fn run_builtin(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -> Result<Run, String> {
-    let recipe = Recipe::from_yaml(SUMMARIZE_FILE.yaml).map_err(|e| e.to_string())?;
+async fn run_recipe(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -> CmdResult<Run> {
+    let bundle = state
+        .library
+        .find(&args.recipe_id)
+        .ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
     let router = state.router.clone();
     let installed = router.list_all().await;
-    let resolutions = resolve_slots(&recipe, &installed, &args.pins).map_err(|e| e.to_string())?;
-    let prompts: HashMap<String, String> =
-        SUMMARIZE_FILE.prompts.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let resolutions = resolve_slots(&bundle.recipe, &installed, &args.pins).map_err(err)?;
 
     let observer = {
         let app = app.clone();
@@ -95,23 +119,45 @@ async fn run_builtin(app: AppHandle, state: State<'_, AppState>, args: RunArgs) 
         })
     };
     let executor = Executor::new(state.tools.clone(), router);
-    let run = executor
-        .run(RunRequest { recipe, prompts, inputs: args.inputs, resolutions }, Some(observer))
-        .await;
+    let run = executor.run(bundle.request(args.inputs, resolutions), Some(observer)).await;
 
-    state.store.lock().map_err(|e| e.to_string())?.save_run(&run).map_err(|e| e.to_string())?;
+    state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
     let _ = app.emit("run:finished", run.summary());
     Ok(run)
 }
 
 #[tauri::command]
-fn list_runs(state: State<'_, AppState>, limit: Option<usize>) -> Result<Vec<RunSummary>, String> {
-    state.store.lock().map_err(|e| e.to_string())?.list_runs(limit.unwrap_or(50)).map_err(|e| e.to_string())
+fn list_runs(state: State<'_, AppState>, limit: Option<usize>) -> CmdResult<Vec<RunSummary>> {
+    state.store.lock().map_err(err)?.list_runs(limit.unwrap_or(50)).map_err(err)
 }
 
 #[tauri::command]
-fn get_run(state: State<'_, AppState>, id: String) -> Result<Option<Run>, String> {
-    state.store.lock().map_err(|e| e.to_string())?.get_run(&id).map_err(|e| e.to_string())
+fn get_run(state: State<'_, AppState>, id: String) -> CmdResult<Option<Run>> {
+    state.store.lock().map_err(err)?.get_run(&id).map_err(err)
+}
+
+#[tauri::command]
+fn usage(state: State<'_, AppState>) -> CmdResult<Vec<ModelUsage>> {
+    state.store.lock().map_err(err)?.usage_by_model().map_err(err)
+}
+
+#[tauri::command]
+fn estimate(state: State<'_, AppState>, recipe_id: String) -> CmdResult<Option<RunEstimate>> {
+    state.store.lock().map_err(err)?.estimate_for_recipe(&recipe_id).map_err(err)
+}
+
+/// Write an artifact to a path the user chose in a save dialog.
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> CmdResult<()> {
+    std::fs::write(&path, content).map_err(|e| format!("{path}: {e}"))
+}
+
+fn builtin_recipes_dir(app: &AppHandle) -> PathBuf {
+    if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../recipes")
+    } else {
+        app.path().resource_dir().map(|r| r.join("recipes")).unwrap_or_default()
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -120,15 +166,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&dir)?;
-            let db_path = dir.join("stillroom.db");
+            let data_dir = app.path().app_data_dir()?;
+            let user_recipes = data_dir.join("recipes");
+            std::fs::create_dir_all(&user_recipes)?;
+            let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
             let router = Arc::new(ModelRouter::new(vec![Arc::new(Ollama::default_local())]));
+            let library = RecipeLibrary::new(vec![
+                (builtin_recipes_dir(app.handle()), RecipeSource::Builtin),
+                (user_recipes, RecipeSource::User),
+            ]);
             app.manage(AppState {
                 store: Mutex::new(store),
                 router,
                 tools: Arc::new(ToolRegistry::builtin()),
+                library,
                 db_path: db_path.to_string_lossy().into_owned(),
             });
             Ok(())
@@ -136,10 +188,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             list_models,
-            builtin_recipe,
-            run_builtin,
+            list_recipes,
+            run_recipe,
             list_runs,
-            get_run
+            get_run,
+            usage,
+            estimate,
+            write_text_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

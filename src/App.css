@@ -82,3 +82,29 @@ pre.error { color: var(--bad); }
 
 .history { list-style: none; padding: 0; margin: 0; }
 footer { margin-top: 24px; font-size: 0.75rem; }
+
+h3 { font-size: 0.95rem; font-weight: 600; margin: 18px 0 6px; }
+h4 { font-size: 0.9rem; font-weight: 600; margin: 14px 0 6px; }
+.row.space { justify-content: space-between; }
+.field { margin: 10px 0; }
+.field label { display: block; margin-bottom: 4px; }
+.field input[type="text"], .field input[type="number"], .field textarea, .field select {
+  font: inherit; width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--fg);
+}
+.title-select { font: inherit; font-size: 1.1rem; font-weight: 600; border: none; background: transparent; color: var(--fg); padding: 0; }
+
+.markdown { line-height: 1.6; }
+.markdown h1 { font-size: 1.4rem; margin: 0 0 8px; }
+.markdown h2 { font-size: 1.1rem; margin: 18px 0 6px; }
+.markdown p { margin: 0 0 10px; }
+.markdown ul { padding-left: 20px; }
+
+.concepts { padding-left: 20px; }
+.concepts li { margin-bottom: 10px; }
+.quote { color: var(--muted); font-style: italic; font-size: 0.9rem; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.card { text-align: left; padding: 12px; min-height: 90px; display: flex; flex-direction: column; justify-content: space-between; gap: 8px; }
+.card.back { border-color: var(--accent); }
+.card-face { font-size: 0.95rem; }

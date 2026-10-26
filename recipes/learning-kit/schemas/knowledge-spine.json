@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "required": ["title", "summary", "concepts", "claims"],
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "concepts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "definition", "prerequisites", "related", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "definition": { "type": "string" },
+          "prerequisites": { "type": "array", "items": { "type": "string" } },
+          "related": { "type": "array", "items": { "type": "string" } },
+          "evidence": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "concepts", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "text": { "type": "string" },
+          "concepts": { "type": "array", "items": { "type": "string" } },
+          "evidence": { "type": "string" }
+        }
+      }
+    }
+  }
+}

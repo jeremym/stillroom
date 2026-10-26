@@ -202,6 +202,8 @@ pub struct ModelParams {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub think: Option<Value>,
+    #[serde(default)]
+    pub context_length: Option<u32>,
 }
 
 /// Step kinds the executor does not run yet. Parsed loosely so recipes stay loadable.
@@ -245,6 +247,15 @@ impl Recipe {
 
     pub fn step(&self, id: &str) -> Option<&Step> {
         self.steps.iter().find(|s| s.id() == id)
+    }
+
+    /// Declared inputs that are optional (`required: false`), with their defaults.
+    pub fn optional_inputs(&self) -> Vec<(String, Value)> {
+        self.inputs
+            .iter()
+            .filter(|(_, spec)| spec.get("required").and_then(Value::as_bool) == Some(false))
+            .map(|(k, spec)| (k.clone(), spec.get("default").cloned().unwrap_or(Value::Null)))
+            .collect()
     }
 }
 

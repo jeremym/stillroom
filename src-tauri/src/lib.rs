@@ -152,6 +152,14 @@ fn write_text_file(path: String, content: String) -> CmdResult<()> {
     std::fs::write(&path, content).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Write binary artifact data (base64-encoded over IPC) to a path the user chose in a save dialog.
+#[tauri::command]
+fn write_binary_file(path: String, data_base64: String) -> CmdResult<()> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64).map_err(err)?;
+    std::fs::write(&path, bytes).map_err(|e| format!("{path}: {e}"))
+}
+
 fn builtin_recipes_dir(app: &AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../recipes");
@@ -195,7 +203,8 @@ pub fn run() {
             get_run,
             usage,
             estimate,
-            write_text_file
+            write_text_file,
+            write_binary_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

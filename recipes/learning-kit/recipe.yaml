@@ -2,7 +2,7 @@ schemaVersion: "0"
 id: learning-kit
 name: Learning Kit
 version: 0.1.0
-description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, flashcards, a concept map, and a process diagram, all generated from the spine.
+description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, slides, flashcards, a concept map, and a process diagram, all generated from the spine.
 author:
   name: Stillroom
 license: MIT
@@ -28,7 +28,7 @@ modelSlots:
   writer:
     requires: [text]
     preference: accuracy
-    description: Turns the spine into notes, flashcards, and a process diagram.
+    description: Turns the spine into notes, slides, flashcards, and a process diagram.
 
 permissions:
   filesystem:
@@ -78,6 +78,18 @@ steps:
       temperature: 0.3
       contextLength: 16384
 
+  - id: slides
+    kind: model
+    name: Write the slides
+    slot: writer
+    prompt: prompts/slides.md
+    inputs:
+      spine: ${steps.extract.output}
+    outputSchema: schemas/slides.json
+    params:
+      temperature: 0.3
+      contextLength: 16384
+
   - id: concept_map
     kind: tool
     name: Draw the concept map
@@ -103,6 +115,11 @@ outputs:
     from: ${steps.notes.output}
     type: markdown
     label: Short notes
+  slides:
+    from: ${steps.slides.output}
+    type: slides
+    label: Slides
+    description: A short teaching deck with speaker notes, one slide per concept in prerequisite order.
   conceptMap:
     from: ${steps.concept_map.output}
     type: diagram

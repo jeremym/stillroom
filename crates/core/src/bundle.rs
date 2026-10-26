@@ -170,7 +170,7 @@ mod tests {
             Step::Model(m) => assert!(m.output_schema.as_ref().unwrap().is_object(), "schema inlined"),
             _ => panic!("extract should be a model step"),
         }
-        assert_eq!(b.prompts.len(), 4);
+        assert_eq!(b.prompts.len(), 5);
     }
 
     #[test]

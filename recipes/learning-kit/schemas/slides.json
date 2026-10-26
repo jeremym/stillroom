@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "required": ["title", "subtitle", "slides"],
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string" },
+    "subtitle": { "type": "string" },
+    "slides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "bullets", "notes", "concept"],
+        "additionalProperties": false,
+        "properties": {
+          "title": { "type": "string" },
+          "bullets": { "type": "array", "items": { "type": "string" } },
+          "notes": { "type": "string" },
+          "concept": { "type": "string" }
+        }
+      }
+    }
+  }
+}

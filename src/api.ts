@@ -12,6 +12,11 @@ export const api = {
   usage: () => invoke<ModelUsage[]>("usage"),
   estimate: (recipeId: string) => invoke<RunEstimate | null>("estimate", { recipeId }),
   writeTextFile: (path: string, content: string) => invoke<void>("write_text_file", { path, content }),
+  writeBinaryFile: (path: string, bytes: Uint8Array) => {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return invoke<void>("write_binary_file", { path, dataBase64: btoa(bin) });
+  },
 };
 
 export function fmtMs(ms: number | null | undefined) {

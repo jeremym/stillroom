@@ -141,7 +141,7 @@ impl RecipeBundle {
     }
 
     pub fn request(&self, inputs: IndexMap<String, Value>, resolutions: BTreeMap<String, Resolution>) -> RunRequest {
-        RunRequest { recipe: self.recipe.clone(), prompts: self.prompts.clone(), inputs, resolutions }
+        RunRequest { recipe: self.recipe.clone(), prompts: self.prompts.clone(), inputs, resolutions, artifact_base: None }
     }
 }
 
@@ -170,7 +170,7 @@ mod tests {
             Step::Model(m) => assert!(m.output_schema.as_ref().unwrap().is_object(), "schema inlined"),
             _ => panic!("extract should be a model step"),
         }
-        assert_eq!(b.prompts.len(), 5);
+        assert_eq!(b.prompts.len(), 6);
     }
 
     #[test]

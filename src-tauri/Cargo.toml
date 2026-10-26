@@ -20,7 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 stillroom-core = { path = "../crates/core" }
 stillroom-models = { path = "../crates/models" }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tokio.workspace = true

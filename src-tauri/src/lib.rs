@@ -19,6 +19,7 @@ struct AppState {
     tools: Arc<ToolRegistry>,
     library: RecipeLibrary,
     db_path: String,
+    artifacts_dir: PathBuf,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -119,7 +120,9 @@ async fn run_recipe(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -
         })
     };
     let executor = Executor::new(state.tools.clone(), router);
-    let run = executor.run(bundle.request(args.inputs, resolutions), Some(observer)).await;
+    let mut request = bundle.request(args.inputs, resolutions);
+    request.artifact_base = Some(state.artifacts_dir.clone());
+    let run = executor.run(request, Some(observer)).await;
 
     state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
     let _ = app.emit("run:finished", run.summary());
@@ -160,6 +163,12 @@ fn write_binary_file(path: String, data_base64: String) -> CmdResult<()> {
     std::fs::write(&path, bytes).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Copy an artifact file (e.g. audio) to a path the user chose in a save dialog.
+#[tauri::command]
+fn copy_file(src: String, dst: String) -> CmdResult<()> {
+    std::fs::copy(&src, &dst).map(|_| ()).map_err(|e| format!("{src} -> {dst}: {e}"))
+}
+
 fn builtin_recipes_dir(app: &AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../recipes");
@@ -178,6 +187,8 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let user_recipes = data_dir.join("recipes");
             std::fs::create_dir_all(&user_recipes)?;
+            let artifacts_dir = data_dir.join("artifacts");
+            std::fs::create_dir_all(&artifacts_dir)?;
             let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
             let router = Arc::new(ModelRouter::new(vec![Arc::new(Ollama::default_local())]));
@@ -191,6 +202,7 @@ pub fn run() {
                 tools: Arc::new(ToolRegistry::builtin()),
                 library,
                 db_path: db_path.to_string_lossy().into_owned(),
+                artifacts_dir,
             });
             Ok(())
         })
@@ -204,7 +216,8 @@ pub fn run() {
             usage,
             estimate,
             write_text_file,
-            write_binary_file
+            write_binary_file,
+            copy_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

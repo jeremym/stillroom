@@ -7,7 +7,7 @@ use crate::model::{ChatMessage, ChatRequest, ModelClient};
 use crate::recipe::{Recipe, Step};
 use crate::refs::{self, Context};
 use crate::resolve::Resolution;
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolContext, ToolRegistry};
 use crate::trace::{Run, RunStatus, StepRecord, StepStatus};
 use chrono::Utc;
 use serde_json::Value;
@@ -44,6 +44,9 @@ pub struct RunRequest {
     pub prompts: HashMap<String, String>,
     pub inputs: IndexMap<String, Value>,
     pub resolutions: BTreeMap<String, Resolution>,
+    /// Base directory for artifact files; the run gets a subdirectory named by its id.
+    /// Defaults to the OS temp dir.
+    pub artifact_base: Option<std::path::PathBuf>,
 }
 
 /// Called after each step record changes, so a UI can show live progress.
@@ -121,6 +124,15 @@ impl Executor {
         }
         let req = &req;
 
+        let tool_ctx = ToolContext {
+            run_id: run_id.clone(),
+            artifact_dir: req
+                .artifact_base
+                .clone()
+                .unwrap_or_else(|| std::env::temp_dir().join("stillroom-artifacts"))
+                .join(&run_id),
+        };
+
         let mut outputs: HashMap<String, Value> = HashMap::new();
         for (position, &i) in order.iter().enumerate() {
             let step = &req.recipe.steps[i];
@@ -146,7 +158,7 @@ impl Executor {
                 o(&rec);
             }
 
-            let result = self.run_step(step, req, &mut rec, &outputs).await;
+            let result = self.run_step(step, req, &tool_ctx, &mut rec, &outputs).await;
             let now = Utc::now();
             rec.finished_at = Some(now);
             rec.duration_ms = rec.started_at.map(|s| (now - s).num_milliseconds().max(0) as u64);
@@ -190,6 +202,7 @@ impl Executor {
         &self,
         step: &Step,
         req: &RunRequest,
+        tool_ctx: &ToolContext,
         rec: &mut StepRecord,
         outputs: &HashMap<String, Value>,
     ) -> Result<Value, ExecError> {
@@ -204,7 +217,7 @@ impl Executor {
                     .tools
                     .get(&t.tool)
                     .ok_or_else(|| ExecError::UnknownTool { step: t.id.clone(), tool: t.tool.clone() })?;
-                tool.call(inputs).await.map_err(|e| ExecError::Tool { step: t.id.clone(), message: e.to_string() })
+                tool.call(tool_ctx, inputs).await.map_err(|e| ExecError::Tool { step: t.id.clone(), message: e.to_string() })
             }
             Step::Model(m) => {
                 let res = req
@@ -333,6 +346,7 @@ mod tests {
                 "writer".to_string(),
                 Resolution { slot: "writer".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability },
             )]),
+            artifact_base: Some(dir.clone()),
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
         let run = exec.run(req, None).await;

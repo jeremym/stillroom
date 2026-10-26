@@ -4,6 +4,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { DiagramView, asDiagram } from "./DiagramView";
 import { SlidesView, isDeck, deckToHtml, deckToPptx } from "./SlidesView";
+import { AudioView, ScriptView, isAudio, isScript } from "./AudioView";
 import type { OutputSpec, Run } from "../types";
 
 interface Concept { id: string; name: string; definition: string; prerequisites: string[]; related: string[]; evidence: string[] }
@@ -61,13 +62,14 @@ function Cards({ cards }: { cards: Card[] }) {
   );
 }
 
-interface ExportOption { label: string; ext: string; build: () => Promise<string | Uint8Array>; }
+interface ExportOption { label: string; ext: string; build: () => Promise<string | Uint8Array | { copyFrom: string }>; }
 
 function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | undefined; value: unknown }) {
   const label = spec?.label ?? name;
   const kind = spec?.type ?? (typeof value === "string" ? "text" : "json");
   const diagram = kind === "diagram" ? asDiagram(value) : null;
   const deck = kind === "slides" && isDeck(value) ? value : null;
+  const audio = kind === "audio" && isAudio(value) ? value : null;
   const [svg, setSvg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -78,6 +80,8 @@ function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | unde
         { label: "Save PowerPoint…", ext: "pptx", build: () => deckToPptx(deck) },
         { label: "Save JSON…", ext: "json", build: async () => text },
       ]
+    : audio
+      ? [{ label: "Save audio…", ext: audio.format ?? "m4a", build: async () => ({ copyFrom: audio.path }) }]
     : diagram
       ? [
           { label: svg ? "Save SVG…" : "Save Mermaid…", ext: svg ? "svg" : "mmd", build: async () => svg ?? diagram.source },
@@ -91,7 +95,8 @@ function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | unde
     try {
       const body = await opt.build();
       if (typeof body === "string") await api.writeTextFile(path, body);
-      else await api.writeBinaryFile(path, body);
+      else if (body instanceof Uint8Array) await api.writeBinaryFile(path, body);
+      else await api.copyFile(body.copyFrom, path);
     } finally {
       setBusy(false);
     }
@@ -110,6 +115,10 @@ function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | unde
       {spec?.description && <p className="muted">{spec.description}</p>}
       {deck ? (
         <SlidesView deck={deck} />
+      ) : audio ? (
+        <AudioView audio={audio} />
+      ) : isScript(value) ? (
+        <ScriptView script={value} />
       ) : diagram ? (
         <>
           {diagram.title && <p><strong>{diagram.title}</strong></p>}

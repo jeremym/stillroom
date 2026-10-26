@@ -2,7 +2,7 @@ schemaVersion: "0"
 id: learning-kit
 name: Learning Kit
 version: 0.1.0
-description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, slides, flashcards, a concept map, and a process diagram, all generated from the spine.
+description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, a narrated audio lesson, slides, flashcards, a concept map, and a process diagram, all generated from the spine.
 author:
   name: Stillroom
 license: MIT
@@ -19,6 +19,11 @@ inputs:
     label: What do you want to understand?
     description: Optional. Steers which concepts get the most attention.
     required: false
+  voice:
+    type: string
+    label: Narration voice
+    description: Optional. A system voice name (run "say -v ?" to list them). Leave empty for the default voice.
+    required: false
 
 modelSlots:
   analyst:
@@ -33,6 +38,7 @@ modelSlots:
 permissions:
   filesystem:
     read: [input]
+    write: [output]
 
 steps:
   - id: read
@@ -78,6 +84,27 @@ steps:
       temperature: 0.3
       contextLength: 16384
 
+  - id: script
+    kind: model
+    name: Write the narration script
+    slot: writer
+    prompt: prompts/script.md
+    inputs:
+      notes: ${steps.notes.output}
+    outputSchema: schemas/script.json
+    params:
+      temperature: 0.3
+      contextLength: 16384
+
+  - id: narrate
+    kind: tool
+    name: Read the script aloud
+    tool: speech.synthesize
+    inputs:
+      script: ${steps.script.output}
+      voice: ${inputs.voice}
+      name: narration
+
   - id: slides
     kind: model
     name: Write the slides
@@ -115,6 +142,16 @@ outputs:
     from: ${steps.notes.output}
     type: markdown
     label: Short notes
+  narration:
+    from: ${steps.narrate.output}
+    type: audio
+    label: Audio lesson
+    description: The script read aloud by the system voice. Chapter pauses are built in.
+  script:
+    from: ${steps.script.output}
+    type: json
+    label: Narration script
+    description: What the voice says, chapter by chapter. Edit this, then rerun narration, once selective rerun lands.
   slides:
     from: ${steps.slides.output}
     type: slides

@@ -128,3 +128,8 @@ h4 { font-size: 0.9rem; font-weight: 600; margin: 14px 0 6px; }
 .slide-foot { position: absolute; right: 16px; bottom: 10px; font-size: 0.75rem; color: #999 !important; }
 .notes { margin: 8px 0 0; font-size: 0.95rem; }
 @media (max-width: 760px) { .deck { grid-template-columns: 1fr; } }
+
+.chapter { margin: 0 0 14px; }
+.chapter h4 { margin: 0 0 4px; }
+.chapter p { margin: 0; line-height: 1.6; }
+.audio audio { margin: 6px 0; }

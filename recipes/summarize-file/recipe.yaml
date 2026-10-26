@@ -1,0 +1,50 @@
+schemaVersion: "0"
+id: summarize-file
+name: Summarize a File
+version: 0.1.0
+description: Reads a text file and writes a concise Markdown summary. The walking-skeleton recipe.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, text]
+
+inputs:
+  file:
+    type: file
+    label: File to summarize
+    description: A plain-text or Markdown file.
+    accept: [".txt", ".md", ".markdown"]
+
+modelSlots:
+  writer:
+    requires: [text]
+    preference: accuracy
+    description: Reads the file contents and writes the summary.
+
+permissions:
+  filesystem:
+    read: [input]
+
+steps:
+  - id: read
+    kind: tool
+    name: Read the file
+    tool: file.read
+    inputs:
+      path: ${inputs.file}
+
+  - id: summarize
+    kind: model
+    name: Write the summary
+    slot: writer
+    prompt: prompts/summarize.md
+    inputs:
+      text: ${steps.read.output.text}
+    params:
+      temperature: 0.2
+
+outputs:
+  summary:
+    from: ${steps.summarize.output}
+    type: markdown
+    label: Summary

@@ -21,6 +21,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 tracing = "0.1"
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 # Release profile for the desktop bundle: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

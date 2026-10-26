@@ -3,6 +3,7 @@
 use crate::recipe::{Recipe, RecipeError, Step};
 use crate::resolve::Resolution;
 use crate::RunRequest;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -46,10 +47,10 @@ pub struct RecipeInfo {
     pub description: Option<String>,
     pub source: RecipeSource,
     pub path: String,
-    pub inputs: BTreeMap<String, Value>,
-    pub model_slots: BTreeMap<String, crate::recipe::ModelSlot>,
+    pub inputs: IndexMap<String, Value>,
+    pub model_slots: IndexMap<String, crate::recipe::ModelSlot>,
     pub steps: Vec<StepInfo>,
-    pub outputs: BTreeMap<String, crate::recipe::OutputSpec>,
+    pub outputs: IndexMap<String, crate::recipe::OutputSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,7 +140,7 @@ impl RecipeBundle {
         }
     }
 
-    pub fn request(&self, inputs: BTreeMap<String, Value>, resolutions: BTreeMap<String, Resolution>) -> RunRequest {
+    pub fn request(&self, inputs: IndexMap<String, Value>, resolutions: BTreeMap<String, Resolution>) -> RunRequest {
         RunRequest { recipe: self.recipe.clone(), prompts: self.prompts.clone(), inputs, resolutions }
     }
 }

@@ -1,6 +1,8 @@
 //! Executes a recipe: orders steps by their data dependencies, runs tool and model
 //! steps, records a trace. Sequential for now; parallel branches come with Flow Studio.
 
+use indexmap::IndexMap;
+
 use crate::model::{ChatMessage, ChatRequest, ModelClient};
 use crate::recipe::{Recipe, Step};
 use crate::refs::{self, Context};
@@ -40,7 +42,7 @@ pub struct RunRequest {
     pub recipe: Recipe,
     /// Prompt files by their path inside the recipe bundle (e.g. `prompts/summarize.md`).
     pub prompts: HashMap<String, String>,
-    pub inputs: BTreeMap<String, Value>,
+    pub inputs: IndexMap<String, Value>,
     pub resolutions: BTreeMap<String, Resolution>,
 }
 
@@ -103,7 +105,7 @@ impl Executor {
             inputs: req.inputs.clone(),
             resolutions: serde_json::to_value(&req.resolutions).unwrap_or(Value::Null),
             steps: Vec::new(),
-            outputs: BTreeMap::new(),
+            outputs: IndexMap::new(),
             error: None,
         };
 
@@ -326,7 +328,7 @@ mod tests {
         let req = RunRequest {
             recipe,
             prompts: HashMap::from([("prompts/summarize.md".to_string(), prompt.to_string())]),
-            inputs: BTreeMap::from([("file".to_string(), Value::String(file.to_string_lossy().into()))]),
+            inputs: IndexMap::from([("file".to_string(), Value::String(file.to_string_lossy().into()))]),
             resolutions: BTreeMap::from([(
                 "writer".to_string(),
                 Resolution { slot: "writer".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability },
@@ -349,7 +351,7 @@ mod tests {
         assert_eq!(user_message(&json!({ "text": "hi" })), "hi");
         assert_eq!(user_message(&json!({ "text": "hi", "focus": null })), "hi");
         let m = user_message(&json!({ "text": "hi", "focus": "tokens" }));
-        assert!(m.starts_with("## focus\n\ntokens\n\n## text\n\nhi"), "{m}");
+        assert!(m.starts_with("## text\n\nhi\n\n## focus\n\ntokens"), "declared order is kept: {m}");
         let j = user_message(&json!({ "spine": { "a": 1 } }));
         assert!(j.contains("```json"), "{j}");
     }

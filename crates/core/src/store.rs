@@ -164,7 +164,7 @@ impl Store {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use std::collections::BTreeMap;
+    use indexmap::IndexMap;
 
     #[test]
     fn round_trips_a_run() {
@@ -177,10 +177,10 @@ mod tests {
             status: RunStatus::Succeeded,
             started_at: Utc::now(),
             finished_at: Some(Utc::now()),
-            inputs: BTreeMap::new(),
+            inputs: IndexMap::new(),
             resolutions: serde_json::Value::Null,
             steps: vec![],
-            outputs: BTreeMap::new(),
+            outputs: IndexMap::new(),
             error: None,
         };
         store.save_run(&run).unwrap();

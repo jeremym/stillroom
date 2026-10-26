@@ -99,19 +99,10 @@ steps:
       contextLength: 16384
 
 outputs:
-  spine:
-    from: ${steps.extract.output}
-    type: json
-    label: Knowledge Spine
-    description: Concepts, claims, and how they relate. Every other artifact is a view of this.
   notes:
     from: ${steps.notes.output}
     type: markdown
     label: Short notes
-  flashcards:
-    from: ${steps.flashcards.output}
-    type: json
-    label: Flashcards
   conceptMap:
     from: ${steps.concept_map.output}
     type: diagram
@@ -122,3 +113,12 @@ outputs:
     type: diagram
     label: Process diagram
     description: The main flow or relationship in the document, drawn by the writer model.
+  flashcards:
+    from: ${steps.flashcards.output}
+    type: json
+    label: Flashcards
+  spine:
+    from: ${steps.extract.output}
+    type: json
+    label: Knowledge Spine
+    description: Concepts, claims, and how they relate. Every other artifact is a view of this.

@@ -91,7 +91,14 @@ function App() {
         <p className="tagline">Describe the goal. Get the result. Open the door.</p>
       </header>
 
-      <ModelsPanel models={models} onRefresh={refreshModels} />
+      {run && run.status === "succeeded" && (
+        <p className="muted">
+          Latest result · {run.recipeName} · {new Date(run.startedAt).toLocaleString()}
+          <span className="muted"> · the recipe panel below starts a new run</span>
+        </p>
+      )}
+      {run && run.status === "succeeded" && <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} />}
+      <TracePanel run={run} steps={steps} />
 
       {recipes && (
         <RecipePanel recipes={recipes.recipes} models={models?.models ?? []} running={running} onRun={startRun} />
@@ -101,11 +108,9 @@ function App() {
       ))}
       {error && <pre className="error">{error}</pre>}
 
-      <TracePanel run={run} steps={steps} />
-      {run && run.status === "succeeded" && <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} />}
-
       <HistoryPanel history={history} onOpen={openRun} />
       <UsagePanel usage={usage} />
+      <ModelsPanel models={models} onRefresh={refreshModels} />
 
       <footer className="muted mono">
         {status

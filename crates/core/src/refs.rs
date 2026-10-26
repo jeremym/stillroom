@@ -1,7 +1,9 @@
 //! `${inputs.x}` and `${steps.id.output.path}` references.
 
+use indexmap::IndexMap;
+
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ref {
@@ -44,7 +46,7 @@ pub fn parse_ref(s: &str) -> Option<Result<Ref, RefError>> {
 
 /// Everything a reference can point at during one run.
 pub struct Context<'a> {
-    pub inputs: &'a BTreeMap<String, Value>,
+    pub inputs: &'a IndexMap<String, Value>,
     pub step_outputs: &'a HashMap<String, Value>,
 }
 
@@ -129,7 +131,7 @@ mod tests {
 
     #[test]
     fn resolves_nested_values() {
-        let inputs = BTreeMap::from([("file".to_string(), json!("/tmp/a.txt"))]);
+        let inputs = IndexMap::from([("file".to_string(), json!("/tmp/a.txt"))]);
         let mut outputs = HashMap::new();
         outputs.insert("read".to_string(), json!({ "text": "hello", "bytes": 5 }));
         let ctx = Context { inputs: &inputs, step_outputs: &outputs };

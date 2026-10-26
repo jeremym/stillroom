@@ -1,9 +1,9 @@
 //! Run traces: what happened, step by step, with enough to reproduce and to show in the UI.
 
 use chrono::{DateTime, Utc};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,11 +57,11 @@ pub struct Run {
     pub status: RunStatus,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
-    pub inputs: BTreeMap<String, Value>,
+    pub inputs: IndexMap<String, Value>,
     /// Slot name -> resolution, as decided before the run.
     pub resolutions: Value,
     pub steps: Vec<StepRecord>,
-    pub outputs: BTreeMap<String, Value>,
+    pub outputs: IndexMap<String, Value>,
     pub error: Option<String>,
 }
 

@@ -97,7 +97,7 @@ fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
 #[serde(rename_all = "camelCase")]
 struct RunArgs {
     recipe_id: String,
-    inputs: BTreeMap<String, Value>,
+    inputs: indexmap::IndexMap<String, Value>,
     #[serde(default)]
     pins: BTreeMap<String, String>,
 }

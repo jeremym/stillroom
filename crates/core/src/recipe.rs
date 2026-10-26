@@ -3,9 +3,9 @@
 //! The JSON Schema is the source of truth. These types are a typed view that is
 //! deliberately permissive (`serde_json::Value` in places) until the format settles.
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 /// The canonical recipe schema, embedded at build time.
 pub static RECIPE_SCHEMA: &str = include_str!("../../../schemas/recipe.schema.json");
@@ -33,15 +33,15 @@ pub struct Recipe {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub inputs: BTreeMap<String, Value>,
+    pub inputs: IndexMap<String, Value>,
     #[serde(default)]
-    pub model_slots: BTreeMap<String, ModelSlot>,
+    pub model_slots: IndexMap<String, ModelSlot>,
     #[serde(default)]
     pub permissions: Option<Value>,
     #[serde(default)]
     pub skills: Vec<String>,
     pub steps: Vec<Step>,
-    pub outputs: BTreeMap<String, OutputSpec>,
+    pub outputs: IndexMap<String, OutputSpec>,
     #[serde(default)]
     pub budget: Option<Value>,
 }
@@ -139,7 +139,7 @@ impl Step {
         }
     }
 
-    pub fn inputs(&self) -> &BTreeMap<String, Value> {
+    pub fn inputs(&self) -> &IndexMap<String, Value> {
         match self {
             Step::Tool(s) => &s.inputs,
             Step::Model(s) => &s.inputs,
@@ -165,7 +165,7 @@ pub struct ToolStep {
     pub name: Option<String>,
     pub tool: String,
     #[serde(default)]
-    pub inputs: BTreeMap<String, Value>,
+    pub inputs: IndexMap<String, Value>,
     #[serde(default)]
     pub output_schema: Option<Value>,
     #[serde(default)]
@@ -184,7 +184,7 @@ pub struct ModelStep {
     #[serde(default)]
     pub prompt_version: Option<String>,
     #[serde(default)]
-    pub inputs: BTreeMap<String, Value>,
+    pub inputs: IndexMap<String, Value>,
     #[serde(default)]
     pub output_schema: Option<Value>,
     #[serde(default)]
@@ -214,7 +214,7 @@ pub struct OpaqueStep {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub inputs: BTreeMap<String, Value>,
+    pub inputs: IndexMap<String, Value>,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(flatten)]

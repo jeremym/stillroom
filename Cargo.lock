@@ -3481,6 +3481,8 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
+ "foldhash",
+ "indexmap 2.14.2",
  "itoa",
  "memchr",
  "serde",
@@ -3741,6 +3743,7 @@ checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 name = "stillroom"
 version = "0.1.0"
 dependencies = [
+ "indexmap 2.14.2",
  "serde",
  "serde_json",
  "stillroom-core",
@@ -3759,6 +3762,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "indexmap 2.14.2",
  "jsonschema",
  "rusqlite",
  "serde",
@@ -3775,6 +3779,7 @@ name = "stillroom-models"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "indexmap 2.14.2",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

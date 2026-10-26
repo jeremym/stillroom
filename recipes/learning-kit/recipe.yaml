@@ -2,7 +2,7 @@ schemaVersion: "0"
 id: learning-kit
 name: Learning Kit
 version: 0.1.0
-description: Turns a document into a Knowledge Spine (concepts, claims, relationships), short notes, and flashcards. First slice of the showcase recipe.
+description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, flashcards, a concept map, and a process diagram, all generated from the spine.
 author:
   name: Stillroom
 license: MIT
@@ -28,7 +28,7 @@ modelSlots:
   writer:
     requires: [text]
     preference: accuracy
-    description: Turns the spine into notes and flashcards.
+    description: Turns the spine into notes, flashcards, and a process diagram.
 
 permissions:
   filesystem:
@@ -78,6 +78,26 @@ steps:
       temperature: 0.3
       contextLength: 16384
 
+  - id: concept_map
+    kind: tool
+    name: Draw the concept map
+    tool: spine.concept_map
+    inputs:
+      spine: ${steps.extract.output}
+      direction: TD
+
+  - id: diagram
+    kind: model
+    name: Draw the main process
+    slot: writer
+    prompt: prompts/diagram.md
+    inputs:
+      spine: ${steps.extract.output}
+    outputSchema: schemas/diagram.json
+    params:
+      temperature: 0.2
+      contextLength: 16384
+
 outputs:
   spine:
     from: ${steps.extract.output}
@@ -92,3 +112,13 @@ outputs:
     from: ${steps.flashcards.output}
     type: json
     label: Flashcards
+  conceptMap:
+    from: ${steps.concept_map.output}
+    type: diagram
+    label: Concept map
+    description: Drawn directly from the spine. Solid arrows mean "understand this first"; dotted lines mean "related".
+  diagram:
+    from: ${steps.diagram.output}
+    type: diagram
+    label: Process diagram
+    description: The main flow or relationship in the document, drawn by the writer model.

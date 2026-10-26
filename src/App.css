@@ -108,3 +108,6 @@ h4 { font-size: 0.9rem; font-weight: 600; margin: 14px 0 6px; }
 .card { text-align: left; padding: 12px; min-height: 90px; display: flex; flex-direction: column; justify-content: space-between; gap: 8px; }
 .card.back { border-color: var(--accent); }
 .card-face { font-size: 0.95rem; }
+
+.diagram-svg { overflow: auto; padding: 8px 0; }
+.diagram-svg svg { max-width: 100%; height: auto; }

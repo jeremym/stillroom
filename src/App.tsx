@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, StepRecord } from "./types";
@@ -21,9 +21,18 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [usage, setUsage] = useState<ModelUsage[]>([]);
+  const recipesRef = useRef<RecipesResponse | null>(null);
 
   const refreshModels = useCallback(() => {
     api.listModels().then(setModels).catch((e) => setError(String(e)));
+  }, []);
+  const openRun = useCallback(async (id: string) => {
+    const r = await api.getRun(id);
+    if (r) {
+      setRun(r);
+      setRunRecipe((current) => current?.id === r.recipeId ? current : recipesRef.current?.recipes.find((x) => x.id === r.recipeId) ?? null);
+      setLiveSteps([]);
+    }
   }, []);
   const refreshRuns = useCallback(() => {
     api.listRuns(20).then(setHistory).catch(() => {});
@@ -33,9 +42,18 @@ function App() {
 
   useEffect(() => {
     api.runtimeStatus().then(setStatus).catch((e) => setError(String(e)));
-    api.listRecipes().then(setRecipes).catch((e) => setError(String(e)));
     refreshModels();
     refreshRuns();
+    // Load recipes, then show the most recent run so the last result survives a relaunch.
+    api
+      .listRecipes()
+      .then((r) => {
+        recipesRef.current = r;
+        setRecipes(r);
+        return api.listRuns(1);
+      })
+      .then((latest) => latest[0] && openRun(latest[0].id))
+      .catch((e) => setError(String(e)));
     const unlisten = listen<StepRecord>("run:step", (ev) => {
       setLiveSteps((prev) => {
         const next = prev.filter((s) => s.stepId !== ev.payload.stepId);
@@ -46,7 +64,7 @@ function App() {
     return () => {
       unlisten.then((f) => f());
     };
-  }, [refreshModels, refreshRuns]);
+  }, [refreshModels, refreshRuns, openRun]);
 
   async function startRun(recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>) {
     setRunning(true);
@@ -61,15 +79,6 @@ function App() {
       setError(String(e));
     } finally {
       setRunning(false);
-    }
-  }
-
-  async function openRun(id: string) {
-    const r = await api.getRun(id);
-    if (r) {
-      setRun(r);
-      setRunRecipe(recipes?.recipes.find((x) => x.id === r.recipeId) ?? null);
-      setLiveSteps([]);
     }
   }
 

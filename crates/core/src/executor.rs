@@ -227,6 +227,7 @@ impl Executor {
                     temperature: params.temperature,
                     max_tokens: params.max_tokens,
                     context_length: params.context_length,
+                    think: params.think.clone(),
                 };
                 let resp = self
                     .models

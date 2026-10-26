@@ -46,6 +46,9 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     /// Requested context window. Providers that support it honor it.
     pub context_length: Option<u32>,
+    /// Thinking control for reasoning models: `false` disables, `true` enables, or a
+    /// provider-specific level such as "low". Passed through as-is.
+    pub think: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,6 +2,7 @@ import { useState } from "react";
 import Markdown from "react-markdown";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
+import { DiagramView, asDiagram } from "./DiagramView";
 import type { OutputSpec, Run } from "../types";
 
 interface Concept { id: string; name: string; definition: string; prerequisites: string[]; related: string[]; evidence: string[] }
@@ -62,12 +63,16 @@ function Cards({ cards }: { cards: Card[] }) {
 function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | undefined; value: unknown }) {
   const label = spec?.label ?? name;
   const kind = spec?.type ?? (typeof value === "string" ? "text" : "json");
+  const diagram = kind === "diagram" ? asDiagram(value) : null;
+  const [svg, setSvg] = useState<string | null>(null);
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  const ext = kind === "markdown" ? "md" : kind === "json" ? "json" : "txt";
+  const ext = kind === "markdown" ? "md" : kind === "json" ? "json" : kind === "diagram" ? (svg ? "svg" : "mmd") : "txt";
 
   async function exportFile() {
     const path = await save({ defaultPath: `${name}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
-    if (path) await api.writeTextFile(path, text);
+    if (!path) return;
+    const body = diagram ? (svg ?? diagram.source) : text;
+    await api.writeTextFile(path, body);
   }
 
   return (
@@ -77,7 +82,12 @@ function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | unde
         <button onClick={exportFile}>Save…</button>
       </div>
       {spec?.description && <p className="muted">{spec.description}</p>}
-      {kind === "markdown" && typeof value === "string" ? (
+      {diagram ? (
+        <>
+          {diagram.title && <p><strong>{diagram.title}</strong></p>}
+          <DiagramView diagram={diagram} onSvg={setSvg} />
+        </>
+      ) : kind === "markdown" && typeof value === "string" ? (
         <div className="markdown"><Markdown>{value}</Markdown></div>
       ) : isSpine(value) ? (
         <Spine spine={value} />

@@ -154,7 +154,8 @@ fn write_text_file(path: String, content: String) -> CmdResult<()> {
 
 fn builtin_recipes_dir(app: &AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../recipes")
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../recipes");
+        dev.canonicalize().unwrap_or(dev)
     } else {
         app.path().resource_dir().map(|r| r.join("recipes")).unwrap_or_default()
     }

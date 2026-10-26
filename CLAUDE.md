@@ -9,3 +9,7 @@ Goal-first, local-first AI workflow studio. Read PLAN.md before any architectura
 - **Local-first:** default to on-device inference and storage. Cloud providers are opt-in and must be visibly flagged in the UI.
 - **Secrets:** never commit `.env`, API keys, tokens, or model credentials. Config with secrets lives in the OS keychain or an ignored local file.
 - **Git:** commit locally. Do not push or change repo visibility unless asked.
+
+## Durable memory
+
+Decisions, principles, milestone state, and verified research live in the Obsidian vault `jeremym-vault` under `Stillroom/` (Open Knowledge Format). Read `Stillroom/index.md` and `Stillroom/agent-playbook.md` at session start via the `obsidian` skill. Record new decisions there, not only in chat.

@@ -1,0 +1,46 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# node
+node_modules/
+dist/
+dist-ssr/
+*.local
+.pnpm-store/
+
+# rust
+target/
+
+# tauri
+src-tauri/gen/schemas/
+src-tauri/target/
+
+# local data, never commit
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+models/
+weights/
+*.gguf
+*.safetensors
+*.bin
+*.onnx
+*.mlmodelc/
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+
+# conductor / session notes
+.context/

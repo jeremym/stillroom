@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, StepRecord } from "./types";
@@ -11,6 +11,20 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { UsagePanel } from "./components/UsagePanel";
 import "./App.css";
 
+// React Flow is heavy; load it in its own chunk so the rest of the app paints first.
+const FlowView = lazy(() => import("./flow/FlowView"));
+
+function pinKey(id: string) {
+  return `stillroom.pins.${id}`;
+}
+function loadPins(id: string): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(pinKey(id)) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
 function App() {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [models, setModels] = useState<ModelsResponse | null>(null);
@@ -22,7 +36,26 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [usage, setUsage] = useState<ModelUsage[]>([]);
+  const [recipeId, setRecipeId] = useState<string>("");
+  const [pins, setPins] = useState<Record<string, string>>({});
   const recipesRef = useRef<RecipesResponse | null>(null);
+
+  const recipe = recipes?.recipes.find((r) => r.id === recipeId) ?? recipes?.recipes[0] ?? null;
+  useEffect(() => {
+    if (recipe) setPins(loadPins(recipe.id));
+  }, [recipe?.id]);
+  // Pins are per recipe and remembered on this machine; both the flow and the recipe form change them here.
+  const updatePins = useCallback((update: (pins: Record<string, string>) => Record<string, string>) => {
+    setPins((p) => {
+      const next = update(p);
+      if (recipe) {
+        try {
+          localStorage.setItem(pinKey(recipe.id), JSON.stringify(next));
+        } catch { /* per-viewer convenience only */ }
+      }
+      return next;
+    });
+  }, [recipe?.id]);
 
   const refreshModels = useCallback(() => {
     api.listModels().then(setModels).catch((e) => setError(String(e)));
@@ -32,6 +65,7 @@ function App() {
     if (r) {
       setRun(r);
       setRunRecipe((current) => current?.id === r.recipeId ? current : recipesRef.current?.recipes.find((x) => x.id === r.recipeId) ?? null);
+      setRecipeId(r.recipeId);
       setLiveSteps([]);
     }
   }, []);
@@ -103,6 +137,9 @@ function App() {
   }
 
   const steps = run?.steps ?? liveSteps;
+  // The flow draws the selected recipe and paints the current run on it only if it is a run of that recipe.
+  const flowRun = run && recipe && run.recipeId === recipe.id ? run : null;
+  const flowRecords = flowRun?.steps ?? (running && runRecipe?.id === recipe?.id ? liveSteps : []);
   const editedNames = run?.steps.filter((s) => s.edited).map((s) => s.name ?? s.stepId) ?? [];
   const showResult = run && (run.status === "succeeded" || run.status === "needs_review");
 
@@ -112,6 +149,20 @@ function App() {
         <h1>Stillroom</h1>
         <p className="tagline">Describe the goal. Get the result. Open the door.</p>
       </header>
+
+      {recipe && (
+        <Suspense fallback={<section className="panel flow-panel"><p className="muted">Loading the flow…</p></section>}>
+          <FlowView
+            recipe={recipe} run={flowRun} records={flowRecords} inProgress={running && runRecipe?.id === recipe.id}
+            models={models?.models ?? []} pins={pins}
+            onPin={(slot, modelId) => updatePins((p) => {
+              const next = { ...p };
+              if (modelId) next[slot] = modelId; else delete next[slot];
+              return next;
+            })}
+          />
+        </Suspense>
+      )}
 
       {showResult && (
         <p className="muted">
@@ -128,8 +179,9 @@ function App() {
       )}
       <TracePanel run={run} steps={steps} />
 
-      {recipes && (
-        <RecipePanel recipes={recipes.recipes} models={models?.models ?? []} running={running} onRun={startRun} />
+      {recipes && recipe && (
+        <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={setRecipeId} pins={pins} onPins={updatePins}
+          models={models?.models ?? []} running={running} onRun={startRun} />
       )}
       {recipes?.errors.map((e) => (
         <pre key={e.path} className="error">{e.path}: {e.error}</pre>

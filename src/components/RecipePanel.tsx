@@ -30,20 +30,14 @@ function describePermissions(recipe: RecipeInfo): string {
 
 interface Props {
   recipes: RecipeInfo[];
+  recipe: RecipeInfo;
+  onSelect: (recipeId: string) => void;
+  /** Model pins for this recipe, shared with the flow view (owned by App, saved per recipe). */
+  pins: Record<string, string>;
+  onPins: (update: (pins: Record<string, string>) => Record<string, string>) => void;
   models: InstalledModel[];
   running: boolean;
   onRun: (recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, reuse: boolean) => void;
-}
-
-function pinKey(id: string) {
-  return `stillroom.pins.${id}`;
-}
-function loadPins(id: string): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(pinKey(id)) ?? "{}");
-  } catch {
-    return {};
-  }
 }
 
 function InputField({
@@ -86,29 +80,15 @@ function InputField({
   );
 }
 
-export function RecipePanel({ recipes, models, running, onRun }: Props) {
-  const [recipeId, setRecipeId] = useState<string>(recipes[0]?.id ?? "");
-  const recipe = recipes.find((r) => r.id === recipeId) ?? recipes[0];
+export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun }: Props) {
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
-  const [pins, setPins] = useState<Record<string, string>>({});
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [reuse, setReuse] = useState(true);
 
   useEffect(() => {
-    if (!recipe) return;
     setInputs({});
-    setPins(loadPins(recipe.id));
     api.estimate(recipe.id).then(setEstimate).catch(() => setEstimate(null));
-  }, [recipe?.id]);
-
-  useEffect(() => {
-    if (!recipe) return;
-    try {
-      localStorage.setItem(pinKey(recipe.id), JSON.stringify(pins));
-    } catch { /* per-viewer convenience only */ }
-  }, [pins, recipe?.id]);
-
-  if (!recipe) return <section className="panel"><p className="muted">No recipes found.</p></section>;
+  }, [recipe.id]);
 
   const missing = Object.entries(recipe.inputs)
     .filter(([k, spec]) => spec.required !== false && (inputs[k] == null || inputs[k] === ""))
@@ -121,7 +101,7 @@ export function RecipePanel({ recipes, models, running, onRun }: Props) {
     <section className="panel">
       <div className="row space">
         <h2 style={{ margin: 0 }}>
-          <select value={recipe.id} onChange={(e) => setRecipeId(e.target.value)} className="title-select">
+          <select value={recipe.id} onChange={(e) => onSelect(e.target.value)} className="title-select">
             {recipes.map((r) => (
               <option key={r.id} value={r.id}>{r.name}</option>
             ))}
@@ -150,7 +130,7 @@ export function RecipePanel({ recipes, models, running, onRun }: Props) {
               value={pins[slot] ?? ""}
               onChange={(e) => {
                 const v = e.target.value;
-                setPins((p) => {
+                onPins((p) => {
                   const next = { ...p };
                   if (v) next[slot] = v; else delete next[slot];
                   return next;

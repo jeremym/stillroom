@@ -64,9 +64,18 @@ pub struct StepInfo {
     pub tool: Option<String>,
     /// Step ids this step reads from.
     pub depends_on: Vec<String>,
+    /// Recipe inputs this step reads (for a map, including its inner steps).
+    #[serde(default)]
+    pub uses_inputs: Vec<String>,
+    /// The condition that must be set for the step to run, if any.
+    #[serde(default)]
+    pub when: Option<String>,
     /// For map steps: the inner steps.
     #[serde(default)]
     pub steps: Vec<StepInfo>,
+    /// For map steps: the name each item is bound to (`as:`).
+    #[serde(default)]
+    pub item_name: Option<String>,
     /// For agent steps: the tools it may call.
     #[serde(default)]
     pub allowed_tools: Vec<String>,
@@ -92,9 +101,15 @@ fn step_info(s: &Step) -> StepInfo {
             _ => None,
         },
         depends_on: crate::propagate::dependencies(s).into_iter().collect(),
+        uses_inputs: crate::propagate::input_dependencies(s).into_iter().collect(),
+        when: s.when().map(String::from),
         steps: match s {
             Step::Map(m) => m.steps.iter().map(step_info).collect(),
             _ => Vec::new(),
+        },
+        item_name: match s {
+            Step::Map(m) => Some(m.item_name.clone()),
+            _ => None,
         },
         allowed_tools: match s {
             Step::Agent(a) => a.allowed_tools.clone(),
@@ -243,6 +258,9 @@ mod tests {
         assert_eq!(triage.steps.len(), 4);
         assert_eq!(triage.steps[3].allowed_tools, vec!["fs.list", "fs.write"]);
         assert_eq!(triage.depends_on, vec!["list".to_string()], "inner refs to siblings are not map deps");
+        assert_eq!(triage.uses_inputs, vec!["about".to_string(), "archive".to_string()], "map inputs include inner steps' inputs");
+        assert_eq!(triage.steps[2].when.as_deref(), Some("${steps.classify.output.needsReply}"));
+        assert_eq!(triage.steps[2].depends_on, vec!["classify".to_string(), "parse".to_string()]);
         let review = info.steps.iter().find(|s| s.id == "review").unwrap();
         assert_eq!(review.show.len(), 4);
         match b.recipe.step("triage").unwrap() {

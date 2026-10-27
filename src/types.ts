@@ -123,8 +123,14 @@ export interface StepInfo {
   slot: string | null;
   tool: string | null;
   dependsOn: string[];
+  /** Recipe inputs this step reads (for a map, including its inner steps). */
+  usesInputs: string[];
+  /** The condition that must be set for the step to run, if any. */
+  when?: string | null;
   /** For map steps: the inner steps. */
   steps?: StepInfo[];
+  /** For map steps: the name each item is bound to. */
+  itemName?: string | null;
   /** For agent steps: tools it may call. */
   allowedTools?: string[];
   /** For review steps: paths inside each item to display. */

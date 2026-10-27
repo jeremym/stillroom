@@ -56,6 +56,26 @@ pub fn dependencies(step: &Step) -> BTreeSet<String> {
     names
 }
 
+/// Recipe inputs a step reads, directly or (for a map) through its inner steps.
+pub fn input_dependencies(step: &Step) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    refs::input_refs(&Value::Object(step.inputs().clone().into_iter().collect()), &mut names);
+    if let Some(w) = step.when() {
+        refs::input_refs(&Value::String(w.to_string()), &mut names);
+    }
+    match step {
+        Step::Map(m) => {
+            refs::input_refs(&Value::String(m.over.clone()), &mut names);
+            for sub in &m.steps {
+                names.extend(input_dependencies(sub));
+            }
+        }
+        Step::Review(r) => refs::input_refs(&Value::String(r.items.clone()), &mut names),
+        _ => {}
+    }
+    names
+}
+
 /// Every step downstream of `step_id`, transitively, in recipe order.
 pub fn dependents(recipe: &Recipe, step_id: &str) -> Vec<String> {
     let mut affected: BTreeSet<String> = BTreeSet::from([step_id.to_string()]);

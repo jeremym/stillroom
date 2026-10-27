@@ -110,6 +110,20 @@ pub fn resolve_value(v: &Value, ctx: &Context) -> Result<Value, RefError> {
     }
 }
 
+/// Input names referenced anywhere inside `v`.
+pub fn input_refs(v: &Value, out: &mut BTreeSet<String>) {
+    match v {
+        Value::String(s) => {
+            if let Some(Ok(Ref::Input { name, .. })) = parse_ref(s) {
+                out.insert(name);
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| input_refs(x, out)),
+        Value::Object(m) => m.values().for_each(|x| input_refs(x, out)),
+        _ => {}
+    }
+}
+
 /// Step ids referenced anywhere inside `v`.
 pub fn step_refs(v: &Value, out: &mut BTreeSet<String>) {
     match v {

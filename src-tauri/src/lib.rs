@@ -6,11 +6,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use stillroom_core::store::{ModelUsage, RunEstimate};
-use stillroom_core::tools::ToolRegistry;
+use stillroom_core::tools::{ToolInfo, ToolRegistry};
 use stillroom_core::trace::RunSummary;
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots, validate_edit, Executor, RecipeInfo, RecipeLibrary, RecipeSource, Run, StepRecord,
-    Store,
+    edits_for_rerun, pins_from_run, resolve_slots, validate_edit, Draft, Executor, RecipeInfo, RecipeLibrary, RecipeSource, Run,
+    StepRecord, Store,
 };
 use stillroom_models::ollama::Ollama;
 use stillroom_models::{InstalledModel, ModelRouter, ProviderStatus};
@@ -217,6 +217,65 @@ fn estimate(state: State<'_, AppState>, recipe_id: String) -> CmdResult<Option<R
 
 /// Write an artifact to a path the user chose in a save dialog.
 #[tauri::command]
+fn list_tools(state: State<'_, AppState>) -> CmdResult<Vec<ToolInfo>> {
+    Ok(state.tools.catalog())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DraftResponse {
+    id: String,
+    source: RecipeSource,
+    path: String,
+    draft: Draft,
+}
+
+/// The recipe as it is on disk, for editing.
+#[tauri::command]
+fn read_recipe_draft(state: State<'_, AppState>, recipe_id: String) -> CmdResult<DraftResponse> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("no recipe {recipe_id}"))?;
+    let draft = Draft::read(&bundle.root).map_err(err)?;
+    Ok(DraftResponse { id: bundle.recipe.id, source: bundle.source, path: bundle.root.to_string_lossy().into_owned(), draft })
+}
+
+fn known_tools(state: &AppState) -> Vec<String> {
+    state.tools.ids().into_iter().map(String::from).collect()
+}
+
+/// Problems with a draft, in words. Empty means it would load and run.
+#[tauri::command]
+fn check_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Vec<String>> {
+    Ok(draft.check(&known_tools(&state)))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveResponse {
+    recipe: RecipeInfo,
+    path: String,
+    /// True when a built-in recipe with the same id is now hidden behind this one.
+    shadows_builtin: bool,
+}
+
+/// Write the draft into the user's recipes folder as `<id>/`. A user recipe with that id is
+/// replaced; a built-in with that id stays on disk but the saved copy is the one listed.
+#[tauri::command]
+fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<SaveResponse> {
+    let id = draft.id().ok_or("the recipe needs an id")?.to_string();
+    let (user_root, _) = state
+        .library
+        .roots()
+        .iter()
+        .find(|(_, s)| *s == RecipeSource::User)
+        .ok_or("no folder for your recipes")?;
+    let dir = user_root.join(&id);
+    let shadows_builtin = state.library.find(&id).map(|b| b.source == RecipeSource::Builtin).unwrap_or(false);
+    draft.write(&dir, &known_tools(&state)).map_err(err)?;
+    let bundle = state.library.find(&id).ok_or("saved, but the recipe did not load back")?;
+    Ok(SaveResponse { recipe: bundle.info(), path: dir.to_string_lossy().into_owned(), shadows_builtin })
+}
+
+#[tauri::command]
 fn write_text_file(path: String, content: String) -> CmdResult<()> {
     std::fs::write(&path, content).map_err(|e| format!("{path}: {e}"))
 }
@@ -288,6 +347,10 @@ pub fn run() {
             get_run,
             usage,
             estimate,
+            list_tools,
+            read_recipe_draft,
+            check_recipe_draft,
+            save_recipe_draft,
             write_text_file,
             write_binary_file,
             copy_file,

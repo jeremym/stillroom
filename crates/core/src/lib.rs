@@ -5,6 +5,7 @@
 
 pub mod bundle;
 pub mod cache;
+pub mod draft;
 pub mod executor;
 pub mod library;
 pub mod model;
@@ -18,6 +19,7 @@ pub mod trace;
 
 pub use bundle::{RecipeBundle, RecipeInfo, RecipeSource};
 pub use cache::{CachedStep, MemoryCache, StepCache};
+pub use draft::{Draft, DraftError};
 pub use executor::{Executor, RunRequest};
 pub use library::RecipeLibrary;
 pub use propagate::{dependents, edits_for_rerun, pins_from_run, validate_edit, EditError, StepEdit};

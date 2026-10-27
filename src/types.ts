@@ -186,3 +186,73 @@ export interface RunEstimate {
   avgCompletionTokens: number;
   avgDurationMs: number;
 }
+
+/** A tool the runtime has, as shown to a recipe author. */
+export interface ToolInfo {
+  id: string;
+  description: string;
+  /** JSON Schema of the inputs object, when the tool describes itself. */
+  parameters: { properties?: Record<string, { type?: string; description?: string }>; required?: string[] } | null;
+  cacheable: boolean;
+}
+
+/** A recipe as it is on disk, for editing: recipe.yaml as JSON plus its prompt and schema files. */
+export interface Draft {
+  yaml: RecipeDoc;
+  files: Record<string, string>;
+}
+
+export interface DraftResponse {
+  id: string;
+  source: RecipeSource;
+  path: string;
+  draft: Draft;
+}
+
+export interface SaveResponse {
+  recipe: RecipeInfo;
+  path: string;
+  shadowsBuiltin: boolean;
+}
+
+/** One step as written in recipe.yaml. Loose on purpose: the schema is the source of truth. */
+export interface StepDoc {
+  id: string;
+  kind: string;
+  name?: string;
+  description?: string;
+  inputs?: Record<string, unknown>;
+  when?: string;
+  dependsOn?: string[];
+  outputSchema?: unknown;
+  checkpoint?: boolean;
+  tool?: string;
+  slot?: string;
+  prompt?: string;
+  params?: { temperature?: number; maxTokens?: number; think?: boolean | string; contextLength?: number };
+  allowedTools?: string[];
+  maxTurns?: number;
+  maxToolCalls?: number;
+  over?: string;
+  as?: string;
+  concurrency?: number;
+  steps?: StepDoc[];
+  items?: string;
+  title?: string;
+  show?: string[];
+  [extra: string]: unknown;
+}
+
+export interface RecipeDoc {
+  schemaVersion: string;
+  id: string;
+  name: string;
+  version?: string;
+  description?: string;
+  inputs?: Record<string, InputSpec>;
+  modelSlots?: Record<string, ModelSlot>;
+  permissions?: Permissions;
+  steps: StepDoc[];
+  outputs: Record<string, OutputSpec>;
+  [extra: string]: unknown;
+}

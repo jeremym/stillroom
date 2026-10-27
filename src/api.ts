@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ModelsResponse, ModelUsage, RecipesResponse, Run, RunEstimate, RunSummary, RuntimeStatus } from "./types";
+import type { Draft, DraftResponse, ModelsResponse, ModelUsage, RecipesResponse, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, ToolInfo } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -11,6 +11,10 @@ export const api = {
   rerunWithEdit: (runId: string, stepId: string, output: unknown, reuse = true) =>
     invoke<Run>("rerun_with_edit", { args: { runId, stepId, output, reuse } }),
   clearStepCache: () => invoke<number>("clear_step_cache"),
+  listTools: () => invoke<ToolInfo[]>("list_tools"),
+  readRecipeDraft: (recipeId: string) => invoke<DraftResponse>("read_recipe_draft", { recipeId }),
+  checkRecipeDraft: (draft: Draft) => invoke<string[]>("check_recipe_draft", { draft }),
+  saveRecipeDraft: (draft: Draft) => invoke<SaveResponse>("save_recipe_draft", { draft }),
   listRuns: (limit = 20) => invoke<RunSummary[]>("list_runs", { limit }),
   getRun: (id: string) => invoke<Run | null>("get_run", { id }),
   usage: () => invoke<ModelUsage[]>("usage"),

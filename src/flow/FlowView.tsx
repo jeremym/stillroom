@@ -1,12 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Background, Handle, Position, ReactFlow, type NodeProps, type NodeTypes } from "@xyflow/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Background, Handle, Position, ReactFlow, type Connection, type Edge, type NodeProps, type NodeTypes } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { api } from "../api";
 import { buildGraph, type FlowNode } from "./graph";
 import { StepDetails } from "./StepDetails";
-import type { InstalledModel, RecipeInfo, Run, StepRecord } from "../types";
+import { addStep, connect, disconnect, docToInfo, mutate, removeStep, stepPathOf } from "./draft";
+import {
+  AddStepSelect, ConnectionPanel, InputForm, OutputForm, SaveDialog, SlotsEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
+} from "./RecipeEditor";
+import type { InstalledModel, RecipeDoc, RecipeInfo, RecipeSource, Run, StepRecord, ToolInfo } from "../types";
 
 /* Flow View: the recipe drawn as connected nodes, with the current run's state painted on top.
-   Read-only in this version: you can inspect every step and pin a model, not rewire the graph. */
+   Edit mode swaps the run overlay for a draft of the recipe: click a node to change it, drag
+   between handles to wire it, and save the draft as your own recipe. */
 
 interface Props {
   recipe: RecipeInfo;
@@ -17,6 +23,17 @@ interface Props {
   models: InstalledModel[];
   pins: Record<string, string>;
   onPin: (slot: string, modelId: string | null) => void;
+  /** A recipe was saved from the editor; the app should reload its list and show it. */
+  onSaved: (recipe: RecipeInfo) => void;
+}
+
+interface EditState {
+  sourceId: string;
+  source: RecipeSource;
+  doc: RecipeDoc;
+  files: Record<string, string>;
+  problems: string[];
+  dirty: boolean;
 }
 
 /* Handles: steps feed steps top to bottom ("b" → "t"); inputs and results attach on the sides ("r" → "l"). */
@@ -73,10 +90,20 @@ const PAD = 16;
 
 const nodeTypes: NodeTypes = { step: StepNode, io: IoNode, group: GroupNode };
 
-export default function FlowView({ recipe, run, records, inProgress, models, pins, onPin }: Props) {
+export default function FlowView({ recipe, run, records, inProgress, models, pins, onPin, onSaved }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
+  const [edit, setEdit] = useState<EditState | null>(null);
+  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [wire, setWire] = useState<{ source: string; target: string } | null>(null);
+  const [panel, setPanel] = useState<"node" | "slots" | "save">("node");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [canvasW, setCanvasW] = useState(900);
+
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -85,17 +112,111 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     return () => ro.disconnect();
   }, []);
 
+  // Leaving the recipe leaves the editor too.
+  useEffect(() => { setEdit(null); setSelectedId(null); setSelectedEdge(null); setWire(null); setPanel("node"); }, [recipe.id]);
+
+  // Ask the runtime what is wrong with the draft, a moment after each change.
+  useEffect(() => {
+    if (!edit) return;
+    const { doc, files } = edit;
+    const t = setTimeout(() => {
+      api.checkRecipeDraft({ yaml: doc, files })
+        .then((problems) => setEdit((e) => (e && e.doc === doc && e.files === files ? { ...e, problems } : e)))
+        .catch((err) => setEdit((e) => (e ? { ...e, problems: [String(err)] } : e)));
+    }, 350);
+    return () => clearTimeout(t);
+  }, [edit?.doc, edit?.files]);
+
+
+  async function startEditing() {
+    setLoadError(null);
+    try {
+      const [r, t] = await Promise.all([api.readRecipeDraft(recipe.id), api.listTools()]);
+      setTools(t);
+      setEdit({ sourceId: r.id, source: r.source, doc: r.draft.yaml, files: r.draft.files, problems: [], dirty: false });
+      setSelectedId(null);
+      setSelectedEdge(null);
+      setPanel("node");
+    } catch (e) {
+      setLoadError(String(e));
+    }
+  }
+
+  const change = useCallback((doc: RecipeDoc, files?: Record<string, string>) => {
+    setEdit((e) => (e ? { ...e, doc, files: files ?? e.files, dirty: true } : e));
+  }, []);
+
+  function select(nodeId: string | null) {
+    setSelectedId(nodeId);
+    setSelectedEdge(null);
+    setWire(null);
+    setPanel("node");
+  }
+
+  function stopEditing() {
+    setEdit(null);
+    setConfirmDiscard(false);
+    select(null);
+  }
+
+  async function save(id: string, name: string, description: string) {
+    if (!edit) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const doc = mutate(edit.doc, (d) => {
+        d.id = id;
+        d.name = name;
+        if (description) d.description = description; else delete d.description;
+        // A saved copy is yours, whatever it was copied from.
+        if (Array.isArray(d.tags)) d.tags = (d.tags as string[]).filter((t) => t !== "built-in");
+        if (edit.source === "builtin" && id !== edit.sourceId) delete d.author;
+      });
+      const r = await api.saveRecipeDraft({ yaml: doc, files: edit.files });
+      stopEditing();
+      onSaved(r.recipe);
+    } catch (e) {
+      setSaveError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function onConnect(c: Connection) {
+    if (!edit || !c.source || !c.target || c.source === c.target) return;
+    if (c.target.startsWith("out:")) {
+      change(connect(edit.doc, c.source, c.target));
+      select(c.target);
+    } else if (stepPathOf(c.target)) {
+      setSelectedId(c.target);
+      setSelectedEdge(null);
+      setPanel("node");
+      setWire({ source: c.source, target: c.target });
+    }
+  }
+
   const modelName = (id: string) => models.find((m) => m.id === id)?.name ?? id.replace(/^[a-z]+:/, "");
   const modelFor = (slot: string) => {
     const id = run?.resolutions?.[slot]?.modelId ?? pins[slot];
     return id ? modelName(id) : null;
   };
 
+  const shownRecipe = edit ? docToInfo(edit.doc, recipe) : recipe;
+  const shownRun = edit ? null : run;
+  const shownRecords = edit ? [] : records;
+  const shownProgress = edit ? false : inProgress;
+
   const { nodes, edges, width, height } = useMemo(
-    () => buildGraph({ recipe, run, records, inProgress, modelFor, selectedId }),
+    () => {
+      const g = buildGraph({ recipe: shownRecipe, run: shownRun, records: shownRecords, inProgress: shownProgress, modelFor, selectedId });
+      if (selectedEdge) g.edges = g.edges.map((e) => (e.id === selectedEdge.id ? { ...e, selected: true, className: `${e.className} selected` } : e));
+      return g;
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [recipe, run, records, inProgress, pins, models, selectedId],
+    [shownRecipe, shownRun, shownRecords, shownProgress, pins, models, selectedId, selectedEdge],
   );
+
+  const labelOf = (nodeId: string) => nodes.find((n) => n.id === nodeId)?.data.title ?? nodeId;
 
   // The drawing is shown whole, at full size when it fits the canvas width, smaller only if it must.
   // The page scrolls; the canvas does not pan or zoom.
@@ -103,13 +224,52 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
   const canvasH = Math.ceil(height * zoom + PAD * 2);
   const viewport = { x: PAD + (canvasW - PAD * 2 - width * zoom) / 2, y: PAD, zoom };
 
+  const selectedPath = selectedId ? stepPathOf(selectedId) : null;
+  const selectedMap = edit && selectedPath && !selectedPath.includes("/") && edit.doc.steps.find((s) => s.id === selectedPath && s.kind === "map");
+  const hasPanel = Boolean(selectedId || selectedEdge || wire || panel !== "node");
+
   return (
-    <section className="panel flow-panel">
+    <section className={`panel flow-panel ${edit ? "editing" : ""}`}>
       <div className="row space" style={{ margin: "0 0 8px" }}>
-        <h2 style={{ margin: 0 }}>Flow <span className="muted">(the recipe as a map: inputs → steps → results)</span></h2>
-        <span className="muted">{recipe.name}{run ? ` · run ${run.id.slice(-8)}` : " · no run yet"}</span>
+        <h2 style={{ margin: 0 }}>
+          Flow <span className="muted">{edit ? "(editing a draft of the recipe)" : "(the recipe as a map: inputs → steps → results)"}</span>
+        </h2>
+        {edit ? (
+          <span className="muted">{edit.dirty ? "unsaved changes" : "no changes yet"}</span>
+        ) : (
+          <span className="row" style={{ margin: 0 }}>
+            <span className="muted">{recipe.name}{run ? ` · run ${run.id.slice(-8)}` : " · no run yet"}</span>
+            <button onClick={startEditing}>Edit this recipe</button>
+          </span>
+        )}
       </div>
-      <div className={`flow-layout ${selectedId ? "with-details" : ""}`}>
+      {loadError && <pre className="error">{loadError}</pre>}
+
+      {edit && (
+        <div className="flow-toolbar">
+          <AddStepSelect label={selectedMap ? `Add step inside “${selectedMap.name ?? selectedMap.id}”` : "Add step"} onPick={(kind) => {
+            const r = addStep(edit.doc, kind, selectedMap ? selectedMap.id : undefined);
+            change(r.doc, withPrompt(edit.files, r));
+            select(`step:${r.path}`);
+          }} />
+          <button onClick={() => { const { name, spec } = newInput(edit.doc); change(mutate(edit.doc, (d) => { (d.inputs ??= {})[name] = spec; })); select(`in:${name}`); }}>Add input</button>
+          <button onClick={() => { const { name, spec } = newOutput(edit.doc); change(mutate(edit.doc, (d) => { d.outputs[name] = spec; })); select(`out:${name}`); }}>Add result</button>
+          <button onClick={() => { setPanel("slots"); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Model slots</button>
+          <span className="flow-toolbar-gap" />
+          <button className="primary" style={{ marginTop: 0 }} disabled={edit.problems.length > 0} title={edit.problems.length ? "Fix the problems first" : ""}
+            onClick={() => { setPanel("save"); setSaveError(null); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Save…</button>
+          {confirmDiscard
+            ? <><button className="danger" onClick={stopEditing}>Yes, discard</button><button onClick={() => setConfirmDiscard(false)}>Keep editing</button></>
+            : <button onClick={() => (edit.dirty ? setConfirmDiscard(true) : stopEditing())}>{edit.dirty ? "Discard…" : "Done"}</button>}
+        </div>
+      )}
+      {edit && edit.problems.length > 0 && (
+        <ul className="flow-problems">
+          {edit.problems.map((p, i) => <li key={i}>{p}</li>)}
+        </ul>
+      )}
+
+      <div className={`flow-layout ${hasPanel ? "with-details" : ""}`}>
         <div className="flow-canvas" ref={wrapRef} style={{ height: canvasH }}>
           <ReactFlow
             nodes={nodes}
@@ -120,7 +280,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
             minZoom={0.1}
             maxZoom={1}
             nodesDraggable={false}
-            nodesConnectable={false}
+            nodesConnectable={Boolean(edit)}
             elementsSelectable
             selectNodesOnDrag={false}
             panOnDrag={false}
@@ -129,20 +289,65 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
             zoomOnPinch={false}
             zoomOnDoubleClick={false}
             preventScrolling={false}
+            deleteKeyCode={null}
             colorMode="system"
-            onNodeClick={(_, n) => setSelectedId(n.id)}
-            onPaneClick={() => setSelectedId(null)}
+            onNodeClick={(_, n) => select(n.id)}
+            onEdgeClick={(_, e) => { if (edit) { setSelectedEdge(e); setSelectedId(null); setWire(null); setPanel("node"); } }}
+            onPaneClick={() => select(null)}
+            onConnect={onConnect}
           >
             <Background gap={24} />
           </ReactFlow>
         </div>
-        {selectedId ? (
+
+        {!edit && selectedId && (
           <StepDetails
             recipe={recipe} run={run} records={records} models={models} pins={pins} onPin={onPin}
-            selectedId={selectedId} onClose={() => setSelectedId(null)}
+            selectedId={selectedId} onClose={() => select(null)}
           />
-        ) : (
+        )}
+        {!edit && !selectedId && (
           <p className="muted flow-hint">Click a step to see which model it uses, what it reads, and what it produced. A dashed box is a for-each: its inner steps run once per item.</p>
+        )}
+
+        {edit && hasPanel && (
+          <aside className="flow-details">
+            {panel === "save" && (
+              <SaveDialog doc={edit.doc} source={edit.source} sourceId={edit.sourceId} busy={saving} error={saveError} onSave={save} onCancel={() => setPanel("node")} />
+            )}
+            {panel === "slots" && <SlotsEditor doc={edit.doc} onChange={change} onClose={() => setPanel("node")} />}
+            {panel === "node" && wire && (
+              <WirePrompt doc={edit.doc} source={wire.source} target={wire.target}
+                onConnect={(key) => { change(connect(edit.doc, wire.source, wire.target, key)); setWire(null); }}
+                onCancel={() => setWire(null)} />
+            )}
+            {panel === "node" && !wire && selectedEdge && (
+              <ConnectionPanel doc={edit.doc} edge={selectedEdge} labelOf={labelOf}
+                onDisconnect={() => { change(disconnect(edit.doc, selectedEdge.source, selectedEdge.target)); setSelectedEdge(null); }}
+                onClose={() => setSelectedEdge(null)} />
+            )}
+            {panel === "node" && !wire && !selectedEdge && selectedId && (
+              <>
+                <button className="link flow-close" onClick={() => select(null)}>close</button>
+                {selectedId.startsWith("in:") && (
+                  <InputForm doc={edit.doc} name={selectedId.slice(3)} onChange={change} onSelect={select}
+                    onRemove={() => { change(mutate(edit.doc, (d) => { delete d.inputs?.[selectedId.slice(3)]; })); select(null); }} />
+                )}
+                {selectedId.startsWith("out:") && (
+                  <OutputForm doc={edit.doc} name={selectedId.slice(4)} onChange={change} onSelect={select}
+                    onRemove={() => { change(mutate(edit.doc, (d) => { delete d.outputs[selectedId.slice(4)]; })); select(null); }} />
+                )}
+                {selectedPath && (
+                  <StepForm doc={edit.doc} files={edit.files} path={selectedPath} tools={tools} onChange={change}
+                    onSelect={(p) => select(`step:${p}`)}
+                    onRemove={() => { change(removeStep(edit.doc, selectedPath)); select(null); }} />
+                )}
+              </>
+            )}
+          </aside>
+        )}
+        {edit && !hasPanel && (
+          <p className="muted flow-hint">Click a step, input, or result to change it. Drag from a handle on one node to another to connect them, or click a line to cut it. Add steps with the menu above. Nothing is saved until you press Save.</p>
         )}
       </div>
     </section>

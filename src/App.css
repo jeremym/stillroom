@@ -211,3 +211,35 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .flow-edge.skipped .react-flow__edge-path, .flow-edge.held .react-flow__edge-path { stroke-dasharray: 6 4; }
 .react-flow__attribution { font-size: 0.6rem; }
 .react-flow__controls button { background: var(--panel); border-bottom: 1px solid var(--line); color: var(--fg); fill: var(--fg); }
+
+/* Flow View: edit mode */
+.flow-panel.editing { border-color: var(--accent); }
+.flow-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; }
+.flow-toolbar-gap { flex: 1; }
+.flow-problems { margin: 0 0 10px; padding-left: 20px; color: var(--bad); font-size: 0.9rem; }
+.flow-problems li { margin: 2px 0; }
+button.danger { border-color: var(--bad); color: var(--bad); }
+.flow-details .field { margin: 10px 0; }
+.flow-details .field label { display: block; }
+.flow-details input[type="text"], .flow-details input[type="number"], .flow-details textarea, .flow-details select {
+  font: inherit; width: 100%; box-sizing: border-box; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--fg); margin: 3px 0;
+}
+.flow-details input.mono, .flow-details textarea.mono { font-family: var(--mono); font-size: 0.85rem; }
+.flow-details .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.flow-details .two label { display: block; }
+.flow-details label.check { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.flow-details label.check input[type="checkbox"] { width: auto; margin: 0; }
+.flow-details .ref-field { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; margin: 0; }
+.flow-details .ref-field select { width: auto; }
+.flow-details .inputs-row { display: grid; grid-template-columns: 110px 12px 1fr; gap: 6px; align-items: center; margin: 6px 0 10px; }
+.flow-details .inputs-row-tools { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+.flow-details .inputs-row-tools .hint { flex: 1; font-size: 0.8rem; }
+.flow-details .inputs-row-tools select { width: auto; margin: 0; }
+.flow-details .inner-steps { padding-left: 20px; margin: 4px 0; }
+.flow-details .caps { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; margin: 6px 0; font-size: 0.9rem; }
+.flow-details .edit-block { margin: 8px 0; }
+.flow-details .danger { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--line); }
+.flow-edge.selected .react-flow__edge-path { stroke: var(--fg); stroke-width: 3; }
+.flow-panel.editing .react-flow__handle { width: 12px; height: 12px; background: var(--accent); cursor: crosshair; }
+.flow-panel.editing .react-flow__edge { cursor: pointer; }

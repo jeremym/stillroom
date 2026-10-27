@@ -177,6 +177,34 @@ impl ToolRegistry {
     pub fn ids(&self) -> Vec<&str> {
         self.tools.keys().map(String::as_str).collect()
     }
+
+    /// Every tool with its description and parameter schema (if it has one), sorted by id.
+    pub fn catalog(&self) -> Vec<ToolInfo> {
+        let mut out: Vec<ToolInfo> = self
+            .tools
+            .values()
+            .map(|t| {
+                let d = t.describe();
+                ToolInfo {
+                    id: t.id().to_string(),
+                    description: d.as_ref().map(|d| d.description.clone()).unwrap_or_default(),
+                    parameters: d.map(|d| d.parameters),
+                    cacheable: t.cacheable(),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+}
+
+/// What the app shows about a tool when a recipe author picks one.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolInfo {
+    pub id: String,
+    pub description: String,
+    pub parameters: Option<Value>,
+    pub cacheable: bool,
 }
 
 /// `file.read`: read a UTF-8 text file. Output `{ path, text, bytes }`.

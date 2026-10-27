@@ -155,6 +155,13 @@ function App() {
           <FlowView
             recipe={recipe} run={flowRun} records={flowRecords} inProgress={running && runRecipe?.id === recipe.id}
             models={models?.models ?? []} pins={pins}
+            onSaved={(saved) => {
+              api.listRecipes().then((r) => {
+                recipesRef.current = r;
+                setRecipes(r);
+                setRecipeId(saved.id);
+              }).catch((e) => setError(String(e)));
+            }}
             onPin={(slot, modelId) => updatePins((p) => {
               const next = { ...p };
               if (modelId) next[slot] = modelId; else delete next[slot];

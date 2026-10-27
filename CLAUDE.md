@@ -1,6 +1,6 @@
 # Stillroom
 
-Goal-first, local-first AI workflow studio. Tauri 2 + React + TypeScript shell over a Rust engine. Read `PLAN.md` before any architectural work; it is the design, not the status.
+Goal-first, local-first AI workflow studio. Tauri 2 + React + TypeScript shell over a Rust engine. Read `PLAN.md` before any architectural work; it is the design, not the status. Read `UI-PLAN.md` before any UI work; it is the five-phase redesign plan.
 
 ## Rules
 

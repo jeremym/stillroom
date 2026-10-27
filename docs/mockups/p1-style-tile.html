@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en" data-theme="green">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stillroom · P1 style tile</title>
+<style>
+/* P1 style tile: tokens, the Dial, step nodes by kind, a field, buttons, the teletype, paper.
+   No network: fonts fall back to whatever monospace is installed. The real kit bundles its own. */
+:root {
+  --ground: #060a07; --ground-2: #0b120d; --bezel: #1a2b1e;
+  --phos: #5cff7a; --phos-dim: #4e9a60; --phos-faint: #244a2e; --phos-fill: #0f2a16;
+  --halo: rgba(92,255,122,.35);
+  --amber: #ffb347; --amber-halo: rgba(255,179,71,.35); --red: #ff5c5c;
+  --paper: #f4f1e6; --ink: #1c1c1e;
+  --display: "VT323", "Glass TTY VT220", "Hack Nerd Font Mono", ui-monospace, Menlo, monospace;
+  --body: "JetBrains Mono", "IBM Plex Mono", "Hack Nerd Font Mono", ui-monospace, Menlo, monospace;
+  --size: 17px;
+}
+:root[data-theme="amber"] { --phos: #ffb347; --phos-dim: #b07a2a; --phos-faint: #4a3414; --phos-fill: #2a1d08; --halo: rgba(255,179,71,.35); --amber: #5cff7a; --amber-halo: rgba(92,255,122,.35); }
+:root[data-theme="paper"] { --ground: #fafaf7; --ground-2: #ffffff; --bezel: #d8d8d2; --phos: #1c3d2c; --phos-dim: #5a6b60; --phos-faint: #c9d3cc; --phos-fill: #e6efe9; --halo: transparent; --amber: #9a5b00; --amber-halo: transparent; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--ground); color: var(--phos); font: var(--size)/1.55 var(--body); padding: 28px 32px 64px; }
+.glow { text-shadow: 0 0 0 currentColor, 0 0 10px var(--halo); }
+.glow-box { box-shadow: 0 0 0 1px var(--phos), 0 0 14px var(--halo); }
+.disp { font-family: var(--display); letter-spacing: .08em; text-transform: uppercase; }
+.dim { color: var(--phos-dim); }
+.faint { color: var(--phos-faint); }
+.amber { color: var(--amber); text-shadow: 0 0 0 currentColor, 0 0 10px var(--amber-halo); }
+.red { color: var(--red); }
+h2 { font: 400 15px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--phos-dim); margin: 44px 0 14px; border-bottom: 1px solid var(--bezel); padding-bottom: 8px; }
+section { max-width: 1180px; }
+
+/* header */
+.top { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.logo { display: flex; align-items: center; gap: 12px; }
+.logo svg { width: 40px; height: 40px; filter: drop-shadow(0 0 6px var(--halo)); }
+.wordmark { font: 400 30px/1 var(--display); letter-spacing: .22em; }
+.themes { margin-left: auto; display: flex; gap: 6px; }
+.themes button { font: 13px var(--display); letter-spacing: .1em; text-transform: uppercase; background: none; border: 1px solid var(--bezel); color: var(--phos-dim); padding: 4px 10px; cursor: pointer; }
+.themes button[aria-pressed="true"] { color: var(--phos); border-color: var(--phos); }
+
+/* dial */
+.dial { position: relative; margin: 28px auto 0; max-width: 980px; height: 64px; overflow: hidden; perspective: 900px; }
+.drum { display: flex; justify-content: center; gap: 0; height: 100%; align-items: center; }
+.drum button { flex: 1; font: 400 22px/1 var(--display); letter-spacing: .14em; text-transform: uppercase; background: none; border: 0; color: var(--phos-faint); padding: 14px 0; cursor: pointer; transform: rotateX(28deg); transform-origin: center bottom; transition: color .25s, transform .4s; }
+.drum button.near { color: var(--phos-dim); transform: rotateX(12deg); }
+.drum button.here { color: var(--phos); text-shadow: 0 0 0 currentColor, 0 0 12px var(--halo); transform: none; }
+.lens { position: absolute; left: 50%; top: 4px; width: 230px; height: 56px; transform: translateX(-50%); border: 1px solid var(--phos); border-radius: 28px; box-shadow: 0 0 0 1px var(--ground), 0 0 16px var(--halo), inset 0 0 18px rgba(92,255,122,.08); pointer-events: none; }
+.lens.needs { border-color: var(--amber); box-shadow: 0 0 16px var(--amber-halo); }
+.lens .arc { position: absolute; inset: -1px; border-radius: 28px; border: 2px solid transparent; border-top-color: var(--phos); border-right-color: var(--phos); clip-path: inset(0 0 50% 0); }
+.crumb { text-align: center; margin: 10px 0 0; font: 400 16px var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--phos-dim); }
+.crumb b { color: var(--phos); font-weight: 400; }
+
+/* swatches */
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.sw { border: 1px solid var(--bezel); padding: 10px; background: var(--ground-2); }
+.sw i { display: block; height: 34px; margin-bottom: 8px; border: 1px solid var(--bezel); }
+.sw small { display: block; font-size: 13px; color: var(--phos-dim); }
+
+/* nodes */
+.lanes { display: grid; grid-template-columns: 200px 1fr 200px; gap: 20px; align-items: start; }
+.lane-head { font: 400 14px var(--display); letter-spacing: .16em; color: var(--phos-dim); text-transform: uppercase; display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.lane { border-left: 1px solid var(--bezel); padding-left: 12px; }
+.lane.out { border-left: 0; border-right: 1px solid var(--bezel); padding-left: 0; padding-right: 12px; }
+.nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.node { background: var(--ground-2); border: 1px solid var(--bezel); padding: 10px 12px; min-height: 98px; display: grid; grid-template-columns: 34px 1fr; gap: 4px 10px; align-content: start; position: relative; }
+.node svg { width: 30px; height: 30px; grid-row: 1 / span 3; margin-top: 2px; }
+.node .kind { font: 400 13px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--phos-dim); }
+.node .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node .sub { font-size: 13.5px; color: var(--phos-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node .status { grid-column: 2; font: 400 13px var(--display); letter-spacing: .12em; text-transform: uppercase; margin-top: 4px; }
+.node.running { border-color: var(--phos); box-shadow: 0 0 0 1px var(--phos), 0 0 14px var(--halo); }
+.node.running svg { animation: pulse 1.6s ease-in-out infinite; }
+.node.done { border-color: var(--phos-dim); }
+.node.needs { border-color: var(--amber); box-shadow: 0 0 12px var(--amber-halo); }
+.node.needs .kind, .node.needs .status { color: var(--amber); }
+.node.cloud .kind { color: var(--amber); }
+.node.io { min-height: 76px; }
+.mark { display: inline-flex; align-items: center; gap: 5px; font: 400 12px var(--display); letter-spacing: .12em; text-transform: uppercase; border: 1px solid currentColor; padding: 1px 6px; margin-top: 3px; }
+.mark svg { width: 13px; height: 13px; grid-row: auto; margin: 0; }
+.mark.local { color: var(--phos-dim); }
+.mark.cloud { color: var(--amber); }
+@keyframes pulse { 0%,100% { filter: drop-shadow(0 0 2px var(--halo)); } 50% { filter: drop-shadow(0 0 9px var(--halo)); } }
+.edge { height: 2px; background: repeating-linear-gradient(90deg, var(--phos) 0 10px, transparent 10px 18px); background-size: 18px 2px; animation: flow 1s linear infinite; margin: 10px 0; }
+@keyframes flow { to { background-position: 18px 0; } }
+.edge.in { background: repeating-linear-gradient(90deg, var(--phos-dim) 0 3px, transparent 3px 9px); animation: none; }
+.edge.solid { background: var(--phos-dim); animation: none; }
+@media (prefers-reduced-motion: reduce) { .node.running svg, .edge { animation: none; } .drum button { transition: none; } }
+
+/* controls */
+.controls { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.field { margin: 0 0 16px; }
+.field label { display: block; font: 400 13px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--phos-dim); margin-bottom: 4px; }
+.field .box { display: flex; align-items: center; gap: 0; border: 1px solid var(--phos-dim); background: var(--ground-2); padding: 8px 10px; font-family: var(--body); }
+.field .box:focus-within { border-color: var(--phos); box-shadow: 0 0 0 1px var(--phos), 0 0 14px var(--halo); }
+.field .box::before { content: "["; color: var(--phos-dim); margin-right: 8px; } .field .box::after { content: "]"; color: var(--phos-dim); margin-left: 8px; }
+.field input { flex: 1; background: none; border: 0; outline: 0; color: var(--phos); font: inherit; caret-color: var(--phos); }
+.cursor { display: inline-block; width: .6em; height: 1.1em; background: var(--phos); vertical-align: -2px; animation: blink 1.1s steps(1) infinite; box-shadow: 0 0 8px var(--halo); }
+@keyframes blink { 50% { opacity: 0; } }
+.picker { width: 100%; text-align: left; background: var(--ground-2); border: 1px solid var(--phos-dim); color: var(--phos); padding: 12px 14px; font: inherit; display: flex; gap: 12px; align-items: center; cursor: pointer; }
+.picker svg { width: 26px; height: 26px; }
+.picker small { display: block; color: var(--phos-dim); font-size: 13px; }
+.btns { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 6px 0 18px; }
+.btn { font: 400 20px/1 var(--display); letter-spacing: .16em; text-transform: uppercase; padding: 12px 26px; cursor: pointer; border: 1px solid var(--phos); background: none; color: var(--phos); }
+.btn.primary { background: var(--phos); color: var(--ground); box-shadow: 0 0 18px var(--halo); }
+.btn.primary:disabled { background: var(--phos-faint); color: var(--phos-dim); box-shadow: none; cursor: default; }
+.btn.amber { border-color: var(--amber); background: var(--amber); color: var(--ground); box-shadow: 0 0 18px var(--amber-halo); }
+.btn.danger:hover { border-color: var(--red); color: var(--red); }
+.toggle { font-family: var(--display); letter-spacing: .12em; cursor: pointer; } .toggle b { font-weight: 400; background: var(--phos); color: var(--ground); padding: 0 6px; } .toggle i { font-style: normal; color: var(--phos-dim); padding: 0 6px; }
+.progress { font-family: var(--display); font-size: 22px; letter-spacing: .05em; }
+.progress span { color: var(--phos-faint); }
+
+/* teletype */
+.tty { background: var(--ground-2); border: 1px solid var(--bezel); padding: 14px 16px; font-size: 15px; line-height: 1.7; }
+.tty .t { color: var(--phos-faint); margin-right: 14px; }
+.tty .in { padding-left: 42px; color: var(--phos-dim); }
+
+/* paper */
+.stack { border: 1px solid var(--bezel); background: var(--ground-2); }
+.tabs { display: flex; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--bezel); }
+.tab { font: 400 14px var(--display); letter-spacing: .12em; text-transform: uppercase; padding: 8px 14px; border: 1px solid var(--bezel); border-bottom: 0; color: var(--phos-dim); display: flex; gap: 8px; align-items: center; background: none; cursor: pointer; }
+.tab svg { width: 16px; height: 16px; }
+.tab.on { color: var(--phos); border-color: var(--phos-dim); background: var(--paper); color: var(--ink); }
+.paper { background: var(--paper); color: var(--ink); padding: 22px 28px; font-family: -apple-system, "Segoe UI", Georgia, serif; font-size: 17px; line-height: 1.6; }
+.paper h3 { margin: 0 0 8px; font-size: 1.3rem; } .paper p { margin: 0 0 8px; }
+.foot { margin-top: 40px; color: var(--phos-faint); font-size: 13px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="g-alembic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10.5 3v5.5L5 19a1.5 1.5 0 0 0 1.3 2h11.4a1.5 1.5 0 0 0 1.3-2L13.5 8.5V3"/><path d="M8 15h8"/><circle cx="12" cy="18" r="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="g-program" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h13l3 3v13H4z"/><path d="M8 4v5h7V4"/><rect x="7" y="14" width="10" height="6"/></symbol>
+    <symbol id="g-ai" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a7 7 0 0 0-7 7c0 2.5 1.2 4 2.5 5.4V20h9v-4.6C17.8 14 19 12.5 19 10a7 7 0 0 0-7-7z"/><path d="M8 11l1.5-2 1.5 4 1.5-5 1.5 4 1.5-2"/></symbol>
+    <symbol id="g-agent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3a7 7 0 0 0-7 7c0 2.5 1.2 4 2.5 5.4V20h7"/><path d="M7 11l1.3-2 1.3 4 1.3-5 1.3 4 1.3-2"/><path d="M15.5 13.5l5 5-1.5 1.5-5-5a3 3 0 0 1-3.5-4l2 2 1.5-1.5-2-2a3 3 0 0 1 4 3.5z"/></symbol>
+    <symbol id="g-foreach" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="13" height="12"/><path d="M6 6h13v12"/><path d="M9 3h12v12"/></symbol>
+    <symbol id="g-hand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V5a1.5 1.5 0 0 1 3 0v6M11 10V4a1.5 1.5 0 0 1 3 0v7M14 10.5V6a1.5 1.5 0 0 1 3 0v8"/><path d="M8 12.5l-2-2a1.6 1.6 0 0 0-2.3 2.2L8 18c1.5 2 3 3 6 3 3.5 0 5.5-2.5 5.5-6v-1"/></symbol>
+    <symbol id="g-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></symbol>
+    <symbol id="g-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h11M10 8l4 4-4 4"/><path d="M17 5h4v14h-4"/></symbol>
+    <symbol id="g-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h10l4 4v9"/><path d="M15 3v4h4"/><path d="M9 9h5M9 13h7M9 17h4"/><path d="M14 20h7M18 17l3 3-3 3"/></symbol>
+    <symbol id="g-house" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9H3z"/></symbol>
+    <symbol id="g-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-.5-8 6 6 0 0 1 11.5 1.5A3.5 3.5 0 0 1 17.5 18z"/><path d="M12 15v-4M10 13l2-2 2 2"/></symbol>
+    <symbol id="g-llama" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21v-6a4 4 0 0 1 4-4h4V5l2-2v8a6 6 0 0 1-2 4v6"/><path d="M14 21v-4"/></symbol>
+    <symbol id="g-notes" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 6h14M5 11h14M5 16h9"/></symbol>
+    <symbol id="g-slides" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="12"/><path d="M12 17v3M8 20h8"/></symbol>
+    <symbol id="g-audio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h2M8 8v8M12 5v14M16 8v8M20 12h0"/></symbol>
+    <symbol id="g-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v8M6.3 7a8 8 0 1 0 11.4 0"/></symbol>
+  </defs>
+</svg>
+
+<section>
+  <div class="top">
+    <div class="logo"><svg><use href="#g-alembic"/></svg><span class="wordmark glow">Stillroom</span></div>
+    <span class="dim">Describe the goal. Get the result. Open the door.</span>
+    <div class="themes" role="group" aria-label="Theme">
+      <button aria-pressed="true" onclick="theme('green',this)">Green</button>
+      <button aria-pressed="false" onclick="theme('amber',this)">Amber</button>
+      <button aria-pressed="false" onclick="theme('paper',this)">Paper</button>
+    </div>
+  </div>
+
+  <div class="dial" role="tablist" aria-label="Places">
+    <div class="drum">
+      <button role="tab">Library</button>
+      <button role="tab" class="near">Set up</button>
+      <button role="tab" class="here" aria-selected="true">Running</button>
+      <button role="tab" class="near">Results</button>
+      <button role="tab">Open the door</button>
+    </div>
+    <div class="lens"><div class="arc"></div></div>
+  </div>
+  <p class="crumb"><b>Learning Kit</b> · chapter-3.pdf · step 3 of 7 · 2 models, both local</p>
+</section>
+
+<section>
+  <h2>Tokens</h2>
+  <div class="swatches">
+    <div class="sw"><i style="background:var(--ground)"></i>ground<small>#060a07 · glass</small></div>
+    <div class="sw"><i style="background:var(--ground-2)"></i>ground-2<small>#0b120d · panel</small></div>
+    <div class="sw"><i style="background:var(--bezel)"></i>bezel<small>#1a2b1e · rules</small></div>
+    <div class="sw"><i style="background:var(--phos)"></i>phos<small>#5cff7a · text, 14:1</small></div>
+    <div class="sw"><i style="background:var(--phos-dim)"></i>phos-dim<small>#4e9a60 · secondary, 5:1</small></div>
+    <div class="sw"><i style="background:var(--phos-faint)"></i>phos-faint<small>#244a2e · disabled</small></div>
+    <div class="sw"><i style="background:var(--amber)"></i>amber<small>#ffb347 · you, cloud</small></div>
+    <div class="sw"><i style="background:var(--red)"></i>red<small>#ff5c5c · failure only</small></div>
+    <div class="sw"><i style="background:var(--paper)"></i>paper<small>#f4f1e6 · results</small></div>
+  </div>
+</section>
+
+<section>
+  <h2>Open the door · step kinds, lanes, marks</h2>
+  <div class="lanes">
+    <div class="lane">
+      <div class="lane-head"><svg width="16" height="16"><use href="#g-in"/></svg> In</div>
+      <div class="node io done"><svg><use href="#g-file"/></svg><div class="kind">Input · file</div><div class="title">Source document</div><div class="sub">chapter-3.pdf</div></div>
+      <div class="edge in"></div>
+    </div>
+    <div>
+      <div class="nodes">
+        <div class="node done"><svg><use href="#g-program"/></svg><div class="kind">Program</div><div class="title">Read the file</div><div class="sub">file.read</div><div class="status dim">done · 12 ms</div></div>
+        <div class="node running"><svg><use href="#g-ai"/></svg><div class="kind">AI step · local</div><div class="title">Extract the spine</div><div class="sub">qwen3:8b <span class="mark local"><svg><use href="#g-llama"/></svg>Ollama</span></div><div class="status glow">running · 41 s</div></div>
+        <div class="node cloud"><svg><use href="#g-ai"/></svg><div class="kind">AI step · cloud</div><div class="title">Write the brief</div><div class="sub">claude-sonnet <span class="mark cloud"><svg><use href="#g-cloud"/></svg>leaves this Mac</span></div><div class="status faint">waiting</div></div>
+        <div class="node"><svg><use href="#g-agent"/></svg><div class="kind">AI agent · local</div><div class="title">File each email</div><div class="sub">tools: fs.list, fs.write</div><div class="status faint">waiting</div></div>
+        <div class="node"><svg><use href="#g-foreach"/></svg><div class="kind">For each</div><div class="title">Each email</div><div class="sub">3 of 7</div><div class="status faint">waiting</div></div>
+        <div class="node needs"><svg><use href="#g-hand"/></svg><div class="kind">Your approval</div><div class="title">Approve the drafts</div><div class="sub">shows subject, reply</div><div class="status">needs you</div></div>
+      </div>
+      <div class="edge"></div>
+      <p class="dim" style="margin:0;font-size:13.5px">Moving dashes carry data into the running step. A program never pulses; an AI step pulses while it thinks. Amber means you, or away from this Mac.</p>
+    </div>
+    <div class="lane out">
+      <div class="lane-head"><svg width="16" height="16"><use href="#g-out"/></svg> Out</div>
+      <div class="node io"><svg><use href="#g-out"/></svg><div class="kind">Result · notes</div><div class="title">Study notes</div><div class="sub">markdown</div><div class="status faint">waiting</div></div>
+      <div class="edge solid"></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Set up · fields and actions</h2>
+  <div class="controls">
+    <div>
+      <div class="field"><label>Goal (what should it make?)</label><div class="box"><input value="Notes and flashcards from chapter 3" aria-label="Goal"><span class="cursor"></span></div></div>
+      <div class="field"><label>Source document</label><button class="picker"><svg><use href="#g-file"/></svg><span>Choose a file…<small>~/Reading/chapter-3.pdf</small></span></button></div>
+      <div class="field"><label>Reuse unchanged steps (selective rerun)</label><span class="toggle"><b>ON</b><i>OFF</i></span></div>
+    </div>
+    <div>
+      <div class="btns"><button class="btn primary"><svg width="18" height="18" style="vertical-align:-3px;margin-right:8px"><use href="#g-power"/></svg>Run</button><button class="btn">Watch this folder…</button><button class="btn danger">Stop</button></div>
+      <div class="btns"><button class="btn primary" disabled>Run · needs a file</button><button class="btn amber">Approve 3 of 4 and continue</button></div>
+      <div class="progress glow">▓▓▓▓▓▓▓<span>░░░░░░░░</span> 3 of 7 · about 2 min left</div>
+      <p class="dim" style="font-size:13.5px">One primary action per screen. A disabled button says why. Progress is block characters.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Running · the teletype (execution trace)</h2>
+  <div class="tty">
+    <div><span class="t">14:02:11</span>▶ Read the file · program · file.read</div>
+    <div><span class="t">14:02:11</span>✓ Read the file · 12 ms</div>
+    <div><span class="t">14:02:11</span>▶ Extract the spine · AI step · qwen3:8b · local</div>
+    <div><span class="t">14:03:20</span>✓ Extract the spine · 69 s · 1.2k → 480 tokens</div>
+    <div><span class="t">14:03:20</span>↻ Write notes · reused from run 8f2c (nothing it depends on changed)</div>
+    <div><span class="t">14:03:21</span>▶ File each email · AI agent · 3 tool calls</div>
+    <div class="in">fs.list  ~/Mail/inbox  (4 ms)</div>
+    <div class="in">fs.write ~/Mail/archive/2026/invoice.eml  (2 ms)</div>
+    <div class="amber"><span class="t">14:03:40</span>■ Approve the drafts · paused · needs you</div>
+    <div class="red"><span class="t">14:04:02</span>✗ Fetch page · https://example.org · timed out after 30 s</div>
+  </div>
+</section>
+
+<section>
+  <h2>Results · the printout stack (paper inside the glass)</h2>
+  <div class="stack">
+    <div class="tabs">
+      <button class="tab on"><svg><use href="#g-notes"/></svg>Notes · ready</button>
+      <button class="tab"><svg><use href="#g-slides"/></svg>Slides · ready</button>
+      <button class="tab"><svg><use href="#g-audio"/></svg>Narration · pending</button>
+    </div>
+    <div class="paper">
+      <h3>Chapter 3: Distillation</h3>
+      <p>Distillation separates a mixture by boiling point. The still heats the wash; the vapour rises into the head, cools in the condenser, and is collected as the distillate.</p>
+      <p><strong>Key idea.</strong> What comes off first is not what comes off last: the cut decides the character.</p>
+    </div>
+  </div>
+</section>
+
+<p class="foot">P1 style tile · fonts shown are whatever monospace is installed; the kit bundles a terminal display face and a legible body mono. Switch themes above; Paper is the high-contrast fallback.</p>
+<script>
+function theme(t, el){ document.documentElement.dataset.theme=t; document.querySelectorAll('.themes button').forEach(b=>b.setAttribute('aria-pressed', b===el)); }
+</script>
+</body>
+</html>

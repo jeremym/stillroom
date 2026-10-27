@@ -105,7 +105,21 @@ export default function SettingsApp() {
   const saveModels = (next: Partial<NonNullable<Settings["models"]>>) => save({ models: { ...settings.models, ...next } });
 
   async function applyUrl() {
-    const u = url.trim().replace(/\/+$/, "") || "http://localhost:11434";
+    let u = url.trim().replace(/\/+$/, "") || "http://localhost:11434";
+    if (!/^https?:\/\//i.test(u)) u = `http://${u}`;
+    // A password in the address would land in plain SQLite. Strip it and point at the key field.
+    try {
+      const parsed = new URL(u);
+      if (parsed.username || parsed.password) {
+        parsed.username = "";
+        parsed.password = "";
+        u = parsed.toString().replace(/\/+$/, "");
+        setError("The address had a user name or password in it. That part was dropped: use the Access key field below, which keeps secrets in the keychain.");
+      }
+    } catch {
+      setError(`That does not look like an address: ${u}`);
+      return;
+    }
     setUrl(u);
     await save({ ollama: { baseUrl: u } });
     refreshModels();

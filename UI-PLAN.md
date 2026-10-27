@@ -4,6 +4,8 @@ Written 2026-10-27. Companion to `PLAN.md` (the product design). This document i
 
 Status and decisions live in the vault at `Stillroom/projects/ui-redesign.md`.
 
+**Approved by Jeremy on 2026-10-27** ("I like everything that you've done here. Let's go for it!"), with one addition: sections need to read as separate zones, so each zone sits on its own ground and consecutive zones alternate between two near-identical greens, and long lists and tables alternate row tint. **Phase 1 shipped the same day**; see section 8.
+
 ---
 
 ## 0. In one screen
@@ -247,7 +249,7 @@ Goal: the app looks like the new thing and is organized into places, with every 
 
 ---
 
-## 5. Decisions this plan proposes (to confirm in the vault)
+## 5. Decisions (confirmed 2026-10-27)
 
 1. **Phosphor green on glass is the brand**, with amber and paper themes built in. Legibility rules in 2.2 are part of the decision.
 2. **Five places, one Dial.** Library, Set up, Running, Results, Open the door. The Dial follows the run by itself.
@@ -256,6 +258,7 @@ Goal: the app looks like the new thing and is organized into places, with every 
 5. **Step kinds have glyphs**: program, AI step, AI agent, for each, your approval, and every AI step carries a LOCAL or CLOUD mark.
 6. **The kit is a product of its own**, built in `src/kit/` with no app imports and extracted in phase 5 for the other apps.
 7. **Fonts bundled, never fetched.** Local-first applies to the UI.
+8. **Zones alternate.** Each section of a place is a zone on its own ground; consecutive zones alternate `--ground-2` and `--ground-3`, and rows in lists and tables alternate a 4 percent tint. Jeremy's addition on approval.
 
 Working name for the kit: **P1** (the green phosphor designation). "Phosphor" alone collides with the Phosphor Icons library.
 
@@ -284,3 +287,18 @@ Working name for the kit: **P1** (the green phosphor designation). "Phosphor" al
 6. Screenshots of all five places; commit.
 
 The style tile at `docs/mockups/p1-style-tile.html` shows the tokens, the Dial, a step node of each kind, a field, a button, and the teletype, so the direction can be judged before any code moves.
+
+---
+
+## 8. Status
+
+### Phase 1: Glass · shipped 2026-10-27
+
+- `src/kit/`: `tokens.css` (three themes, text-size scale), `glow.css`, `kit.css` (zones, fields, buttons, tags, tables, tabs, paper, cards, progress, teletype, the Dial, scrollbars), `Glyph` (33 glyphs with `inputGlyph`, `stepGlyph`, `outputGlyph`), `Logo`, `Dial`, `Zone`/`Empty`, `theme.ts`. No Stillroom imports.
+- Fonts bundled through `@fontsource/vt323` and `@fontsource/jetbrains-mono`; nothing fetched at run time.
+- `App.tsx` is the shell: header with the provider status, the Dial, one place at a time, footer. The Dial turns by itself on RUN, on finish, and when a run needs you; the lens goes amber for a review and shows a progress line while running.
+- Library has recipe cards (with input glyphs and a "needs a model" tag), watches, history, usage, models, and a Look zone (theme, text size, scanlines). Set up is the recipe form with a RUN button that says why it is disabled. Running shows the lit flow and the trace. Results shows the review, the printout stack on paper, and two links to how it was made. Open the door is Flow View with edit mode.
+- Flow nodes carry a glyph per kind and per input or result type, running edges carry moving dashes, a running step's glyph pulses. The Dial chose fixed labels with a sliding lens over a scrolling drum, so all five places stay visible and clickable.
+- Window opens at 1280×840, minimum 1040×700, position and size remembered (`tauri-plugin-window-state`). New app icon from the alembic mark.
+- Verified: `cargo test --workspace` (8 suites), `pnpm test` (16), `tsc`, `pnpm build`, a live Summarize a File run through the UI, screenshots of all five places in `docs/screenshots/phase1-*.png`.
+- Deferred to later phases: Stop (needs a cancel command), teletype log formatting (phase 3), lanes and LOCAL/CLOUD marks (phase 4), Library readiness panel (phase 5).

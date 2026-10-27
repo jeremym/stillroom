@@ -5,6 +5,7 @@ import { api } from "../api";
 import { buildGraph, type FlowNode } from "./graph";
 import { StepDetails } from "./StepDetails";
 import { addStep, connect, disconnect, docToInfo, mutate, removeStep, stepPathOf } from "./draft";
+import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../kit";
 import {
   AddStepSelect, ConnectionPanel, InputForm, OutputForm, PermissionsEditor, SaveDialog, SlotsEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
 } from "./RecipeEditor";
@@ -25,6 +26,8 @@ interface Props {
   onPin: (slot: string, modelId: string | null) => void;
   /** A recipe was saved from the editor; the app should reload its list and show it. */
   onSaved: (recipe: RecipeInfo) => void;
+  /** Offer the editor. Off while watching a run, where the map is for reading. */
+  editable?: boolean;
 }
 
 interface EditState {
@@ -50,8 +53,9 @@ function StepHandles() {
 
 function StepNode({ data, selected }: NodeProps<FlowNode>) {
   return (
-    <div className={`flow-node step ${data.status} ${selected ? "selected" : ""}`}>
+    <div className={`flow-node step kind-${data.kind ?? ""} ${data.status} ${selected ? "selected" : ""}`}>
       <StepHandles />
+      <Glyph name={stepGlyph(data.kind ?? "")} />
       <div className="flow-kind">{data.kindLabel}</div>
       <div className="flow-title">{data.title}</div>
       {data.subtitle && <div className="flow-sub mono">{data.subtitle}</div>}
@@ -65,6 +69,7 @@ function IoNode({ data, selected }: NodeProps<FlowNode>) {
   return (
     <div className={`flow-node io ${data.role} ${data.status} ${selected ? "selected" : ""}`}>
       {data.role === "output" && <Handle type="target" position={Position.Left} id="l" />}
+      <Glyph name={data.role === "input" ? inputGlyph(data.ioType ?? "") : outputGlyph(data.ioType ?? "")} />
       <div className="flow-kind">{data.kindLabel}</div>
       <div className="flow-title">{data.title}</div>
       {data.subtitle && <div className="flow-sub">{data.subtitle}</div>}
@@ -118,7 +123,7 @@ const PAD = 16;
 const nodeTypes: NodeTypes = { step: StepNode, io: IoNode, group: GroupNode };
 const edgeTypes: EdgeTypes = { bus: BusEdge };
 
-export default function FlowView({ recipe, run, records, inProgress, models, pins, onPin, onSaved }: Props) {
+export default function FlowView({ recipe, run, records, inProgress, models, pins, onPin, onSaved, editable = true }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
@@ -278,7 +283,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
         ) : (
           <span className="row" style={{ margin: 0 }}>
             <span className="muted">{recipe.name}{run ? ` · run ${run.id.slice(-8)}` : " · no run yet"}</span>
-            <button onClick={startEditing}>Edit this recipe</button>
+            {editable && <button onClick={startEditing}>Edit this recipe</button>}
           </span>
         )}
       </div>
@@ -331,7 +336,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
             zoomOnDoubleClick={false}
             preventScrolling={false}
             deleteKeyCode={null}
-            colorMode="system"
+            colorMode={document.documentElement.dataset.theme === "paper" ? "light" : "dark"}
             onNodeClick={(_, n) => select(n.id)}
             onEdgeClick={(_, e) => { if (edit) { setSelectedEdge(e); setSelectedId(null); setWire(null); setPanel("node"); } }}
             onPaneClick={() => select(null)}

@@ -25,6 +25,10 @@ export interface FlowNodeData extends Record<string, unknown> {
   stepId?: string;
   inputName?: string;
   outputName?: string;
+  /** The step kind (tool, model, agent, map, review) for the glyph. */
+  kind?: string;
+  /** The input type or output type, for the glyph on an input or result. */
+  ioType?: string;
 }
 
 export type FlowNode = Node<FlowNodeData>;
@@ -226,7 +230,7 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
         id: `in:${name}`, type: "io", position: { x: 0, y: 0 },
         data: {
           role: "input", title: spec.label ?? name, kindLabel: `Input · ${INPUT_TYPE_WORD[spec.type] ?? spec.type}`,
-          subtitle: shown || (spec.required === false ? "optional" : ""), status: "none", statusText: "", inputName: name,
+          subtitle: shown || (spec.required === false ? "optional" : ""), status: "none", statusText: "", inputName: name, ioType: spec.type,
         },
         selected: selectedId === `in:${name}`,
       },
@@ -240,7 +244,7 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
     const { status, text } = summarize(recs, inProgress);
     const base: FlowNodeData = {
       role: "step", title: s.name ?? s.id, kindLabel: KIND_LABEL[s.kind] ?? s.kind, subtitle: stepSubtitle(s, modelFor),
-      status, statusText: text, stepId: s.id,
+      status, statusText: text, stepId: s.id, kind: s.kind,
       condition: s.when ? `only if ${describeRef(s.when, recipe)}` : undefined,
     };
     for (const d of s.dependsOn) if (stepIds.has(d)) edges.push(edge(`step:${d}`, id, status, "b", "t"));
@@ -280,7 +284,7 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
           position: { x: GROUP_PAD + c * (NODE_W + INNER_GAP_X), y: GROUP_HEAD + r * (NODE_H + INNER_GAP_Y) },
           data: {
             role: "step", title: i.name ?? i.id, kindLabel: KIND_LABEL[i.kind] ?? i.kind, subtitle: stepSubtitle(i, modelFor),
-            status: sum.status, statusText: sum.text, stepId: i.id,
+            status: sum.status, statusText: sum.text, stepId: i.id, kind: i.kind,
             condition: i.when ? `only if ${describeRef(i.when, recipe, itemName(s))}` : undefined,
           },
           selected: selectedId === cid,
@@ -321,7 +325,7 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
         data: {
           role: "output", title: spec.label ?? name, kindLabel: `Result · ${spec.type}`,
           subtitle: src ? `from ${findStep(steps, src)?.name ?? src}` : "",
-          status: produced ? "done" : srcStatus === "none" ? "none" : "waiting", statusText: produced ? "ready" : "", outputName: name,
+          status: produced ? "done" : srcStatus === "none" ? "none" : "waiting", statusText: produced ? "ready" : "", outputName: name, ioType: spec.type,
         },
         selected: selectedId === id,
       },

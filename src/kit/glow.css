@@ -1,0 +1,23 @@
+/* Glow: a crisp core plus a soft halo. Never a blur on the glyph itself. */
+.glow { text-shadow: 0 0 0 currentColor, 0 0 10px var(--halo); }
+.glow-soft { text-shadow: 0 0 8px var(--halo-soft); }
+.glow-box { box-shadow: 0 0 0 1px var(--phos), 0 0 14px var(--halo); }
+.glow-amber { color: var(--amber); text-shadow: 0 0 0 currentColor, 0 0 10px var(--amber-halo); }
+.glow-svg { filter: drop-shadow(0 0 5px var(--halo)); }
+
+@keyframes p1-pulse { 0%, 100% { filter: drop-shadow(0 0 1px var(--halo)); } 50% { filter: drop-shadow(0 0 8px var(--halo)); } }
+@keyframes p1-blink { 50% { opacity: 0; } }
+@keyframes p1-flow { to { stroke-dashoffset: -18; } }
+.pulse { animation: p1-pulse 1.6s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse, .blink { animation: none !important; }
+  * { transition-duration: 0ms !important; }
+}
+
+/* Scanlines: off unless asked for, and faint when on. */
+:root[data-scanlines="on"] body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 3px);
+  opacity: 0.35;
+}

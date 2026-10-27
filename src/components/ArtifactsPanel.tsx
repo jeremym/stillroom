@@ -102,18 +102,18 @@ function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
       </div>
       {spec?.description && <p className="muted">{spec.description}</p>}
       {editing && stepId ? (
-        <ArtifactEditor
+        <div className="paper"><ArtifactEditor
           kind={kind}
           value={value}
           dependents={dependents}
           busy={busy}
           onCancel={() => setEditing(false)}
           onSave={(output) => { setEditing(false); onEdit?.(stepId, output); }}
-        />
+        /></div>
       ) : value == null ? (
         <p className="muted">Not produced yet. This comes after the review above.</p>
       ) : (
-        pickViewer({ kind, value, onSvg: setSvg })
+        <div className="paper">{pickViewer({ kind, value, onSvg: setSvg })}</div>
       )}
     </section>
   );

@@ -152,7 +152,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       </label>
       <button className="primary" disabled={running || missing.length > 0 || unfillable.length > 0}
         onClick={() => onRun(recipe, inputs, pins, reuse)}>
-        {running ? "Running…" : "Run"}
+        {running ? "Running…" : missing.length > 0 ? `Run · needs ${missing.map((k) => recipe.inputs[k]?.label ?? k).join(", ")}` : unfillable.length > 0 ? `Run · no model for ${unfillable.map(([s]) => s).join(", ")}` : "Run"}
       </button>
       {folderInputs.length > 0 && (
         <>
@@ -168,9 +168,8 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
           )}
         </>
       )}
-      {missing.length > 0 && <span className="muted"> needs: {missing.join(", ")}</span>}
       {unfillable.length > 0 && (
-        <span className="muted"> no installed model can fill: {unfillable.map(([s]) => s).join(", ")}</span>
+        <p className="muted">No installed model has what {unfillable.map(([s]) => s).join(", ")} needs. Pull one in Ollama, then refresh Models in the Library.</p>
       )}
       {folderInputs.length > 0 && missing.length === 0 && (
         <p className="muted">

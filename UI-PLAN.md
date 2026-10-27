@@ -343,3 +343,15 @@ Jeremy's feedback after seeing phase 1, and what it changes. The reading copy wi
 - **Folders** (paths, Show my recipes folder), **Watches** (all watches, Pause all, Resume all), **Privacy** (the rule in plain words, which recipes declare network access), **About** (shortcuts, "Show the welcome on next launch" sets `firstRun`).
 - Verified: `cargo test --workspace` (51, one new for the default order), `pnpm test` (23, one new for the progress bar), `tsc`, `pnpm build`. Not yet by eye: the Settings window, a pull, and a changed address need the screen.
 - **Round 3 additions (same day):** "Open the door" renamed **Recipe card** in the app; the Settings sidebar collapses to icons (a toggle, remembered, collapsed by default under 820 px); an optional **access key** for a remote Ollama behind a proxy, kept in the macOS keychain through the `keyring` crate (`set_secret`, `has_secret`; the value never returns to the webview) and sent as `Authorization: Bearer …` by the adapter; a configuration audit requested into the vault (`Stillroom/references/configuration-audit.md`).
+
+### Phase 4: Power on · scope agreed 2026-10-27
+
+The first-run wizard plus the audit items Jeremy pulled forward (see the vault's `references/configuration-audit.md`):
+
+1. **Wizard** on first launch (`firstRun` absent or true; written false when done; "Show the welcome on next launch" in Settings › About redoes it): boot screen, Ollama reachable (address, and the access key for a remote one), at least one chat model installed with an in-app pull, preference (accuracy or speed) and an optional default text model, pick a starter recipe, pick a file, see what will happen, RUN, then Results with one pointer to the Recipe card. Cloud, folders, permissions, and watches are mentioned, not configured.
+2. **Stop** (a cancel command and token in the executor) together with a **model-call timeout** in Settings › Defaults, so a hung remote call ends. The 2 s reachability probe becomes configurable or longer so a slow proxy is not reported as "not running".
+3. **Default context length and thinking** in Settings › Defaults, applied when a recipe step says nothing.
+4. **Set up shows the real Auto pick**: the slot row names the model the resolver would choose right now and why (pin, your default, recommendation, best by preference), not the recipe's hint.
+5. **The teletype** in Running (the trace as a live typed log) as planned in 3.3.
+
+Left for later, by agreement: map concurrency and the schema-only permissions and budget (5), watch settle time and frozen inputs (7), movable folders and retention (8).

@@ -3,6 +3,7 @@
 //! Runs are stored as a JSON document plus a few indexed columns for listing.
 //! Proper per-step and per-artifact tables arrive with Flow Studio.
 
+use crate::cache::{CachedStep, StepCache};
 use crate::trace::{Run, RunStatus, RunSummary};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
@@ -17,6 +18,19 @@ pub enum StoreError {
 
 pub struct Store {
     conn: Connection,
+}
+
+/// A store behind a mutex can serve as the executor's step cache (`Arc<Mutex<Store>>`
+/// coerces to `Arc<dyn StepCache>`).
+impl StepCache for std::sync::Mutex<Store> {
+    fn get(&self, key: &str) -> Option<CachedStep> {
+        self.lock().ok()?.cache_get(key).ok().flatten()
+    }
+    fn put(&self, key: &str, entry: &CachedStep) {
+        if let Ok(s) = self.lock() {
+            let _ = s.cache_put(key, entry);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -66,6 +80,14 @@ impl Store {
                 json          TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS runs_started_at ON runs(started_at DESC);
+            CREATE TABLE IF NOT EXISTS step_cache (
+                key        TEXT PRIMARY KEY,
+                run_id     TEXT NOT NULL,
+                step_id    TEXT NOT NULL,
+                model      TEXT,
+                output     TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             "#,
         )?;
         Ok(())
@@ -152,6 +174,41 @@ impl Store {
             avg_completion_tokens: sum(&|r| r.steps.iter().filter_map(|s| s.completion_tokens).sum()),
             avg_duration_ms: sum(&|r| r.steps.iter().filter_map(|s| s.duration_ms).sum()),
         }))
+    }
+
+    pub fn cache_get(&self, key: &str) -> Result<Option<CachedStep>, StoreError> {
+        let row: Option<(String, String, Option<String>, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT run_id, step_id, model, output, created_at FROM step_cache WHERE key = ?1",
+                params![key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            None => None,
+            Some((run_id, step_id, model, output, created_at)) => Some(CachedStep {
+                run_id,
+                step_id,
+                model,
+                output: serde_json::from_str(&output)?,
+                created_at: created_at.parse().unwrap_or_else(|_| chrono::Utc::now()),
+            }),
+        })
+    }
+
+    pub fn cache_put(&self, key: &str, e: &CachedStep) -> Result<(), StoreError> {
+        self.conn.execute(
+            r#"INSERT INTO step_cache (key, run_id, step_id, model, output, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+               ON CONFLICT(key) DO UPDATE SET run_id = excluded.run_id, step_id = excluded.step_id, model = excluded.model,
+                 output = excluded.output, created_at = excluded.created_at"#,
+            params![key, e.run_id, e.step_id, e.model, serde_json::to_string(&e.output)?, e.created_at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub fn cache_clear(&self) -> Result<usize, StoreError> {
+        Ok(self.conn.execute("DELETE FROM step_cache", [])?)
     }
 
     pub fn count_by_status(&self, status: RunStatus) -> Result<i64, StoreError> {

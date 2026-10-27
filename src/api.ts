@@ -5,8 +5,9 @@ export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
   listModels: () => invoke<ModelsResponse>("list_models"),
   listRecipes: () => invoke<RecipesResponse>("list_recipes"),
-  runRecipe: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>) =>
-    invoke<Run>("run_recipe", { args: { recipeId, inputs, pins } }),
+  runRecipe: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>, reuse = true) =>
+    invoke<Run>("run_recipe", { args: { recipeId, inputs, pins, reuse } }),
+  clearStepCache: () => invoke<number>("clear_step_cache"),
   listRuns: (limit = 20) => invoke<RunSummary[]>("list_runs", { limit }),
   getRun: (id: string) => invoke<Run | null>("get_run", { id }),
   usage: () => invoke<ModelUsage[]>("usage"),

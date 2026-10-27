@@ -66,14 +66,14 @@ function App() {
     };
   }, [refreshModels, refreshRuns, openRun]);
 
-  async function startRun(recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>) {
+  async function startRun(recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, reuse: boolean) {
     setRunning(true);
     setError(null);
     setRun(null);
     setRunRecipe(recipe);
     setLiveSteps([]);
     try {
-      setRun(await api.runRecipe(recipe.id, inputs, pins));
+      setRun(await api.runRecipe(recipe.id, inputs, pins, reuse));
       refreshRuns();
     } catch (e) {
       setError(String(e));

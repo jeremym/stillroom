@@ -141,7 +141,7 @@ impl RecipeBundle {
     }
 
     pub fn request(&self, inputs: IndexMap<String, Value>, resolutions: BTreeMap<String, Resolution>) -> RunRequest {
-        RunRequest { recipe: self.recipe.clone(), prompts: self.prompts.clone(), inputs, resolutions, artifact_base: None }
+        RunRequest { recipe: self.recipe.clone(), prompts: self.prompts.clone(), inputs, resolutions, artifact_base: None, reuse: true }
     }
 }
 

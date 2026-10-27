@@ -7,7 +7,7 @@ interface Props {
   recipes: RecipeInfo[];
   models: InstalledModel[];
   running: boolean;
-  onRun: (recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>) => void;
+  onRun: (recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, reuse: boolean) => void;
 }
 
 function pinKey(id: string) {
@@ -67,6 +67,7 @@ export function RecipePanel({ recipes, models, running, onRun }: Props) {
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [pins, setPins] = useState<Record<string, string>>({});
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
+  const [reuse, setReuse] = useState(true);
 
   useEffect(() => {
     if (!recipe) return;
@@ -147,8 +148,12 @@ export function RecipePanel({ recipes, models, running, onRun }: Props) {
           : " · no previous runs to estimate from"}
       </p>
 
+      <label className="row" style={{ margin: "6px 0" }}>
+        <input type="checkbox" checked={reuse} onChange={(e) => setReuse(e.target.checked)} />
+        <span>Reuse unchanged steps <span className="muted">(selective rerun: a step runs again only if its inputs, prompt, or model changed)</span></span>
+      </label>
       <button className="primary" disabled={running || missing.length > 0 || unfillable.length > 0}
-        onClick={() => onRun(recipe, inputs, pins)}>
+        onClick={() => onRun(recipe, inputs, pins, reuse)}>
         {running ? "Running…" : "Run"}
       </button>
       {missing.length > 0 && <span className="muted"> needs: {missing.join(", ")}</span>}

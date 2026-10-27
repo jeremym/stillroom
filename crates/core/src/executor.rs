@@ -3,6 +3,7 @@
 
 use indexmap::IndexMap;
 
+use crate::cache::{fingerprint, CachedStep, StepCache};
 use crate::model::{ChatMessage, ChatRequest, ModelClient};
 use crate::recipe::{Recipe, Step};
 use crate::refs::{self, Context};
@@ -47,6 +48,8 @@ pub struct RunRequest {
     /// Base directory for artifact files; the run gets a subdirectory named by its id.
     /// Defaults to the OS temp dir.
     pub artifact_base: Option<std::path::PathBuf>,
+    /// Reuse outputs of unchanged steps from earlier runs when a cache is attached.
+    pub reuse: bool,
 }
 
 /// Called after each step record changes, so a UI can show live progress.
@@ -55,11 +58,43 @@ pub type StepObserver = Arc<dyn Fn(&StepRecord) + Send + Sync>;
 pub struct Executor {
     pub tools: Arc<ToolRegistry>,
     pub models: Arc<dyn ModelClient>,
+    pub cache: Option<Arc<dyn StepCache>>,
 }
 
 impl Executor {
     pub fn new(tools: Arc<ToolRegistry>, models: Arc<dyn ModelClient>) -> Self {
-        Self { tools, models }
+        Self { tools, models, cache: None }
+    }
+
+    pub fn with_cache(mut self, cache: Arc<dyn StepCache>) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// Everything that determines a step's output: its definition, the resolved inputs,
+    /// and for model steps the model id and the prompt text.
+    fn cache_key(&self, req: &RunRequest, step: &Step, inputs: &Value) -> Option<String> {
+        let def = serde_json::to_string(step).ok()?;
+        let inputs = serde_json::to_string(inputs).ok()?;
+        let (model, prompt) = match step {
+            Step::Model(m) => (
+                req.resolutions.get(&m.slot).map(|r| r.model_id.clone()).unwrap_or_default(),
+                req.prompts.get(&m.prompt).cloned().unwrap_or_default(),
+            ),
+            _ => (String::new(), String::new()),
+        };
+        Some(fingerprint(&[&req.recipe.id, step.id(), &def, &inputs, &model, &prompt]))
+    }
+
+    fn reusable(&self, req: &RunRequest, step: &Step) -> bool {
+        if !req.reuse || self.cache.is_none() {
+            return false;
+        }
+        match step {
+            Step::Tool(t) => t.checkpoint && self.tools.get(&t.tool).is_some_and(|tool| tool.cacheable()),
+            Step::Model(m) => m.checkpoint,
+            _ => false,
+        }
     }
 
     /// Topological order from data references plus explicit `dependsOn`.
@@ -153,18 +188,61 @@ impl Executor {
                 inputs: Value::Null,
                 output: None,
                 error: None,
+                reused_from: None,
             };
             if let Some(o) = &observe {
                 o(&rec);
             }
 
-            let result = self.run_step(step, req, &tool_ctx, &mut rec, &outputs).await;
+            // Resolve inputs up front so the cache key can see them.
+            let ctx = Context { inputs: &req.inputs, step_outputs: &outputs };
+            let raw = Value::Object(step.inputs().clone().into_iter().collect());
+            let resolved = refs::resolve_value(&raw, &ctx).map_err(|source| ExecError::Ref { step: step.id().into(), source });
+            let mut cache_key = None;
+            let result = match resolved {
+                Err(e) => Err(e),
+                Ok(inputs) => {
+                    rec.inputs = inputs.clone();
+                    let key = self.cache_key(req, step, &inputs);
+                    let hit = if self.reusable(req, step) {
+                        key.as_deref().and_then(|k| self.cache.as_ref()?.get(k))
+                    } else {
+                        None
+                    };
+                    match hit {
+                        Some(cached) => {
+                            rec.reused_from = Some(cached.run_id.clone());
+                            rec.model = cached.model.clone();
+                            if let Step::Model(m) = step {
+                                rec.prompt_path = Some(m.prompt.clone());
+                            }
+                            Ok(cached.output)
+                        }
+                        None => {
+                            cache_key = key;
+                            self.run_step(step, req, &tool_ctx, &mut rec, &inputs).await
+                        }
+                    }
+                }
+            };
             let now = Utc::now();
             rec.finished_at = Some(now);
             rec.duration_ms = rec.started_at.map(|s| (now - s).num_milliseconds().max(0) as u64);
             match result {
                 Ok(out) => {
                     rec.status = StepStatus::Succeeded;
+                    if let (Some(cache), Some(key), true) = (&self.cache, cache_key.as_deref(), self.reusable(req, step)) {
+                        cache.put(
+                            key,
+                            &CachedStep {
+                                run_id: run_id.clone(),
+                                step_id: step.id().to_string(),
+                                model: rec.model.clone(),
+                                output: out.clone(),
+                                created_at: now,
+                            },
+                        );
+                    }
                     outputs.insert(step.id().to_string(), out.clone());
                     rec.output = Some(out);
                     if let Some(o) = &observe {
@@ -204,13 +282,9 @@ impl Executor {
         req: &RunRequest,
         tool_ctx: &ToolContext,
         rec: &mut StepRecord,
-        outputs: &HashMap<String, Value>,
+        inputs: &Value,
     ) -> Result<Value, ExecError> {
-        let ctx = Context { inputs: &req.inputs, step_outputs: outputs };
-        let raw = Value::Object(step.inputs().clone().into_iter().collect());
-        let inputs = refs::resolve_value(&raw, &ctx).map_err(|source| ExecError::Ref { step: step.id().into(), source })?;
-        rec.inputs = inputs.clone();
-
+        let inputs = inputs.clone();
         match step {
             Step::Tool(t) => {
                 let tool = self
@@ -347,6 +421,7 @@ mod tests {
                 Resolution { slot: "writer".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability },
             )]),
             artifact_base: Some(dir.clone()),
+            reuse: true,
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
         let run = exec.run(req, None).await;
@@ -356,6 +431,42 @@ mod tests {
         assert_eq!(run.steps[1].model.as_deref(), Some("test:echo"));
         assert_eq!(run.outputs["summary"], Value::String("[test:echo] hello world".into()));
         assert_eq!(run.summary().prompt_tokens, 10);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn second_run_reuses_unchanged_model_steps() {
+        use crate::cache::MemoryCache;
+        let yaml = include_str!("../../../recipes/summarize-file/recipe.yaml");
+        let prompt = include_str!("../../../recipes/summarize-file/prompts/summarize.md");
+        let dir = std::env::temp_dir().join(format!("stillroom-reuse-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, "same text").unwrap();
+        let make = || RunRequest {
+            recipe: Recipe::from_yaml(yaml).unwrap(),
+            prompts: HashMap::from([("prompts/summarize.md".to_string(), prompt.to_string())]),
+            inputs: IndexMap::from([("file".to_string(), Value::String(file.to_string_lossy().into()))]),
+            resolutions: BTreeMap::from([(
+                "writer".to_string(),
+                Resolution { slot: "writer".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability },
+            )]),
+            artifact_base: Some(dir.clone()),
+            reuse: true,
+        };
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel)).with_cache(Arc::new(MemoryCache::default()));
+        let first = exec.run(make(), None).await;
+        assert!(first.steps.iter().all(|s| s.reused_from.is_none()));
+        let second = exec.run(make(), None).await;
+        assert_eq!(second.status, RunStatus::Succeeded);
+        assert!(second.steps[0].reused_from.is_none(), "file.read is not cacheable");
+        assert_eq!(second.steps[1].reused_from.as_deref(), Some(first.id.as_str()), "summarize reused");
+        assert_eq!(second.outputs["summary"], first.outputs["summary"]);
+        // A changed prompt invalidates the model step.
+        let mut changed = make();
+        changed.prompts.insert("prompts/summarize.md".into(), "different prompt".into());
+        let third = exec.run(changed, None).await;
+        assert!(third.steps[1].reused_from.is_none());
         std::fs::remove_dir_all(dir).ok();
     }
 

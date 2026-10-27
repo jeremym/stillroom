@@ -33,6 +33,11 @@ impl ToolContext {
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn id(&self) -> &str;
+    /// Whether an output may be reused when the inputs are unchanged. Tools that read
+    /// external state the inputs do not capture (a file's contents) say no.
+    fn cacheable(&self) -> bool {
+        true
+    }
     async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError>;
 }
 
@@ -83,6 +88,10 @@ impl Default for FileRead {
 impl Tool for FileRead {
     fn id(&self) -> &str {
         "file.read"
+    }
+
+    fn cacheable(&self) -> bool {
+        false
     }
 
     async fn call(&self, _ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {

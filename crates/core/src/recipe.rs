@@ -170,6 +170,13 @@ pub struct ToolStep {
     pub output_schema: Option<Value>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// If false, this step is never reused from a previous run.
+    #[serde(default = "default_true")]
+    pub checkpoint: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Deterministic model call: one prompt, one response, no tool use.
@@ -191,6 +198,9 @@ pub struct ModelStep {
     pub params: Option<ModelParams>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// If false, this step is never reused from a previous run.
+    #[serde(default = "default_true")]
+    pub checkpoint: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

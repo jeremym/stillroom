@@ -69,6 +69,7 @@ steps:
     inputs:
       spine: ${steps.extract.output}
     params:
+      think: false
       temperature: 0.3
       contextLength: 16384
 
@@ -81,6 +82,7 @@ steps:
       spine: ${steps.extract.output}
     outputSchema: schemas/flashcards.json
     params:
+      think: false
       temperature: 0.3
       contextLength: 16384
 
@@ -93,6 +95,7 @@ steps:
       notes: ${steps.notes.output}
     outputSchema: schemas/script.json
     params:
+      think: false
       temperature: 0.3
       contextLength: 16384
 
@@ -114,6 +117,7 @@ steps:
       spine: ${steps.extract.output}
     outputSchema: schemas/slides.json
     params:
+      think: false
       temperature: 0.3
       contextLength: 16384
 
@@ -134,6 +138,7 @@ steps:
       spine: ${steps.extract.output}
     outputSchema: schemas/diagram.json
     params:
+      think: false
       temperature: 0.2
       contextLength: 16384
 

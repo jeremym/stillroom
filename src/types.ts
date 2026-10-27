@@ -50,6 +50,7 @@ export interface StepRecord {
   inputs: unknown;
   output: unknown;
   error: string | null;
+  reusedFrom?: string | null;
 }
 
 export interface Run {

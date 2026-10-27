@@ -14,7 +14,7 @@ use stillroom_models::{InstalledModel, ModelRouter, ProviderStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
     router: Arc<ModelRouter>,
     tools: Arc<ToolRegistry>,
     library: RecipeLibrary,
@@ -101,6 +101,13 @@ struct RunArgs {
     inputs: indexmap::IndexMap<String, Value>,
     #[serde(default)]
     pins: BTreeMap<String, String>,
+    /// Reuse outputs of unchanged steps from earlier runs (selective rerun). Default true.
+    #[serde(default = "default_true")]
+    reuse: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[tauri::command]
@@ -119,9 +126,10 @@ async fn run_recipe(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -
             let _ = app.emit("run:step", rec.clone());
         })
     };
-    let executor = Executor::new(state.tools.clone(), router);
+    let executor = Executor::new(state.tools.clone(), router).with_cache(state.store.clone());
     let mut request = bundle.request(args.inputs, resolutions);
     request.artifact_base = Some(state.artifacts_dir.clone());
+    request.reuse = args.reuse;
     let run = executor.run(request, Some(observer)).await;
 
     state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
@@ -163,6 +171,12 @@ fn write_binary_file(path: String, data_base64: String) -> CmdResult<()> {
     std::fs::write(&path, bytes).map_err(|e| format!("{path}: {e}"))
 }
 
+/// Forget every cached step output, so the next run recomputes everything.
+#[tauri::command]
+fn clear_step_cache(state: State<'_, AppState>) -> CmdResult<usize> {
+    state.store.lock().map_err(err)?.cache_clear().map_err(err)
+}
+
 /// Copy an artifact file (e.g. audio) to a path the user chose in a save dialog.
 #[tauri::command]
 fn copy_file(src: String, dst: String) -> CmdResult<()> {
@@ -197,7 +211,7 @@ pub fn run() {
                 (user_recipes, RecipeSource::User),
             ]);
             app.manage(AppState {
-                store: Mutex::new(store),
+                store: Arc::new(Mutex::new(store)),
                 router,
                 tools: Arc::new(ToolRegistry::builtin()),
                 library,
@@ -217,7 +231,8 @@ pub fn run() {
             estimate,
             write_text_file,
             write_binary_file,
-            copy_file
+            copy_file,
+            clear_step_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

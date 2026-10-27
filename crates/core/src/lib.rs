@@ -4,6 +4,7 @@
 //! Providers implement [`model::ModelClient`]; tools implement [`tools::Tool`].
 
 pub mod bundle;
+pub mod cache;
 pub mod executor;
 pub mod library;
 pub mod model;
@@ -15,6 +16,7 @@ pub mod tools;
 pub mod trace;
 
 pub use bundle::{RecipeBundle, RecipeInfo, RecipeSource};
+pub use cache::{CachedStep, MemoryCache, StepCache};
 pub use executor::{Executor, RunRequest};
 pub use library::RecipeLibrary;
 pub use model::{ChatMessage, ChatRequest, ChatResponse, InstalledModel, ModelClient, ModelError};

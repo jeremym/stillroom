@@ -45,6 +45,9 @@ pub struct StepRecord {
     pub inputs: Value,
     pub output: Option<Value>,
     pub error: Option<String>,
+    /// Set when the output was reused from an earlier run instead of recomputed.
+    #[serde(default)]
+    pub reused_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

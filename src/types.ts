@@ -333,3 +333,8 @@ export interface PullEvent {
   done: boolean;
   error: string | null;
 }
+
+export interface ResolutionPreview {
+  resolutions: Record<string, { slot: string; modelId: string; via: "pinned" | "default" | "recommended" | "capability" }>;
+  problems: Record<string, string>;
+}

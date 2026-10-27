@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Draft, DraftResponse, ModelsResponse, ModelUsage, RecipesResponse, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
+import type { Draft, DraftResponse, ModelsResponse, ModelUsage, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -10,6 +10,8 @@ export const api = {
   /** Download a model through Ollama; progress arrives as `model:pull` events. */
   pullModel: (name: string) => invoke<void>("pull_model", { name }),
   openSettings: () => invoke<void>("open_settings"),
+  /** What each slot would get if the recipe ran now. Nothing runs. */
+  previewResolution: (recipeId: string, pins: Record<string, string>) => invoke<ResolutionPreview>("preview_resolution", { args: { recipeId, pins } }),
   /** Stop the run in flight. True if there was one. */
   stopRun: () => invoke<boolean>("stop_run"),
   /** Secrets live in the OS keychain. An empty value clears. The value never comes back. */

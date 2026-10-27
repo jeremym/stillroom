@@ -2,7 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, fmtMs, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
-import type { InputSpec, InstalledModel, RecipeInfo, RunEstimate, StepInfo } from "../types";
+import type { InputSpec, InstalledModel, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
+import { Glyph } from "../kit";
+
+const VIA_WORD: Record<string, string> = {
+  pinned: "your pin on this slot",
+  default: "your default for this capability (Settings › Models)",
+  recommended: "the recipe's recommendation",
+  capability: "the best installed model for the slot's preference",
+};
 
 function stepLabel(s: StepInfo): string {
   const name = s.name ?? s.id;
@@ -72,6 +80,7 @@ function InputField({
 export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch }: Props) {
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
+  const [preview, setPreview] = useState<ResolutionPreview | null>(null);
   const [reuse, setReuse] = useState(true);
   const folderInputs = Object.entries(recipe.inputs).filter(([, spec]) => spec.type === "directory").map(([k]) => k);
   const [watchInput, setWatchInput] = useState<string>("");
@@ -81,6 +90,13 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
     setWatchInput(folderInputs[0] ?? "");
     api.estimate(recipe.id).then(setEstimate).catch(() => setEstimate(null));
   }, [recipe.id]);
+
+  // What Auto would really pick, right now, with these pins and the user's defaults.
+  useEffect(() => {
+    let live = true;
+    api.previewResolution(recipe.id, pins).then((p) => { if (live) setPreview(p); }).catch(() => { if (live) setPreview(null); });
+    return () => { live = false; };
+  }, [recipe.id, pins, models]);
 
   // ⌘R from the menu: run if everything is in place.
   const runRef = useRef<() => void>(() => {});
@@ -121,6 +137,10 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       <h3>Models for this run <span className="muted">(model slots)</span></h3>
       {Object.entries(recipe.modelSlots).map(([slot, spec]) => {
         const candidates = slotCandidates(spec.requires);
+        const picked = preview?.resolutions[slot];
+        const problem = preview?.problems[slot];
+        const pickedName = picked ? (models.find((m) => m.id === picked.modelId)?.name ?? picked.modelId) : null;
+        const via = picked ? VIA_WORD[picked.via] ?? picked.via : "";
         return (
           <div className="field" key={slot}>
             <label>
@@ -138,11 +158,16 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
                 });
               }}
             >
-              <option value="">Auto (prefer {spec.preference ?? "accuracy"}{spec.recommended ? `, recommended ${spec.recommended}` : ""})</option>
+              <option value="">{pickedName && !pins[slot] ? `Auto · ${pickedName}` : "Auto"}</option>
               {candidates.map((m) => (
                 <option key={m.id} value={m.id}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ""}</option>
               ))}
             </select>
+            <p className="muted slot-pick">
+              {problem ? <span className="amber"><Glyph name="warning" /> {problem}</span>
+                : picked ? <><Glyph name="ai" /> Will use <span className="mono">{pickedName}</span> <span className="tag">local</span> · {via}</>
+                : preview ? "no model yet" : "…"}
+            </p>
           </div>
         );
       })}

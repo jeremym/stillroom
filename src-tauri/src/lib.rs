@@ -229,6 +229,48 @@ async fn list_models(state: State<'_, AppState>) -> CmdResult<ModelsResponse> {
     Ok(ModelsResponse { providers: router.statuses().await, models: router.list_all().await })
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewArgs {
+    recipe_id: String,
+    #[serde(default)]
+    pins: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolutionPreview {
+    /// Slot → what a run started now would use.
+    resolutions: BTreeMap<String, stillroom_core::Resolution>,
+    /// Slot → why it cannot be filled.
+    problems: BTreeMap<String, String>,
+}
+
+/// What each slot would get if the recipe ran right now, with these pins, the user's defaults,
+/// and the models installed at this moment. Nothing runs.
+#[tauri::command]
+async fn preview_resolution(state: State<'_, AppState>, args: PreviewArgs) -> CmdResult<ResolutionPreview> {
+    let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    let installed = state.router().list_all().await;
+    let defaults = state.resolve_defaults();
+    let mut out = ResolutionPreview { resolutions: BTreeMap::new(), problems: BTreeMap::new() };
+    for (name, slot) in &bundle.recipe.model_slots {
+        let mut one = bundle.recipe.clone();
+        one.model_slots = [(name.clone(), slot.clone())].into_iter().collect();
+        match resolve_slots_with(&one, &installed, &args.pins, &defaults) {
+            Ok(mut r) => {
+                if let Some(res) = r.remove(name) {
+                    out.resolutions.insert(name.clone(), res);
+                }
+            }
+            Err(e) => {
+                out.problems.insert(name.clone(), e.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Stop the run in flight. Returns whether there was one.
 #[tauri::command]
 fn stop_run(state: State<'_, AppState>) -> CmdResult<bool> {
@@ -763,6 +805,7 @@ pub fn run() {
             runtime_status,
             list_models,
             stop_run,
+            preview_resolution,
             get_settings,
             set_settings,
             pull_model,

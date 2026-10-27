@@ -93,12 +93,12 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
     <section className="panel">
       <div className="row space">
         <h2 style={{ margin: 0 }}>
-          <select value={recipe.id} onChange={(e) => onSelect(e.target.value)} className="title-select">
+          <span className="muted" style={{ marginRight: 10 }}>Recipe:</span>
+          <select value={recipe.id} onChange={(e) => onSelect(e.target.value)} className="title-select" aria-label="Recipe">
             {recipes.map((r) => (
               <option key={r.id} value={r.id}>{r.name}</option>
             ))}
           </select>
-          <span className="muted"> (recipe)</span>
         </h2>
         <span className="muted mono">{recipe.source} · v{recipe.version ?? "0"}</span>
       </div>

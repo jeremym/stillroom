@@ -29,6 +29,8 @@ export interface FlowNodeData extends Record<string, unknown> {
   kind?: string;
   /** The input type or output type, for the glyph on an input or result. */
   ioType?: string;
+  /** When the step started, for a live timer while it runs. */
+  startedAt?: string | null;
 }
 
 export type FlowNode = Node<FlowNodeData>;
@@ -144,15 +146,16 @@ export function recordStatus(r: StepRecord): NodeStatus {
 const PRIORITY: NodeStatus[] = ["running", "failed", "needs_you", "held", "waiting", "done", "edited", "reused", "skipped", "none"];
 
 /** One status and one line of text for a node, from however many records it has. */
-export function summarize(records: StepRecord[], inProgress: boolean): { status: NodeStatus; text: string } {
+export function summarize(records: StepRecord[], inProgress: boolean): { status: NodeStatus; text: string; startedAt?: string | null } {
   if (records.length === 0) return inProgress ? { status: "waiting", text: "waiting" } : { status: "none", text: "" };
   if (records.length === 1) {
     const r = records[0];
     const status = recordStatus(r);
     const time = r.durationMs != null && status !== "reused" && status !== "edited" && r.durationMs > 0 ? ` · ${fmtMs(r.durationMs)}` : "";
     const reason = status === "skipped" && r.skipReason ? ` · ${r.skipReason}` : "";
-    return { status, text: `${STATUS_WORD[status]}${time}${reason}` };
+    return { status, text: `${STATUS_WORD[status]}${time}${reason}`, startedAt: status === "running" ? r.startedAt : undefined };
   }
+  const running = records.find((r) => r.status === "running");
   const counts = new Map<NodeStatus, number>();
   for (const r of records) {
     const s = recordStatus(r);
@@ -160,7 +163,7 @@ export function summarize(records: StepRecord[], inProgress: boolean): { status:
   }
   const status = PRIORITY.find((s) => counts.has(s)) ?? "none";
   const text = PRIORITY.filter((s) => counts.has(s)).map((s) => `${counts.get(s)} ${STATUS_WORD[s]}`).join(" · ");
-  return { status, text };
+  return { status, text, startedAt: running?.startedAt };
 }
 
 function stepSubtitle(s: StepInfo, modelFor: (slot: string) => string | null): string {
@@ -241,10 +244,10 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
     const row = depth.get(s.id) ?? 1;
     const id = `step:${s.id}`;
     const recs = recordsFor(records, s.id);
-    const { status, text } = summarize(recs, inProgress);
+    const { status, text, startedAt } = summarize(recs, inProgress);
     const base: FlowNodeData = {
       role: "step", title: s.name ?? s.id, kindLabel: KIND_LABEL[s.kind] ?? s.kind, subtitle: stepSubtitle(s, modelFor),
-      status, statusText: text, stepId: s.id, kind: s.kind,
+      status, statusText: text, stepId: s.id, kind: s.kind, startedAt,
       condition: s.when ? `only if ${describeRef(s.when, recipe)}` : undefined,
     };
     for (const d of s.dependsOn) if (stepIds.has(d)) edges.push(edge(`step:${d}`, id, status, "b", "t"));
@@ -284,7 +287,7 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
           position: { x: GROUP_PAD + c * (NODE_W + INNER_GAP_X), y: GROUP_HEAD + r * (NODE_H + INNER_GAP_Y) },
           data: {
             role: "step", title: i.name ?? i.id, kindLabel: KIND_LABEL[i.kind] ?? i.kind, subtitle: stepSubtitle(i, modelFor),
-            status: sum.status, statusText: sum.text, stepId: i.id, kind: i.kind,
+            status: sum.status, statusText: sum.text, stepId: i.id, kind: i.kind, startedAt: sum.startedAt,
             condition: i.when ? `only if ${describeRef(i.when, recipe, itemName(s))}` : undefined,
           },
           selected: selectedId === cid,

@@ -10,7 +10,7 @@ import { ReviewPanel } from "./components/ReviewPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { WatchPanel } from "./components/WatchPanel";
 import { UsagePanel } from "./components/UsagePanel";
-import { Dial, Empty, Glyph, Logo, Zone, applyLook, inputGlyph, loadLook, type DialPlace, type Look } from "./kit";
+import { Dial, Empty, Glyph, Logo, Zone, applyLook, fmtElapsed, inputGlyph, loadLook, useElapsed, type DialPlace, type Look } from "./kit";
 import "./App.css";
 
 // React Flow is heavy; load it in its own chunk so the rest of the app paints first.
@@ -33,6 +33,16 @@ function loadPins(id: string): Record<string, string> {
 }
 
 const STATUS_WORD: Record<string, string> = { succeeded: "done", failed: "failed", needs_review: "needs you", running: "running" };
+
+/** A value as one short line: a path by its last part, a list by its length, text trimmed. */
+function shortValue(v: unknown): string {
+  if (typeof v === "string") {
+    if (v.startsWith("/")) return v.split("/").pop() ?? v;
+    return v.length > 60 ? v.slice(0, 60) + "…" : v;
+  }
+  if (Array.isArray(v)) return v.length === 1 ? shortValue(v[0]) : `${v.length} items`;
+  return JSON.stringify(v);
+}
 
 function App() {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
@@ -197,6 +207,9 @@ function App() {
   const showResult = run && (run.status === "succeeded" || run.status === "needs_review");
   const needsYou = run?.status === "needs_review";
 
+  const runningStep = running ? liveSteps.find((s) => s.status === "running" && !s.parent) ?? liveSteps.find((s) => s.status === "running") : undefined;
+  const stepElapsed = useElapsed(runningStep?.startedAt ?? null, running);
+
   // Progress while running: top-level steps finished over top-level steps declared.
   const progress = useMemo(() => {
     if (!running || !runRecipe) return undefined;
@@ -225,7 +238,8 @@ function App() {
       case "running": {
         if (running && runRecipe) {
           const done = liveSteps.filter((s) => !s.parent && s.status !== "running").length;
-          return <><b>{runRecipe.name}</b> · step {Math.min(done + 1, runRecipe.steps.length)} of {runRecipe.steps.length}</>;
+          const current = liveSteps.find((s) => s.status === "running" && !s.parent) ?? liveSteps.find((s) => s.status === "running");
+          return <><b>{runRecipe.name}</b> · step {Math.min(done + 1, runRecipe.steps.length)} of {runRecipe.steps.length}{current ? <> · {current.name ?? current.stepId}{stepElapsed != null ? ` · ${fmtElapsed(stepElapsed)}` : ""}</> : null}</>;
         }
         return run ? <><b>{run.recipeName}</b> · finished · {STATUS_WORD[run.status] ?? run.status}</> : <>nothing running</>;
       }
@@ -265,8 +279,18 @@ function App() {
   return (
     <main className="shell">
       <header className="shell-head">
-        <Logo size={34} />
-        <p className="tagline">Describe the goal. Get the result. Open the door.</p>
+        <nav className="crumbs" aria-label="Where you are">
+          <button className="home" onClick={() => setPlace("library")} title="Library: every recipe"><Logo size={30} /></button>
+          <span className="sep">›</span>
+          {recipe && place !== "library" ? (
+            <>
+              <button onClick={() => setPlace("setup")} className={place === "setup" ? "here" : ""} title="This recipe"><span className="label">recipe </span>{recipe.name}</button>
+              {place !== "setup" && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
+            </>
+          ) : (
+            <span className="here">Library</span>
+          )}
+        </nav>
         <span className="shell-status">
           {models && models.providers.map((p) => (
             <span key={p.id}><span className={p.available ? "dot ok" : "dot bad"} />{p.label} {p.available ? `· ${models.models.length} models` : "· not running"}</span>
@@ -279,6 +303,7 @@ function App() {
       <div className="place">
         {place === "library" && (
           <>
+            <p className="tagline">Describe the goal. Get the result. Open the door. <span className="muted">Pick a recipe to start.</span></p>
             <Zone title="Recipes" sub="reusable processes that produce a result" aside={<>{recipes?.recipes.length ?? 0} on the shelf</>}>
               <div className="cards recipe-grid">
                 {recipes?.recipes.map((r) => {
@@ -357,11 +382,34 @@ function App() {
         {place === "results" && (
           showResult ? (
             <>
-              <p className="result-line">
-                {run.status === "needs_review" ? "Waiting for you" : "Latest result"} · {run.recipeName} · {new Date(run.startedAt).toLocaleString()}
-                {editedNames.length > 0 && <> · includes your {run.steps.some((s) => s.edited && s.kind === "review") ? "decision on" : "edit to"} <strong>{editedNames.join(", ")}</strong></>}
-                {run.trigger && <> · started by the folder watch{run.trigger.changed.length > 0 ? <> after <strong>{run.trigger.changed.slice(0, 3).join(", ")}{run.trigger.changed.length > 3 ? ` and ${run.trigger.changed.length - 3} more` : ""}</strong> landed</> : " (Run now)"}</>}
-              </p>
+              <Zone title={run.status === "needs_review" ? "Waiting for you" : `What ${run.recipeName} made`} sub={run.status === "needs_review" ? "the run is paused at a review step" : "this run's results"}
+                aside={<>{new Date(run.startedAt).toLocaleString()}{run.finishedAt ? ` · took ${fmtElapsed(Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000))}` : ""}</>}>
+                <div className="result-facts">
+                  <span className="label">From</span>
+                  <span>
+                    {Object.entries(run.inputs ?? {}).filter(([, v]) => v != null && v !== "").length === 0 ? <span className="muted">no inputs</span> :
+                      Object.entries(run.inputs ?? {}).filter(([, v]) => v != null && v !== "").map(([k, v]) => (
+                        <span key={k} className="fact"><Glyph name={inputGlyph(runRecipe?.inputs[k]?.type ?? "text")} /> <span className="muted">{runRecipe?.inputs[k]?.label ?? k}:</span> <span className="mono">{shortValue(v)}</span></span>
+                      ))}
+                  </span>
+                  <span className="label">Made by</span>
+                  <span>
+                    {Object.values(run.resolutions ?? {}).length === 0 ? <span className="muted">programs only, no model</span> :
+                      Object.values(run.resolutions ?? {}).map((r) => (
+                        <span key={r.slot} className="fact"><Glyph name="ai" /> <span className="muted">{r.slot}:</span> <span className="mono">{r.modelId}</span> <span className="tag">local</span></span>
+                      ))}
+                    {" "}<span className="muted">· {run.steps.filter((s) => !s.parent).length} steps{run.steps.some((s) => s.reusedFrom) ? `, ${run.steps.filter((s) => s.reusedFrom).length} reused from earlier runs` : ""}</span>
+                  </span>
+                  {(editedNames.length > 0 || run.trigger) && <>
+                    <span className="label">Note</span>
+                    <span className="muted">
+                      {editedNames.length > 0 && <>Includes your {run.steps.some((s) => s.edited && s.kind === "review") ? "decision on" : "edit to"} <strong>{editedNames.join(", ")}</strong>. </>}
+                      {run.trigger && <>Started by the folder watch{run.trigger.changed.length > 0 ? <> after <strong>{run.trigger.changed.slice(0, 3).join(", ")}{run.trigger.changed.length > 3 ? ` and ${run.trigger.changed.length - 3} more` : ""}</strong> landed</> : " (Run now)"}.</>}
+                    </span>
+                  </>}
+                </div>
+                <p className="muted result-hint">Each result below is a tab. Edit one and only the steps after it run again.</p>
+              </Zone>
               {run.status === "needs_review" && (
                 <ReviewPanel run={run} steps={runRecipe?.steps ?? []} busy={running} onDecide={editAndRerun} />
               )}

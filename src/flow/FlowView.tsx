@@ -5,7 +5,7 @@ import { api } from "../api";
 import { buildGraph, type FlowNode } from "./graph";
 import { StepDetails } from "./StepDetails";
 import { addStep, connect, disconnect, docToInfo, mutate, removeStep, stepPathOf } from "./draft";
-import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../kit";
+import { Glyph, fmtElapsed, inputGlyph, outputGlyph, stepGlyph, useElapsed } from "../kit";
 import {
   AddStepSelect, ConnectionPanel, InputForm, OutputForm, PermissionsEditor, SaveDialog, SlotsEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
 } from "./RecipeEditor";
@@ -52,15 +52,17 @@ function StepHandles() {
 }
 
 function StepNode({ data, selected }: NodeProps<FlowNode>) {
+  const elapsed = useElapsed(data.status === "running" ? data.startedAt : null);
+  const statusText = data.status === "running" && elapsed != null ? `${data.statusText} ${fmtElapsed(elapsed)}` : data.statusText;
   return (
-    <div className={`flow-node step kind-${data.kind ?? ""} ${data.status} ${selected ? "selected" : ""}`}>
+    <div className={`flow-node step kind-${data.kind ?? ""} ${data.status} ${selected ? "selected" : ""}`} title="Click for details">
       <StepHandles />
       <Glyph name={stepGlyph(data.kind ?? "")} />
       <div className="flow-kind">{data.kindLabel}</div>
       <div className="flow-title">{data.title}</div>
       {data.subtitle && <div className="flow-sub mono">{data.subtitle}</div>}
       {data.condition && <div className="flow-cond">{data.condition}</div>}
-      {data.statusText && <div className={`flow-status ${data.status}`}>{data.statusText}</div>}
+      {statusText && <div className={`flow-status ${data.status}`}>{statusText}</div>}
     </div>
   );
 }
@@ -353,7 +355,9 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
           />
         )}
         {!edit && !selectedId && (
-          <p className="muted flow-hint">Click a step to see which model it uses, what it reads, and what it produced. A dashed box is a for-each: its inner steps run once per item.</p>
+          <p className="muted flow-hint">{inProgress
+            ? "Click any step for details, even while it runs: the model it is using, how long it has been going, and why an AI step can take a while."
+            : "Click a step to see which model it uses, what it reads, and what it produced. A dashed box is a for-each: its inner steps run once per item."}</p>
         )}
 
         {edit && hasPanel && (

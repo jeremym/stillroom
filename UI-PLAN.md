@@ -302,3 +302,17 @@ The style tile at `docs/mockups/p1-style-tile.html` shows the tokens, the Dial, 
 - Window opens at 1280×840, minimum 1040×700, position and size remembered (`tauri-plugin-window-state`). New app icon from the alembic mark.
 - Verified: `cargo test --workspace` (8 suites), `pnpm test` (16), `tsc`, `pnpm build`, a live Summarize a File run through the UI, screenshots of all five places in `docs/screenshots/phase1-*.png`.
 - Deferred to later phases: Stop (needs a cancel command), teletype log formatting (phase 3), lanes and LOCAL/CLOUD marks (phase 4), Library readiness panel (phase 5).
+
+---
+
+## 9. Round 2 (2026-10-27, after phase 1)
+
+Jeremy's feedback after seeing phase 1, and what it changes. The reading copy with the full reasoning is in the vault note `Stillroom/projects/ui-round-2.md`; this section is the durable summary.
+
+**Fixed the same day:** hand glyph (four fingers and a thumb); header is a breadcrumb (logo = home › `recipe Name` › place) and the tagline moved to Library; Set up labels its dropdown "Recipe:"; Results opens with "What *recipe* made" plus From (inputs), Made by (models, local tag), how long, and a note line; running steps show a live timer on the node, in the line under the Dial, and in the side panel; the side panel explains why an AI step can be slow through the kit's one popup, `Help`; hovering a step glows and the hint says steps are clickable while running.
+
+**The flow changes.** Library becomes home (not a Dial position); picking a recipe opens a **Recipe page** (what it does, its runs, its watches, a map thumbnail, Set up a run); the **Dial belongs to a recipe**: Recipe · Set up · Running · Results · Open the door. A sticky **Rail** carries the breadcrumb on the left and Models, New recipe, Settings (⌘,), Help on the right, mirrored by a native macOS menu with shortcuts. **Settings** is its own window: Look, Models (Ollama address, pull with progress, defaults, pins moved to the store, cloud providers off and explained), Folders, Watches, Privacy, About. **New recipe** asks for a starting point, a name, and an icon (new optional `icon` field in `recipe.yaml`), then opens the editor.
+
+**Revised order:** 2 Shelf and Recipe · 3 Settings and models · 4 Power on (wizard, Stop, teletype) · 5 Open the door · 6 Polish and extract. Model configuration does not exist today beyond per-run pins; phase 3 adds it.
+
+**Kit extraction** for Overtone Foundry: the prompt lives in the vault at `Stillroom/skills/p1-kit-extraction-prompt.md` (Lucide icons recolored by CSS, plain CSS with an optional Tailwind v4 `@theme` file, React components, fonts, Tauri defaults, a SKILL.md).

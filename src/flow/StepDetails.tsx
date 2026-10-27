@@ -1,4 +1,5 @@
 import { fmtMs } from "../api";
+import { Help, fmtElapsed, useElapsed } from "../kit";
 import { pickViewer } from "../viewers";
 import { KIND_EXPLAINED, KIND_LABEL, STATUS_WORD, describeRef, findStep, parentOf, recordStatus, recordsFor, sourceStepOf, summarize } from "./graph";
 import type { InstalledModel, RecipeInfo, Run, StepInfo, StepRecord } from "../types";
@@ -126,11 +127,21 @@ function StepBody({ path, recipe, run, records, models, pins, onPin }: Props & {
 
 function SingleRun({ r, kind }: { r: StepRecord; kind: string }) {
   const status = recordStatus(r);
+  const elapsed = useElapsed(status === "running" ? r.startedAt : null);
+  const isModel = r.kind === "model" || r.kind === "agent";
   return (
     <div className="flow-run">
       <h4>In this run</h4>
       <p>
         <strong>{STATUS_WORD[status]}</strong>
+        {status === "running" && elapsed != null ? ` · ${fmtElapsed(elapsed)} so far` : ""}
+        {status === "running" && isModel && (
+          <Help title="Why can an AI step take a while?">
+            <p>This step is a prompt to <span className="mono">{r.model ?? "a local model"}</span>, running in Ollama on this Mac. Nothing leaves the machine.</p>
+            <p>The first call after a pause includes loading the model into memory, which can take ten seconds to a minute on its own. After that, speed depends on the graphics chip and the size of the model and of the text it is reading.</p>
+            <p>Long inputs and "thinking" models take longer. You can pin a smaller model on this slot from Set up.</p>
+          </Help>
+        )}
         {r.durationMs != null && r.durationMs > 0 && status !== "reused" ? ` · ${fmtMs(r.durationMs)}` : ""}
         {r.promptTokens != null ? ` · ${r.promptTokens} → ${r.completionTokens ?? 0} tokens` : ""}
         {r.skipReason && status !== "needs_you" ? ` · ${r.skipReason}` : ""}

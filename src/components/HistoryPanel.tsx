@@ -5,7 +5,7 @@ export function HistoryPanel({ history, onOpen }: { history: RunSummary[]; onOpe
   if (history.length === 0) return null;
   return (
     <section className="panel">
-      <h2>Previous runs</h2>
+      <h2>Previous runs <span className="muted">(all recipes, newest first)</span></h2>
       <ul className="history">
         {history.map((h) => (
           <li key={h.id}>

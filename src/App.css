@@ -13,6 +13,14 @@ footer { margin-top: 24px; color: var(--phos-faint); font-size: var(--size-label
 .panel:nth-of-type(even) { background: var(--ground-3); }
 .panel > h2:first-child, .panel > .row.space:first-child { padding-bottom: 8px; border-bottom: 1px solid var(--bezel); margin-bottom: 12px; }
 .result-line { margin: 0 0 var(--gap); color: var(--phos-dim); }
+.result-facts { display: grid; grid-template-columns: 90px 1fr; gap: 8px 14px; align-items: baseline; }
+.result-facts .label { font-family: var(--display); letter-spacing: 0.12em; text-transform: uppercase; font-size: var(--size-label); color: var(--phos-dim); }
+.result-facts .fact { display: inline-flex; gap: 6px; align-items: center; margin-right: 18px; }
+.result-facts .fact .tag { margin-left: 2px; }
+.result-hint { margin: 12px 0 0; font-size: var(--size-small); }
+.shell-head .tagline, .place > .tagline { color: var(--phos-dim); margin: 0 0 14px; }
+.flow-node.step { cursor: pointer; }
+.flow-node.step:hover { border-color: var(--phos-dim); box-shadow: 0 0 10px var(--halo-soft); }
 
 /* Setup */
 .recipe-grid .card .glyph { color: var(--phos); }

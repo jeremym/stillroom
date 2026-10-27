@@ -1,11 +1,13 @@
 /* Stillroom on the P1 kit. The kit (src/kit/kit.css) owns tokens and components; this file owns
    the shell and the app's own pieces: flow view, artifact viewers, review, editor. */
 
-.shell { max-width: var(--max); margin: 0 auto; padding: 18px 24px 48px; }
-.shell-head { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-bottom: 4px; }
-.shell-head .tagline { color: var(--phos-dim); margin: 0; }
-.shell-head .shell-status { margin-left: auto; color: var(--phos-dim); font-size: var(--size-small); display: flex; gap: 8px; align-items: center; }
-.place { margin-top: 22px; }
+.shell { max-width: var(--max); margin: 0 auto; padding: 12px 24px 48px; }
+.place { margin-top: 18px; }
+.recipe-title { display: inline-flex; align-items: center; gap: 10px; }
+.recipe-title .glyph { color: var(--phos); }
+.runs .link .tag { margin-left: 8px; }
+.run-pick { display: inline-flex; align-items: center; gap: 6px; }
+.run-pick select { width: auto; padding: 3px 28px 3px 8px; font-size: var(--size-small); }
 footer { margin-top: 24px; color: var(--phos-faint); font-size: var(--size-label); }
 
 /* Panels written before the kit are zones too. */

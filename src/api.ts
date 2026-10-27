@@ -15,6 +15,9 @@ export const api = {
   readRecipeDraft: (recipeId: string) => invoke<DraftResponse>("read_recipe_draft", { recipeId }),
   checkRecipeDraft: (draft: Draft) => invoke<string[]>("check_recipe_draft", { draft }),
   saveRecipeDraft: (draft: Draft) => invoke<SaveResponse>("save_recipe_draft", { draft }),
+  /** Delete one of your recipes and the watches bound to it. Built-ins refuse. */
+  deleteRecipe: (recipeId: string) => invoke<void>("delete_recipe", { recipeId }),
+  revealRecipesFolder: () => invoke<void>("reveal_recipes_folder"),
   listWatches: () => invoke<WatchView[]>("list_watches"),
   /** Watch `input`'s folder: the recipe runs with these inputs whenever something lands there. */
   addWatch: (recipeId: string, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) =>

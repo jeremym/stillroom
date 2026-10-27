@@ -1,6 +1,7 @@
 schemaVersion: "0"
 id: research-brief
 name: Research Brief
+icon: globe
 version: 0.1.0
 description: Reads the web pages you give it, pulls out what each one says about your question with exact quotes, and writes a short brief that cites its sources by number. Reaches only the sites in your links.
 author:

@@ -336,6 +336,27 @@ mod tests {
         crate::tools::ToolRegistry::builtin().ids().into_iter().map(String::from).collect()
     }
 
+    /// The recipe the app's "New recipe › Blank" makes, byte for byte as `src/recipes/new.ts` builds it.
+    /// If this stops passing, the button makes something the checker refuses.
+    #[test]
+    fn blank_recipe_from_the_app_passes_the_checker() {
+        let yaml = serde_json::json!({
+            "schemaVersion": "0",
+            "id": "weekly-report",
+            "name": "Weekly report",
+            "version": "0.1.0",
+            "icon": "notes",
+            "description": "A new recipe. Open the door to add steps.",
+            "inputs": { "source": { "type": "file", "label": "Source file", "description": "The file this recipe starts from." } },
+            "permissions": { "filesystem": { "read": ["input"] } },
+            "steps": [ { "id": "read", "kind": "tool", "name": "Read the file", "tool": "file.read", "inputs": { "path": "${inputs.source}" } } ],
+            "outputs": { "text": { "from": "${steps.read.output.text}", "type": "text", "label": "The file's text" } }
+        });
+        let draft = Draft { yaml, files: BTreeMap::new() };
+        let problems = draft.check(&tools());
+        assert!(problems.is_empty(), "blank recipe should be valid, got: {problems:?}");
+    }
+
     #[test]
     fn builtin_recipes_read_clean() {
         for name in ["summarize-file", "learning-kit", "inbox-triage"] {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, fmtMs, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
@@ -82,12 +82,21 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
     api.estimate(recipe.id).then(setEstimate).catch(() => setEstimate(null));
   }, [recipe.id]);
 
+  // ⌘R from the menu: run if everything is in place.
+  const runRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const h = () => runRef.current();
+    window.addEventListener("stillroom:run", h);
+    return () => window.removeEventListener("stillroom:run", h);
+  }, []);
+
   const missing = Object.entries(recipe.inputs)
     .filter(([k, spec]) => spec.required !== false && (inputs[k] == null || inputs[k] === "" || (Array.isArray(inputs[k]) && (inputs[k] as unknown[]).length === 0)))
     .map(([k]) => k);
   const slotCandidates = (requires: string[]) =>
     models.filter((m) => requires.every((c) => m.capabilities.includes(c as never)));
   const unfillable = Object.entries(recipe.modelSlots).filter(([, s]) => slotCandidates(s.requires).length === 0);
+  runRef.current = () => { if (!running && missing.length === 0 && unfillable.length === 0) onRun(recipe, inputs, pins, reuse); };
 
   return (
     <section className="panel">

@@ -316,3 +316,17 @@ Jeremy's feedback after seeing phase 1, and what it changes. The reading copy wi
 **Revised order:** 2 Shelf and Recipe · 3 Settings and models · 4 Power on (wizard, Stop, teletype) · 5 Open the door · 6 Polish and extract. Model configuration does not exist today beyond per-run pins; phase 3 adds it.
 
 **Kit extraction** for Overtone Foundry: the prompt lives in the vault at `Stillroom/skills/p1-kit-extraction-prompt.md` (Lucide icons recolored by CSS, plain CSS with an optional Tailwind v4 `@theme` file, React components, fonts, Tauri defaults, a SKILL.md).
+
+### Phase 2: Shelf and Recipe · shipped 2026-10-27
+
+- **Icons are Lucide.** `Glyph` maps semantic names (program, ai, approval, …) to `lucide-react` icons at 1.8 px stroke; the alembic and the llama stay custom. 60 names, a curated `RECIPE_GLYPHS` list for the picker.
+- **Library is home.** No Dial there: tagline, recipe cards (icon, description, needs, "last run" tag), New recipe, all watches, all runs ("all recipes, newest first"), usage.
+- **The Dial belongs to a recipe:** Recipe · Set up · Running · Results · Open the door. Another recipe's run never paints on it.
+- **Recipe page** (`RecipePage.tsx`): icon and name, what it needs, gives you, thinks with, may touch, the steps as a strip; Set up a run, Open the door, Duplicate; for your recipes Rename and Delete (inline confirm); runs of this recipe; watches on this recipe; the map read-only.
+- **The Rail** (`kit/Rail.tsx`): sticky; breadcrumb on the left (logo = Library › recipe › place); Models pill, New recipe, Settings, Help on the right. `Pill` added to the kit.
+- **Settings** is a place for now (⌘,): Look, Models, Cloud providers (off, explained), Folders (paths, Show my recipes folder), About with the shortcuts. Phase 3 decides window versus overlay and adds the model configuration.
+- **New recipe** (⌘N): Blank (reads a file and hands it back, already valid), A copy of a recipe, From a goal (disabled until the planner); name with a live id; an icon from the picker. Creates through the Rust checker and opens the door in edit mode. `recipe.yaml` gained an optional `icon` (schema, Rust `Recipe`, `RecipeInfo`); the four built-ins have one.
+- **Native macOS menu** (Rust, `build_menu`): Stillroom (About, Settings ⌘,), File (New Recipe ⌘N, Show Recipes Folder, Close ⌘W), Edit, View (Library ⌘0, Recipe ⌘1 … Open the Door ⌘5, themes, text size ⌘+ ⌘-), Run (Run ⌘R, Watch This Folder…), Window, Help (⌘/). Items emit a `menu` event the webview acts on; a keyboard fallback covers plain-browser dev.
+- **Results** has a run selector when the recipe has more than one run. **Help** (⌘/ or the Rail) opens an inline sheet with the layout and the keys.
+- New Rust commands: `delete_recipe` (user recipes only; removes bound watches), `reveal_recipes_folder`.
+- Verified: `cargo test --workspace` (49), `pnpm test` (20, including the recipe helpers), `tsc`, `pnpm build`. Not verified by eye this round: Jeremy was at the keyboard, so no screen driving; screenshots come with the next session.

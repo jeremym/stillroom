@@ -10,6 +10,7 @@ interface Props {
   onChanged: () => void;
   onOpenRun: (id: string) => void;
   onError: (message: string) => void;
+  title?: string;
 }
 
 const PHASE_WORD: Record<WatchView["phase"], string> = {
@@ -25,14 +26,14 @@ function shortPath(p: string) {
   return home ? p.replace(home, "~") : p;
 }
 
-export function WatchPanel({ watches, onChanged, onOpenRun, onError }: Props) {
+export function WatchPanel({ watches, onChanged, onOpenRun, onError, title = "Folder watches" }: Props) {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   if (watches.length === 0) return null;
   const act = (p: Promise<unknown>) => p.then(onChanged).catch((e) => onError(String(e)));
 
   return (
     <section className="panel">
-      <h2>Folder watches <span className="muted">(recipes that run on their own while Stillroom is open)</span></h2>
+      <h2>{title} <span className="muted">(recipes that run on their own while Stillroom is open)</span></h2>
       <ul className="watches">
         {watches.map((w) => (
           <li key={w.id}>

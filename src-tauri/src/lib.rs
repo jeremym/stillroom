@@ -313,6 +313,49 @@ fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Save
     Ok(SaveResponse { recipe: bundle.info(), path: dir.to_string_lossy().into_owned(), shadows_builtin })
 }
 
+/// Delete one of the user's recipes (its folder) and any watches bound to it. Built-ins cannot be deleted.
+#[tauri::command]
+fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, recipe_id: String) -> CmdResult<()> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    if bundle.source != RecipeSource::User {
+        return Err("built-in recipes cannot be deleted; make a copy and change that".into());
+    }
+    let (user_root, _) = state
+        .library
+        .roots()
+        .iter()
+        .find(|(_, s)| *s == RecipeSource::User)
+        .ok_or("no folder for your recipes")?;
+    let dir = user_root.join(&recipe_id);
+    if dir.canonicalize().map_err(err)? != bundle.root.canonicalize().map_err(err)? {
+        return Err("that recipe is not in your recipes folder".into());
+    }
+    {
+        let store = state.store.lock().map_err(err)?;
+        for w in store.list_watches().map_err(err)? {
+            if w.recipe_id == recipe_id {
+                rt.stop(&w.id);
+                store.delete_watch(&w.id).map_err(err)?;
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir).map_err(err)?;
+    let _ = app.emit("watch:changed", ());
+    Ok(())
+}
+
+/// Show the user's recipes folder in the Finder.
+#[tauri::command]
+fn reveal_recipes_folder(state: State<'_, AppState>) -> CmdResult<()> {
+    let (user_root, _) = state
+        .library
+        .roots()
+        .iter()
+        .find(|(_, s)| *s == RecipeSource::User)
+        .ok_or("no folder for your recipes")?;
+    tauri_plugin_opener::reveal_item_in_dir(user_root).map_err(err)
+}
+
 #[tauri::command]
 fn list_watches(state: State<'_, AppState>, rt: State<'_, WatchRuntime>) -> CmdResult<Vec<WatchView>> {
     let watches = state.store.lock().map_err(err)?.list_watches().map_err(err)?;
@@ -409,6 +452,63 @@ fn copy_file(src: String, dst: String) -> CmdResult<()> {
     std::fs::copy(&src, &dst).map(|_| ()).map_err(|e| format!("{src} -> {dst}: {e}"))
 }
 
+/// The native menu. Every item emits a `menu` event with its id; the webview decides what it means.
+fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+    let item = |id: &str, text: &str, accel: Option<&str>| -> tauri::Result<tauri::menu::MenuItem<tauri::Wry>> {
+        let mut b = MenuItemBuilder::with_id(id, text);
+        if let Some(a) = accel {
+            b = b.accelerator(a);
+        }
+        b.build(app)
+    };
+    let app_menu = SubmenuBuilder::new(app, "Stillroom")
+        .item(&item("about", "About Stillroom", None)?)
+        .separator()
+        .item(&item("settings", "Settings…", Some("CmdOrCtrl+,"))?)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+    let file = SubmenuBuilder::new(app, "File")
+        .item(&item("new-recipe", "New Recipe…", Some("CmdOrCtrl+N"))?)
+        .item(&item("reveal-recipes", "Show Recipes Folder", None)?)
+        .separator()
+        .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
+        .build()?;
+    let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&item("place-library", "Library", Some("CmdOrCtrl+0"))?)
+        .item(&item("place-recipe", "Recipe", Some("CmdOrCtrl+1"))?)
+        .item(&item("place-setup", "Set Up", Some("CmdOrCtrl+2"))?)
+        .item(&item("place-running", "Running", Some("CmdOrCtrl+3"))?)
+        .item(&item("place-results", "Results", Some("CmdOrCtrl+4"))?)
+        .item(&item("place-door", "Open the Door", Some("CmdOrCtrl+5"))?)
+        .separator()
+        .item(&item("theme-green", "Green Theme", None)?)
+        .item(&item("theme-amber", "Amber Theme", None)?)
+        .item(&item("theme-paper", "Paper Theme", None)?)
+        .separator()
+        .item(&item("text-larger", "Larger Text", Some("CmdOrCtrl+Plus"))?)
+        .item(&item("text-smaller", "Smaller Text", Some("CmdOrCtrl+-"))?)
+        .build()?;
+    let run = SubmenuBuilder::new(app, "Run")
+        .item(&item("run", "Run Recipe", Some("CmdOrCtrl+R"))?)
+        .item(&item("watch-folder", "Watch This Folder…", None)?)
+        .build()?;
+    let window = SubmenuBuilder::new(app, "Window").minimize().maximize().separator().close_window().build()?;
+    let help = SubmenuBuilder::new(app, "Help")
+        .item(&item("help", "Stillroom Help", None)?)
+        .item(&item("shortcuts", "Keyboard Shortcuts", Some("CmdOrCtrl+/"))?)
+        .build()?;
+    MenuBuilder::new(app).items(&[&app_menu, &file, &edit, &view, &run, &window, &help]).build()
+}
+
 fn builtin_recipes_dir(app: &AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../recipes");
@@ -425,6 +525,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
+            let menu = build_menu(app.handle())?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                let _ = app.emit("menu", event.id().0.clone());
+            });
             let data_dir = app.path().app_data_dir()?;
             let user_recipes = data_dir.join("recipes");
             std::fs::create_dir_all(&user_recipes)?;
@@ -469,6 +574,8 @@ pub fn run() {
             add_watch,
             set_watch_enabled,
             remove_watch,
+            delete_recipe,
+            reveal_recipes_folder,
             fire_watch,
             write_text_file,
             write_binary_file,

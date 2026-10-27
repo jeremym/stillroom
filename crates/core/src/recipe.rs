@@ -32,6 +32,9 @@ pub struct Recipe {
     pub version: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// A glyph name from the app's icon set, shown on cards and in the breadcrumb.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     #[serde(default)]
     pub inputs: IndexMap<String, Value>,
     #[serde(default)]

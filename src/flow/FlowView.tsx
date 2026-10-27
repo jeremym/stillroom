@@ -28,6 +28,8 @@ interface Props {
   onSaved: (recipe: RecipeInfo) => void;
   /** Offer the editor. Off while watching a run, where the map is for reading. */
   editable?: boolean;
+  /** Open straight into edit mode (a recipe just created). */
+  startInEdit?: boolean;
 }
 
 interface EditState {
@@ -125,7 +127,7 @@ const PAD = 16;
 const nodeTypes: NodeTypes = { step: StepNode, io: IoNode, group: GroupNode };
 const edgeTypes: EdgeTypes = { bus: BusEdge };
 
-export default function FlowView({ recipe, run, records, inProgress, models, pins, onPin, onSaved, editable = true }: Props) {
+export default function FlowView({ recipe, run, records, inProgress, models, pins, onPin, onSaved, editable = true, startInEdit = false }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
@@ -157,8 +159,12 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     };
   }, []);
 
-  // Leaving the recipe leaves the editor too.
-  useEffect(() => { setEdit(null); setSelectedId(null); setSelectedEdge(null); setWire(null); setPanel("node"); }, [recipe.id]);
+  // Leaving the recipe leaves the editor too; a recipe just made opens already in edit mode.
+  useEffect(() => {
+    setEdit(null); setSelectedId(null); setSelectedEdge(null); setWire(null); setPanel("node");
+    if (startInEdit) startEditing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recipe.id]);
 
   // Ask the runtime what is wrong with the draft, a moment after each change.
   useEffect(() => {

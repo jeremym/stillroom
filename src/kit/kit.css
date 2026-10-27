@@ -150,7 +150,7 @@ tr.skipped td { color: var(--phos-dim); }
 .progress .rest { color: var(--phos-faint); }
 
 /* Glyphs */
-.glyph { width: 1.25em; height: 1.25em; vertical-align: -0.28em; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.glyph { width: 1.25em; height: 1.25em; vertical-align: -0.28em; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; display: inline-block; }
 .glyph.lg { width: 1.8em; height: 1.8em; }
 
 /* The Dial: five places in a row, a lens that slides to the current one, neighbours tilted as on a drum. */
@@ -202,3 +202,39 @@ tr.skipped td { color: var(--phos-dim); }
 .crumbs button.home { padding: 0; border: 0; }
 .crumbs .here { color: var(--phos); text-shadow: 0 0 0 currentColor, 0 0 10px var(--halo); }
 .crumbs .label { color: var(--phos-faint); font-size: var(--size-label); }
+
+/* The Rail */
+.rail { position: sticky; top: 0; z-index: 30; background: color-mix(in srgb, var(--ground) 90%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border-bottom: 1px solid var(--bezel); }
+.rail-inner { max-width: var(--max); margin: 0 auto; padding: 8px 24px; display: flex; align-items: center; gap: 16px; min-height: 52px; }
+.rail-left { flex: 1; min-width: 0; display: flex; align-items: center; }
+.rail-right { display: flex; align-items: center; gap: 8px; }
+.rail-right button.icon { padding: 5px 8px; line-height: 1; border-color: var(--bezel); color: var(--phos-dim); font-size: var(--size-label); display: inline-flex; align-items: center; gap: 6px; }
+.rail-right button.icon:hover:not(:disabled) { color: var(--phos); border-color: var(--phos-dim); }
+.rail-right button.icon .glyph { width: 1.2em; height: 1.2em; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-family: var(--body); font-size: var(--size-small); letter-spacing: 0; text-transform: none; padding: 3px 11px; border: 1px solid var(--bezel); border-radius: 999px; color: var(--phos-dim); background: transparent; }
+button.pill { cursor: pointer; }
+button.pill:hover:not(:disabled) { color: var(--phos); border-color: var(--phos-dim); box-shadow: none; }
+.pill .dot { margin-right: 0; width: 8px; height: 8px; }
+
+/* Icon picker */
+.icon-grid { display: grid; grid-template-columns: repeat(auto-fill, 48px); gap: 8px; }
+.icon-grid button { width: 48px; height: 48px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-color: var(--bezel); color: var(--phos-dim); }
+.icon-grid button .glyph { width: 24px; height: 24px; }
+.icon-grid button[aria-pressed="true"] { color: var(--phos); border-color: var(--phos); box-shadow: 0 0 0 1px var(--phos), 0 0 12px var(--halo); }
+.icon-grid button:hover:not(:disabled) { color: var(--phos); }
+
+/* Choice cards (one of a few starting points) */
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.choice { text-align: left; font-family: var(--body); letter-spacing: 0; text-transform: none; font-size: inherit; padding: 12px 14px; border-color: var(--bezel); display: flex; flex-direction: column; gap: 4px; }
+.choice .dim { font-size: var(--size-small); }
+.choice[aria-pressed="true"] { border-color: var(--phos); box-shadow: 0 0 0 1px var(--phos), 0 0 12px var(--halo); }
+
+/* Facts grid: label on the left, value on the right */
+.facts { display: grid; grid-template-columns: 110px 1fr; gap: 8px 14px; align-items: baseline; }
+.facts .label { font-family: var(--display); letter-spacing: 0.12em; text-transform: uppercase; font-size: var(--size-label); color: var(--phos-dim); }
+.facts .fact { display: inline-flex; gap: 6px; align-items: center; margin-right: 18px; }
+.strip { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.strip .step { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--bezel); padding: 3px 9px; font-size: var(--size-small); }
+.strip .step.ai { border-color: var(--phos-dim); }
+.strip .step.review { border-color: var(--amber); color: var(--amber); }
+.strip .arrow { color: var(--phos-faint); }

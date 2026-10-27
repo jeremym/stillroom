@@ -91,6 +91,7 @@ export function docToInfo(doc: RecipeDoc, base: RecipeInfo): RecipeInfo {
     name: doc.name,
     version: doc.version ?? null,
     description: doc.description ?? null,
+    icon: doc.icon ?? null,
     inputs: doc.inputs ?? {},
     modelSlots: doc.modelSlots ?? {},
     permissions: doc.permissions ?? null,

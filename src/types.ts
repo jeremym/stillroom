@@ -204,6 +204,8 @@ export interface RecipeInfo {
   name: string;
   version: string | null;
   description: string | null;
+  /** A glyph name for the card and the breadcrumb. */
+  icon?: string | null;
   source: RecipeSource;
   path: string;
   inputs: Record<string, InputSpec>;
@@ -295,6 +297,7 @@ export interface RecipeDoc {
   name: string;
   version?: string;
   description?: string;
+  icon?: string;
   inputs?: Record<string, InputSpec>;
   modelSlots?: Record<string, ModelSlot>;
   permissions?: Permissions;

@@ -1,6 +1,7 @@
 schemaVersion: "0"
 id: inbox-triage
 name: Inbox Triage
+icon: inbox
 version: 0.1.0
 description: Reads every saved email (.eml) in a folder, sorts each one, drafts replies to the ones that need an answer, files each email into your archive, and holds the replies for your approval before any draft is written out.
 author:

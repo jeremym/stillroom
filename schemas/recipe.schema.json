@@ -39,6 +39,12 @@
       "type": "string",
       "maxLength": 2000
     },
+    "icon": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "maxLength": 40,
+      "description": "Name of a glyph in the app's icon set, shown on the recipe's card and in the breadcrumb."
+    },
     "author": {
       "$ref": "#/$defs/author"
     },

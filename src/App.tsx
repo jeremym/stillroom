@@ -2,7 +2,6 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, StepRecord, WatchRunEvent, WatchView } from "./types";
-import { ModelsPanel } from "./components/ModelsPanel";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
 import { ArtifactsPanel } from "./components/ArtifactsPanel";
@@ -10,16 +9,30 @@ import { ReviewPanel } from "./components/ReviewPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { WatchPanel } from "./components/WatchPanel";
 import { UsagePanel } from "./components/UsagePanel";
-import { Dial, Empty, Glyph, Logo, Zone, applyLook, fmtElapsed, inputGlyph, loadLook, useElapsed, type DialPlace, type Look } from "./kit";
+import { RecipePage } from "./components/RecipePage";
+import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
+import {
+  Dial, Empty, Glyph, Logo, Pill, Rail, Zone, applyLook, fmtElapsed, inputGlyph, isGlyphName, loadLook, useElapsed,
+  type DialPlace, type Look,
+} from "./kit";
 import "./App.css";
 
 // React Flow is heavy; load it in its own chunk so the rest of the app paints first.
 const FlowView = lazy(() => import("./flow/FlowView"));
 
-/* The five places. The Dial moves between them, and moves by itself when a run starts, finishes,
-   or needs you, so the lifecycle is something you watch rather than something you learn. */
-type Place = "library" | "setup" | "running" | "results" | "door";
-const PLACE_LABEL: Record<Place, string> = { library: "Library", setup: "Set up", running: "Running", results: "Results", door: "Open the door" };
+/* Places. Library is home. Opening a recipe puts the Dial on screen with that recipe's five places;
+   the Dial turns by itself when a run starts, finishes, or needs you. Settings and New recipe sit
+   outside the Dial, reached from the Rail or the menu. */
+type Place = "library" | "settings" | "new" | "recipe" | "setup" | "running" | "results" | "door";
+type RecipePlace = Exclude<Place, "library" | "settings" | "new">;
+const PLACE_LABEL: Record<Place, string> = {
+  library: "Library", settings: "Settings", new: "New recipe",
+  recipe: "Recipe", setup: "Set up", running: "Running", results: "Results", door: "Open the door",
+};
+const RECIPE_PLACES: RecipePlace[] = ["recipe", "setup", "running", "results", "door"];
+const isRecipePlace = (p: Place): p is RecipePlace => (RECIPE_PLACES as Place[]).includes(p);
 
 function pinKey(id: string) {
   return `stillroom.pins.${id}`;
@@ -33,6 +46,7 @@ function loadPins(id: string): Record<string, string> {
 }
 
 const STATUS_WORD: Record<string, string> = { succeeded: "done", failed: "failed", needs_review: "needs you", running: "running" };
+const SIZES = ["normal", "larger", "largest"] as const;
 
 /** A value as one short line: a path by its last part, a list by its length, text trimmed. */
 function shortValue(v: unknown): string {
@@ -58,15 +72,26 @@ function App() {
   const [recipeId, setRecipeId] = useState<string>("");
   const [pins, setPins] = useState<Record<string, string>>({});
   const [watches, setWatches] = useState<WatchView[]>([]);
-  const [place, setPlace] = useState<Place>("setup");
+  const [place, setPlace] = useState<Place>("library");
   const [look, setLook] = useState<Look>(() => loadLook());
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [freshId, setFreshId] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const recipesRef = useRef<RecipesResponse | null>(null);
+  const placeRef = useRef<Place>("library");
+  placeRef.current = place;
 
-  const recipe = recipes?.recipes.find((r) => r.id === recipeId) ?? recipes?.recipes[0] ?? null;
+  const recipe = recipes?.recipes.find((r) => r.id === recipeId) ?? null;
   useEffect(() => {
     if (recipe) setPins(loadPins(recipe.id));
   }, [recipe?.id]);
   useEffect(() => applyLook(look), [look]);
+
+  // A recipe place with no recipe open falls back to the Library.
+  useEffect(() => {
+    if (isRecipePlace(place) && recipes && !recipe) setPlace("library");
+  }, [place, recipe, recipes]);
 
   // Pins are per recipe and remembered on this machine; both the flow and the recipe form change them here.
   const updatePins = useCallback((update: (pins: Record<string, string>) => Record<string, string>) => {
@@ -84,6 +109,12 @@ function App() {
   const refreshModels = useCallback(() => {
     api.listModels().then(setModels).catch((e) => setError(String(e)));
   }, []);
+  const refreshRecipes = useCallback(async () => {
+    const r = await api.listRecipes();
+    recipesRef.current = r;
+    setRecipes(r);
+    return r;
+  }, []);
   const openRun = useCallback(async (id: string, go = true) => {
     const r = await api.getRun(id);
     if (r) {
@@ -95,7 +126,7 @@ function App() {
     }
   }, []);
   const refreshRuns = useCallback(() => {
-    api.listRuns(20).then(setHistory).catch(() => {});
+    api.listRuns(50).then(setHistory).catch(() => {});
     api.usage().then(setUsage).catch(() => {});
     api.runtimeStatus().then(setStatus).catch(() => {});
   }, []);
@@ -103,19 +134,20 @@ function App() {
     api.listWatches().then(setWatches).catch(() => {});
   }, []);
 
+  const openRecipe = useCallback((id: string, where: RecipePlace = "recipe") => {
+    setRecipeId(id);
+    setFreshId(null);
+    setPlace(where);
+  }, []);
+
   useEffect(() => {
     api.runtimeStatus().then(setStatus).catch((e) => setError(String(e)));
     refreshModels();
     refreshRuns();
-    // Load recipes, then show the most recent run so the last result survives a relaunch.
-    api
-      .listRecipes()
-      .then((r) => {
-        recipesRef.current = r;
-        setRecipes(r);
-        return api.listRuns(1);
-      })
-      .then((latest) => latest[0] && openRun(latest[0].id))
+    // Load recipes, then remember the most recent run so its result is one click away.
+    refreshRecipes()
+      .then(() => api.listRuns(1))
+      .then((latest) => latest[0] && openRun(latest[0].id, false))
       .catch((e) => setError(String(e)));
     refreshWatches();
     const unlisten = listen<StepRecord>("run:step", (ev) => {
@@ -150,7 +182,50 @@ function App() {
       unlistenWatchRun.then((f) => f());
       unlistenWatches.then((f) => f());
     };
-  }, [refreshModels, refreshRuns, refreshWatches, openRun]);
+  }, [refreshModels, refreshRuns, refreshWatches, refreshRecipes, openRun]);
+
+  // The native menu: every item sends its id here. Keyboard shortcuts live on the menu items.
+  const onMenu = useCallback((id: string) => {
+    const goRecipe = (p: RecipePlace) => { if (recipesRef.current?.recipes.length) setPlace((cur) => (isRecipePlace(cur) || recipeId ? p : cur)); };
+    switch (id) {
+      case "about": case "settings": setPlace("settings"); break;
+      case "new-recipe": setCreateError(null); setPlace("new"); break;
+      case "reveal-recipes": api.revealRecipesFolder().catch((e) => setError(String(e))); break;
+      case "place-library": setPlace("library"); break;
+      case "place-recipe": goRecipe("recipe"); break;
+      case "place-setup": goRecipe("setup"); break;
+      case "place-running": goRecipe("running"); break;
+      case "place-results": goRecipe("results"); break;
+      case "place-door": goRecipe("door"); break;
+      case "theme-green": setLook((l) => ({ ...l, theme: "green" })); break;
+      case "theme-amber": setLook((l) => ({ ...l, theme: "amber" })); break;
+      case "theme-paper": setLook((l) => ({ ...l, theme: "paper" })); break;
+      case "text-larger": setLook((l) => ({ ...l, size: SIZES[Math.min(SIZES.length - 1, SIZES.indexOf(l.size) + 1)] })); break;
+      case "text-smaller": setLook((l) => ({ ...l, size: SIZES[Math.max(0, SIZES.indexOf(l.size) - 1)] })); break;
+      case "run":
+        if (placeRef.current === "setup") window.dispatchEvent(new CustomEvent("stillroom:run"));
+        else goRecipe("setup");
+        break;
+      case "watch-folder": goRecipe("setup"); break;
+      case "help": case "shortcuts": setHelpOpen(true); break;
+    }
+  }, [recipeId]);
+  useEffect(() => {
+    const un = listen<string>("menu", (ev) => onMenu(ev.payload));
+    return () => { un.then((f) => f()); };
+  }, [onMenu]);
+  // Outside Tauri (plain browser dev) the menu does not exist; a keyboard fallback keeps the shortcuts.
+  useEffect(() => {
+    if ("__TAURI_INTERNALS__" in window) return;
+    const h = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const map: Record<string, string> = { ",": "settings", n: "new-recipe", "0": "place-library", "1": "place-recipe", "2": "place-setup", "3": "place-running", "4": "place-results", "5": "place-door", r: "run", "/": "shortcuts" };
+      const id = map[e.key];
+      if (id) { e.preventDefault(); onMenu(id); }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onMenu]);
 
   async function startRun(recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, reuse: boolean) {
     setRunning(true);
@@ -175,7 +250,7 @@ function App() {
     try {
       await api.addWatch(recipe.id, input, inputs, pins);
       refreshWatches();
-      setPlace("library");
+      setPlace("recipe");
     } catch (e) {
       setError(String(e));
     }
@@ -202,11 +277,71 @@ function App() {
     }
   }
 
+  async function createRecipe(req: NewRecipeRequest) {
+    setCreating(true);
+    setCreateError(null);
+    try {
+      let draft;
+      if (req.mode === "copy" && req.sourceId) {
+        const src = await api.readRecipeDraft(req.sourceId);
+        draft = copyRecipe(src.draft, req.id, req.name, req.icon, src.source === "builtin");
+      } else {
+        draft = blankRecipe(req.id, req.name, req.icon);
+      }
+      const saved = await api.saveRecipeDraft(draft);
+      await refreshRecipes();
+      setRecipeId(saved.recipe.id);
+      setFreshId(saved.recipe.id);
+      setPlace("door");
+    } catch (e) {
+      setCreateError(String(e));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function duplicateRecipe(r: RecipeInfo) {
+    setError(null);
+    try {
+      const src = await api.readRecipeDraft(r.id);
+      const taken = recipesRef.current?.recipes.map((x) => x.id) ?? [];
+      const id = uniqueId(`${slugify(r.name)}-copy`, taken);
+      const saved = await api.saveRecipeDraft(copyRecipe(src.draft, id, `${r.name} (copy)`, undefined, src.source === "builtin"));
+      await refreshRecipes();
+      openRecipe(saved.recipe.id);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function renameRecipe(r: RecipeInfo, name: string) {
+    setError(null);
+    try {
+      const src = await api.readRecipeDraft(r.id);
+      await api.saveRecipeDraft({ yaml: { ...src.draft.yaml, name }, files: src.draft.files });
+      await refreshRecipes();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function deleteRecipe(r: RecipeInfo) {
+    setError(null);
+    try {
+      await api.deleteRecipe(r.id);
+      await refreshRecipes();
+      refreshWatches();
+      setRecipeId("");
+      setPlace("library");
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   const steps = run?.steps ?? liveSteps;
   const editedNames = run?.steps.filter((s) => s.edited).map((s) => s.name ?? s.stepId) ?? [];
   const showResult = run && (run.status === "succeeded" || run.status === "needs_review");
   const needsYou = run?.status === "needs_review";
-
   const runningStep = running ? liveSteps.find((s) => s.status === "running" && !s.parent) ?? liveSteps.find((s) => s.status === "running") : undefined;
   const stepElapsed = useElapsed(runningStep?.startedAt ?? null, running);
 
@@ -218,35 +353,38 @@ function App() {
     return Math.min(0.97, done / total);
   }, [running, runRecipe, liveSteps]);
 
+  // The run shown on the Dial places belongs to the open recipe; another recipe's run stays out of the way.
+  const runIsHere = Boolean(run && recipe && run.recipeId === recipe.id);
+  const runningHere = running && runRecipe?.id === recipe?.id;
   const places: DialPlace[] = [
-    { id: "library", label: PLACE_LABEL.library },
+    { id: "recipe", label: PLACE_LABEL.recipe },
     { id: "setup", label: PLACE_LABEL.setup },
-    { id: "running", label: PLACE_LABEL.running, empty: !running && !run },
-    { id: "results", label: PLACE_LABEL.results, empty: !showResult && !running },
+    { id: "running", label: PLACE_LABEL.running, empty: !runningHere && !runIsHere },
+    { id: "results", label: PLACE_LABEL.results, empty: !(runIsHere && showResult) && !runningHere },
     { id: "door", label: PLACE_LABEL.door },
   ];
 
-  const slotCount = (r: RecipeInfo) => Object.keys(r.modelSlots).length;
   const crumb = (() => {
+    if (!recipe) return null;
     switch (place) {
-      case "library": {
-        const n = recipes?.recipes.length ?? 0;
-        return <>{n} recipe{n === 1 ? "" : "s"} · {watches.length} watch{watches.length === 1 ? "" : "es"} · {status?.runCount ?? 0} runs</>;
-      }
+      case "recipe":
+        return <><b>{recipe.name}</b> · {recipe.steps.length} steps · {Object.keys(recipe.modelSlots).length} model{Object.keys(recipe.modelSlots).length === 1 ? "" : "s"}, local</>;
       case "setup":
-        return recipe ? <><b>{recipe.name}</b> · {recipe.steps.length} steps · {slotCount(recipe)} model{slotCount(recipe) === 1 ? "" : "s"}, local</> : null;
+        return <>Set up a run of <b>{recipe.name}</b></>;
       case "running": {
-        if (running && runRecipe) {
+        if (runningHere && runRecipe) {
           const done = liveSteps.filter((s) => !s.parent && s.status !== "running").length;
-          const current = liveSteps.find((s) => s.status === "running" && !s.parent) ?? liveSteps.find((s) => s.status === "running");
+          const current = runningStep;
           return <><b>{runRecipe.name}</b> · step {Math.min(done + 1, runRecipe.steps.length)} of {runRecipe.steps.length}{current ? <> · {current.name ?? current.stepId}{stepElapsed != null ? ` · ${fmtElapsed(stepElapsed)}` : ""}</> : null}</>;
         }
-        return run ? <><b>{run.recipeName}</b> · finished · {STATUS_WORD[run.status] ?? run.status}</> : <>nothing running</>;
+        return runIsHere && run ? <><b>{run.recipeName}</b> · finished · {STATUS_WORD[run.status] ?? run.status}</> : <>nothing running</>;
       }
       case "results":
-        return run ? <><b>{run.recipeName}</b> · {new Date(run.startedAt).toLocaleString()} · {STATUS_WORD[run.status] ?? run.status}</> : <>no result yet</>;
+        return runIsHere && run ? <><b>{run.recipeName}</b> · {new Date(run.startedAt).toLocaleString()} · {STATUS_WORD[run.status] ?? run.status}</> : <>no result yet</>;
       case "door":
-        return recipe ? <><b>{recipe.name}</b> · {recipe.steps.length} steps · the recipe as a map</> : null;
+        return <><b>{recipe.name}</b> · the recipe as a map</>;
+      default:
+        return null;
     }
   })();
 
@@ -258,13 +396,10 @@ function App() {
       <Suspense fallback={<section className="panel flow-panel"><p className="muted">Loading the flow…</p></section>}>
         <FlowView
           recipe={r} run={flowRun} records={records} inProgress={running && runRecipe?.id === r.id}
-          models={models?.models ?? []} pins={pins} editable={editable}
+          models={models?.models ?? []} pins={pins} editable={editable} startInEdit={editable && freshId === r.id}
           onSaved={(saved) => {
-            api.listRecipes().then((rr) => {
-              recipesRef.current = rr;
-              setRecipes(rr);
-              setRecipeId(saved.id);
-            }).catch((e) => setError(String(e)));
+            setFreshId(null);
+            refreshRecipes().then(() => setRecipeId(saved.id)).catch((e) => setError(String(e)));
           }}
           onPin={(slot, modelId) => updatePins((p) => {
             const next = { ...p };
@@ -276,186 +411,221 @@ function App() {
     );
   };
 
+  const recipeIcon = recipe && isGlyphName(recipe.icon) ? recipe.icon : "recipe";
+  const runsOfThis = run ? history.filter((h) => h.recipeId === run.recipeId) : [];
+
   return (
-    <main className="shell">
-      <header className="shell-head">
-        <nav className="crumbs" aria-label="Where you are">
-          <button className="home" onClick={() => setPlace("library")} title="Library: every recipe"><Logo size={30} /></button>
-          <span className="sep">›</span>
-          {recipe && place !== "library" ? (
-            <>
-              <button onClick={() => setPlace("setup")} className={place === "setup" ? "here" : ""} title="This recipe"><span className="label">recipe </span>{recipe.name}</button>
-              {place !== "setup" && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
-            </>
-          ) : (
-            <span className="here">Library</span>
-          )}
-        </nav>
-        <span className="shell-status">
-          {models && models.providers.map((p) => (
-            <span key={p.id}><span className={p.available ? "dot ok" : "dot bad"} />{p.label} {p.available ? `· ${models.models.length} models` : "· not running"}</span>
-          ))}
-        </span>
-      </header>
-
-      <Dial places={places} current={place} onChange={(id) => setPlace(id as Place)} tone={needsYou ? "amber" : "green"} progress={progress} crumb={crumb} />
-
-      <div className="place">
-        {place === "library" && (
+    <>
+      <Rail
+        left={
+          <nav className="crumbs" aria-label="Where you are">
+            <button className="home" onClick={() => setPlace("library")} title="Library: every recipe"><Logo size={28} /></button>
+            {place === "library" && <><span className="sep">›</span><span className="here">Library</span></>}
+            {(place === "settings" || place === "new") && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
+            {isRecipePlace(place) && recipe && (
+              <>
+                <span className="sep">›</span>
+                <button onClick={() => setPlace("recipe")} className={place === "recipe" ? "here" : ""} title="This recipe's page">
+                  <Glyph name={recipeIcon} /> <span className="label">recipe </span>{recipe.name}
+                </button>
+                {place !== "recipe" && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
+              </>
+            )}
+          </nav>
+        }
+        right={
           <>
-            <p className="tagline">Describe the goal. Get the result. Open the door. <span className="muted">Pick a recipe to start.</span></p>
-            <Zone title="Recipes" sub="reusable processes that produce a result" aside={<>{recipes?.recipes.length ?? 0} on the shelf</>}>
-              <div className="cards recipe-grid">
-                {recipes?.recipes.map((r) => {
-                  const fillable = Object.values(r.modelSlots).every((s) => (models?.models ?? []).some((m) => s.requires.every((c) => m.capabilities.includes(c as never))));
-                  return (
-                    <button key={r.id} className={`card ${recipe?.id === r.id ? "selected" : ""}`} onClick={() => { setRecipeId(r.id); setPlace("setup"); }}>
-                      <span className="card-title"><Glyph name="recipe" /> {r.name}</span>
-                      {r.description && <span className="dim">{r.description}</span>}
-                      <span className="tags">
-                        <span className="tag">{r.steps.length} steps</span>
-                        {Object.values(r.inputs).filter((i) => i.required !== false).slice(0, 3).map((i, k) => (
-                          <span key={k} className="tag"><Glyph name={inputGlyph(i.type)} /> {i.label ?? i.type}</span>
-                        ))}
-                        <span className="tag">{r.source === "builtin" ? "built-in" : "yours"}</span>
-                        {!fillable && <span className="tag amber">needs a model</span>}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              {recipes?.errors.map((e) => (
-                <pre key={e.path} className="error">{e.path}: {e.error}</pre>
-              ))}
-            </Zone>
-            <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={openRun} onError={(m) => setError(m)} />
-            <HistoryPanel history={history} onOpen={openRun} />
-            <UsagePanel usage={usage} />
-            <ModelsPanel models={models} onRefresh={refreshModels} />
-            <Zone title="Look" sub="theme, text size">
-              <div className="settings-row">
-                <span className="label">Theme</span>
-                <span className="segmented" role="group" aria-label="Theme">
-                  {(["green", "amber", "paper"] as const).map((t) => (
-                    <button key={t} aria-pressed={look.theme === t} onClick={() => setLook({ ...look, theme: t })}>{t}</button>
-                  ))}
-                </span>
-                <span className="label">Text size</span>
-                <span className="segmented" role="group" aria-label="Text size">
-                  {(["normal", "larger", "largest"] as const).map((s) => (
-                    <button key={s} aria-pressed={look.size === s} onClick={() => setLook({ ...look, size: s })}>{s}</button>
-                  ))}
-                </span>
-                <span className="label">Scanlines</span>
-                <span>
-                  <button className="toggle" aria-pressed={look.scanlines} onClick={() => setLook({ ...look, scanlines: !look.scanlines })}>
-                    <span className={look.scanlines ? "on" : ""}>on</span><span className={look.scanlines ? "" : "on"}>off</span>
-                  </button>
-                  <span className="muted"> · faint lines over the screen, off unless you like them</span>
-                </span>
-              </div>
-            </Zone>
+            {models && models.providers.map((p) => (
+              <Pill key={p.id} ok={p.available} onClick={() => setPlace("settings")} title="Models and providers (Settings)">
+                {p.label} · {p.available ? `${models.models.length} models` : "not running"}
+              </Pill>
+            ))}
+            <button className="icon" onClick={() => { setCreateError(null); setPlace("new"); }} title="New recipe (⌘N)"><Glyph name="plus" /> New recipe</button>
+            <button className="icon" onClick={() => setPlace("settings")} title="Settings (⌘,)" aria-label="Settings"><Glyph name="settings" /></button>
+            <button className="icon" onClick={() => setHelpOpen((o) => !o)} title="Help and shortcuts (⌘/)" aria-label="Help" aria-pressed={helpOpen}><Glyph name="help" /></button>
           </>
+        }
+      />
+
+      <main className="shell">
+        {isRecipePlace(place) && recipe && (
+          <Dial places={places} current={place} onChange={(id) => setPlace(id as Place)} tone={needsYou && runIsHere ? "amber" : "green"} progress={runningHere ? progress : undefined} crumb={crumb} />
         )}
 
-        {place === "setup" && recipes && recipe && (
-          <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={setRecipeId} pins={pins} onPins={updatePins}
-            models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} />
-        )}
-
-        {place === "running" && (
-          running || run ? (
-            <>
-              {flowFor(runRecipe ?? recipe, false)}
-              <TracePanel run={run} steps={steps} />
-            </>
-          ) : (
-            <Zone>
-              <Empty word="Nothing running">
-                <p>Set up a recipe and press Run. This place shows each step as it happens.</p>
-                <button onClick={() => setPlace("setup")}>Go to Set up</button>
-              </Empty>
+        <div className="place">
+          {helpOpen && (
+            <Zone title="Help" sub="how Stillroom is laid out" aside={<button className="quiet" onClick={() => setHelpOpen(false)}>Close</button>}>
+              <div className="facts">
+                <span className="label">Library</span><span>Every recipe, every run, your watches. The logo at the top left always brings you back.</span>
+                <span className="label">Recipe</span><span>Pick one and the Dial appears: <b>Recipe</b> (what it does, its runs) · <b>Set up</b> (inputs, models, Run) · <b>Running</b> (each step as it happens) · <b>Results</b> (what it made) · <b>Open the door</b> (the recipe as a map you can edit).</span>
+                <span className="label">Colours</span><span>Green is the machine. Paper is what it made for you. Amber means it needs you, or something would leave this Mac. Red is a failure.</span>
+                <span className="label">Keys</span><span className="mono">⌘0 Library · ⌘1…⌘5 the Dial · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ this help</span>
+              </div>
             </Zone>
-          )
-        )}
+          )}
 
-        {place === "results" && (
-          showResult ? (
+          {place === "library" && (
             <>
-              <Zone title={run.status === "needs_review" ? "Waiting for you" : `What ${run.recipeName} made`} sub={run.status === "needs_review" ? "the run is paused at a review step" : "this run's results"}
-                aside={<>{new Date(run.startedAt).toLocaleString()}{run.finishedAt ? ` · took ${fmtElapsed(Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000))}` : ""}</>}>
-                <div className="result-facts">
-                  <span className="label">From</span>
-                  <span>
-                    {Object.entries(run.inputs ?? {}).filter(([, v]) => v != null && v !== "").length === 0 ? <span className="muted">no inputs</span> :
-                      Object.entries(run.inputs ?? {}).filter(([, v]) => v != null && v !== "").map(([k, v]) => (
-                        <span key={k} className="fact"><Glyph name={inputGlyph(runRecipe?.inputs[k]?.type ?? "text")} /> <span className="muted">{runRecipe?.inputs[k]?.label ?? k}:</span> <span className="mono">{shortValue(v)}</span></span>
-                      ))}
-                  </span>
-                  <span className="label">Made by</span>
-                  <span>
-                    {Object.values(run.resolutions ?? {}).length === 0 ? <span className="muted">programs only, no model</span> :
-                      Object.values(run.resolutions ?? {}).map((r) => (
-                        <span key={r.slot} className="fact"><Glyph name="ai" /> <span className="muted">{r.slot}:</span> <span className="mono">{r.modelId}</span> <span className="tag">local</span></span>
-                      ))}
-                    {" "}<span className="muted">· {run.steps.filter((s) => !s.parent).length} steps{run.steps.some((s) => s.reusedFrom) ? `, ${run.steps.filter((s) => s.reusedFrom).length} reused from earlier runs` : ""}</span>
-                  </span>
-                  {(editedNames.length > 0 || run.trigger) && <>
-                    <span className="label">Note</span>
-                    <span className="muted">
-                      {editedNames.length > 0 && <>Includes your {run.steps.some((s) => s.edited && s.kind === "review") ? "decision on" : "edit to"} <strong>{editedNames.join(", ")}</strong>. </>}
-                      {run.trigger && <>Started by the folder watch{run.trigger.changed.length > 0 ? <> after <strong>{run.trigger.changed.slice(0, 3).join(", ")}{run.trigger.changed.length > 3 ? ` and ${run.trigger.changed.length - 3} more` : ""}</strong> landed</> : " (Run now)"}.</>}
-                    </span>
-                  </>}
+              <p className="tagline">Describe the goal. Get the result. Open the door. <span className="muted">Pick a recipe to start, or make one.</span></p>
+              <Zone title="Recipes" sub="reusable processes that produce a result" aside={<><span>{recipes?.recipes.length ?? 0} on the shelf</span><button className="quiet" onClick={() => { setCreateError(null); setPlace("new"); }}><Glyph name="plus" /> New recipe</button></>}>
+                <div className="cards recipe-grid">
+                  {recipes?.recipes.map((r) => {
+                    const fillable = Object.values(r.modelSlots).every((s) => (models?.models ?? []).some((m) => s.requires.every((c) => m.capabilities.includes(c as never))));
+                    const lastRun = history.find((h) => h.recipeId === r.id);
+                    return (
+                      <button key={r.id} className="card" onClick={() => openRecipe(r.id)}>
+                        <span className="card-title"><Glyph name={isGlyphName(r.icon) ? r.icon : "recipe"} /> {r.name}</span>
+                        {r.description && <span className="dim">{r.description}</span>}
+                        <span className="tags">
+                          <span className="tag">{r.steps.length} steps</span>
+                          {Object.values(r.inputs).filter((i) => i.required !== false).slice(0, 3).map((i, k) => (
+                            <span key={k} className="tag"><Glyph name={inputGlyph(i.type)} /> {i.label ?? i.type}</span>
+                          ))}
+                          <span className="tag">{r.source === "builtin" ? "built-in" : "yours"}</span>
+                          {!fillable && <span className="tag amber">needs a model</span>}
+                          {lastRun && <span className="tag">last run {new Date(lastRun.startedAt).toLocaleDateString()}</span>}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-                <p className="muted result-hint">Each result below is a tab. Edit one and only the steps after it run again.</p>
+                {recipes?.errors.map((e) => (
+                  <pre key={e.path} className="error">{e.path}: {e.error}</pre>
+                ))}
               </Zone>
-              {run.status === "needs_review" && (
-                <ReviewPanel run={run} steps={runRecipe?.steps ?? []} busy={running} onDecide={editAndRerun} />
-              )}
-              <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} steps={runRecipe?.steps ?? []} busy={running} onEdit={editAndRerun} />
-              <p className="result-line">
-                How this was made: <button className="link" onClick={() => setPlace("running")}>the trace (every step, model, and timing)</button>
-                {" · "}
-                <button className="link" onClick={() => { if (runRecipe) setRecipeId(runRecipe.id); setPlace("door"); }}>the map (open the door)</button>
-              </p>
+              <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={openRun} onError={(m) => setError(m)} />
+              <HistoryPanel history={history} onOpen={openRun} />
+              <UsagePanel usage={usage} />
             </>
-          ) : running ? (
-            <Zone>
-              <Empty word="Running">
-                <p>The result lands here when the run finishes.</p>
-                <button onClick={() => setPlace("running")}>Watch it run</button>
-              </Empty>
-            </Zone>
-          ) : run && run.status === "failed" ? (
-            <>
-              <Zone title="This run failed" className="accent">
-                <pre className="error">{run.error ?? run.steps.find((s) => s.error)?.error ?? "no reason recorded"}</pre>
-                <button onClick={() => setPlace("setup")}>Back to Set up</button>
+          )}
+
+          {place === "settings" && (
+            <SettingsPanel look={look} onLook={setLook} models={models} onRefreshModels={refreshModels} status={status}
+              onRevealRecipes={() => api.revealRecipesFolder().catch((e) => setError(String(e)))} />
+          )}
+
+          {place === "new" && recipes && (
+            <NewRecipe recipes={recipes.recipes} busy={creating} error={createError} onCreate={createRecipe}
+              onCancel={() => setPlace(recipe ? "recipe" : "library")} />
+          )}
+
+          {place === "recipe" && recipe && (
+            <RecipePage recipe={recipe} models={models?.models ?? []} history={history} watches={watches}
+              map={flowFor(recipe, false)}
+              onSetup={() => setPlace("setup")} onDoor={() => setPlace("door")} onOpenRun={openRun}
+              onDuplicate={() => duplicateRecipe(recipe)} onRename={(n) => renameRecipe(recipe, n)} onDelete={() => deleteRecipe(recipe)}
+              onWatchesChanged={refreshWatches} onError={(m) => setError(m)} />
+          )}
+
+          {place === "setup" && recipes && recipe && (
+            <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
+              models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} />
+          )}
+
+          {place === "running" && (
+            runningHere || runIsHere ? (
+              <>
+                {flowFor(runRecipe ?? recipe, false)}
+                <TracePanel run={runIsHere ? run : null} steps={runIsHere || runningHere ? steps : []} />
+              </>
+            ) : (
+              <Zone>
+                <Empty word="Nothing running">
+                  <p>Set up a run and press Run. This place shows each step as it happens.</p>
+                  <button onClick={() => setPlace("setup")}>Go to Set up</button>
+                </Empty>
               </Zone>
-              <TracePanel run={run} steps={steps} />
-            </>
-          ) : (
-            <Zone>
-              <Empty word="No result yet">
-                <p>Run a recipe and what it makes shows up here: notes, slides, tables, audio.</p>
-                <button onClick={() => setPlace("setup")}>Go to Set up</button>
-              </Empty>
-            </Zone>
-          )
-        )}
+            )
+          )}
 
-        {place === "door" && flowFor(recipe)}
+          {place === "results" && (
+            runIsHere && run && showResult ? (
+              <>
+                <Zone title={run.status === "needs_review" ? "Waiting for you" : `What ${run.recipeName} made`} sub={run.status === "needs_review" ? "the run is paused at a review step" : "this run's results"}
+                  aside={<>
+                    {runsOfThis.length > 1 && (
+                      <label className="run-pick">
+                        <span className="muted">run</span>
+                        <select value={run.id} onChange={(e) => openRun(e.target.value)} aria-label="Which run">
+                          {runsOfThis.map((h) => <option key={h.id} value={h.id}>{new Date(h.startedAt).toLocaleString()} · {STATUS_WORD[h.status] ?? h.status}</option>)}
+                        </select>
+                      </label>
+                    )}
+                    <span>{new Date(run.startedAt).toLocaleString()}{run.finishedAt ? ` · took ${fmtElapsed(Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000))}` : ""}</span>
+                  </>}>
+                  <div className="facts">
+                    <span className="label">From</span>
+                    <span>
+                      {Object.entries(run.inputs ?? {}).filter(([, v]) => v != null && v !== "").length === 0 ? <span className="muted">no inputs</span> :
+                        Object.entries(run.inputs ?? {}).filter(([, v]) => v != null && v !== "").map(([k, v]) => (
+                          <span key={k} className="fact"><Glyph name={inputGlyph(runRecipe?.inputs[k]?.type ?? "text")} /> <span className="muted">{runRecipe?.inputs[k]?.label ?? k}:</span> <span className="mono">{shortValue(v)}</span></span>
+                        ))}
+                    </span>
+                    <span className="label">Made by</span>
+                    <span>
+                      {Object.values(run.resolutions ?? {}).length === 0 ? <span className="muted">programs only, no model</span> :
+                        Object.values(run.resolutions ?? {}).map((r) => (
+                          <span key={r.slot} className="fact"><Glyph name="ai" /> <span className="muted">{r.slot}:</span> <span className="mono">{r.modelId}</span> <span className="tag">local</span></span>
+                        ))}
+                      {" "}<span className="muted">· {run.steps.filter((s) => !s.parent).length} steps{run.steps.some((s) => s.reusedFrom) ? `, ${run.steps.filter((s) => s.reusedFrom).length} reused from earlier runs` : ""}</span>
+                    </span>
+                    {(editedNames.length > 0 || run.trigger) && <>
+                      <span className="label">Note</span>
+                      <span className="muted">
+                        {editedNames.length > 0 && <>Includes your {run.steps.some((s) => s.edited && s.kind === "review") ? "decision on" : "edit to"} <strong>{editedNames.join(", ")}</strong>. </>}
+                        {run.trigger && <>Started by the folder watch{run.trigger.changed.length > 0 ? <> after <strong>{run.trigger.changed.slice(0, 3).join(", ")}{run.trigger.changed.length > 3 ? ` and ${run.trigger.changed.length - 3} more` : ""}</strong> landed</> : " (Run now)"}.</>}
+                      </span>
+                    </>}
+                  </div>
+                  <p className="muted result-hint">Each result below is a tab. Edit one and only the steps after it run again.</p>
+                </Zone>
+                {run.status === "needs_review" && (
+                  <ReviewPanel run={run} steps={runRecipe?.steps ?? []} busy={running} onDecide={editAndRerun} />
+                )}
+                <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} steps={runRecipe?.steps ?? []} busy={running} onEdit={editAndRerun} />
+                <p className="result-line">
+                  How this was made: <button className="link" onClick={() => setPlace("running")}>the trace (every step, model, and timing)</button>
+                  {" · "}
+                  <button className="link" onClick={() => setPlace("door")}>the map (open the door)</button>
+                </p>
+              </>
+            ) : runningHere ? (
+              <Zone>
+                <Empty word="Running">
+                  <p>The result lands here when the run finishes.</p>
+                  <button onClick={() => setPlace("running")}>Watch it run</button>
+                </Empty>
+              </Zone>
+            ) : runIsHere && run && run.status === "failed" ? (
+              <>
+                <Zone title="This run failed" className="accent">
+                  <pre className="error">{run.error ?? run.steps.find((s) => s.error)?.error ?? "no reason recorded"}</pre>
+                  <button onClick={() => setPlace("setup")}>Back to Set up</button>
+                </Zone>
+                <TracePanel run={run} steps={steps} />
+              </>
+            ) : (
+              <Zone>
+                <Empty word="No result yet">
+                  <p>Run this recipe and what it makes shows up here: notes, slides, tables, audio.</p>
+                  <button onClick={() => setPlace("setup")}>Go to Set up</button>
+                </Empty>
+              </Zone>
+            )
+          )}
 
-        {error && <pre className="error">{error}</pre>}
-      </div>
+          {place === "door" && flowFor(recipe)}
 
-      <footer>
-        {status
-          ? `${status.schemaTitle} v0 · tools: ${status.tools.join(", ")} · ${status.runCount} runs · recipes from ${status.recipeRoots.join(" and ")}`
-          : "…"}
-      </footer>
-    </main>
+          {error && <pre className="error">{error}</pre>}
+        </div>
+
+        <footer>
+          {status
+            ? `${status.schemaTitle} v0 · tools: ${status.tools.join(", ")} · ${status.runCount} runs`
+            : "…"}
+        </footer>
+      </main>
+    </>
   );
 }
 

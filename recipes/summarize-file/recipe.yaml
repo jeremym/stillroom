@@ -1,6 +1,7 @@
 schemaVersion: "0"
 id: summarize-file
 name: Summarize a File
+icon: notes
 version: 0.1.0
 description: Reads a text file and writes a concise Markdown summary. The walking-skeleton recipe.
 author:

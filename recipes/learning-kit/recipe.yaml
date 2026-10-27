@@ -1,6 +1,7 @@
 schemaVersion: "0"
 id: learning-kit
 name: Learning Kit
+icon: learn
 version: 0.1.0
 description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, a narrated audio lesson, slides, flashcards, a concept map, and a process diagram, all generated from the spine.
 author:

@@ -4,6 +4,7 @@ import { api } from "./api";
 import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
+import { Teletype } from "./components/Teletype";
 import { ArtifactsPanel } from "./components/ArtifactsPanel";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -534,7 +535,13 @@ function App() {
                   </div>
                 )}
                 {flowFor(runRecipe ?? recipe, false)}
-                <TracePanel run={runIsHere ? run : null} steps={runIsHere || runningHere ? steps : []} />
+                <Zone title="As it happens" sub="the execution trace, typed as each step starts and finishes">
+                  <Teletype records={runIsHere || runningHere ? steps : []} live={runningHere} />
+                  <details className="trace-table">
+                    <summary className="muted">The same facts as a table</summary>
+                    <TracePanel run={runIsHere ? run : null} steps={runIsHere || runningHere ? steps : []} />
+                  </details>
+                </Zone>
               </>
             ) : (
               <Zone>

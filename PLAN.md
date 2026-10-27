@@ -358,7 +358,7 @@ A downloaded recipe must not automatically gain shell access, read arbitrary fil
 Each stage ships a genuinely useful application.
 
 1. **Stillroom 0.1: one exceptional recipe.** Tauri app, local storage, model discovery (Ollama, LM Studio), source ingestion, Knowledge Spine extraction, the Learning Kit recipe end to end: notes, diagrams, basic slides, narrated audio, flashcards, quiz. Editable artifacts with source references. No graph editor exposed yet, but the engine underneath is already recipe-driven. **Highest priority.**
-2. **Flow Studio.** Visual graph editor, typed step contracts, execution replay, prompt versions, model slots, selective reruns, nested recipes. Natural-language planner with validated execution. Every successful ad hoc run offers **Save as Recipe**; editing a step in a saved recipe offers **Save as variant**. Budgets and per-step model pinning ship here. Second and third built-in recipes (research brief, business report) to prove generality.
+2. **Flow Studio.** Visual graph editor, typed step contracts, execution replay, prompt versions, model slots, selective reruns, nested recipes. Natural-language planner with validated execution. Every successful ad hoc run offers **Save as Recipe**; editing a step in a saved recipe offers **Save as variant**. Budgets and per-step model pinning ship here. Second and third built-in recipes to prove generality (Inbox Triage shipped early, in revision 3; a research brief is next).
 3. **Extensions and sharing.** MCP client, Agent Skills, local extension SDK, recipe bundles, GitHub import/export, curated gallery, permission review UI.
 4. **Advanced orchestration.** Multi-agent collaboration, A2A, evaluations, loops and complex branches, background execution, broader model and media support, Apple Foundation Models bridge.
 5. **General automation platform.** Headless execution, scheduling, CLI and API, OTel export once conventions stabilize, collaboration. Messaging-app triggers (the OpenClaw pattern) belong here if anywhere, not earlier. Same recipe format throughout.
@@ -411,13 +411,13 @@ Lead with the friendly term and put the technical term in parentheses: "How this
 
 Most agent builders start with a blank graph and ask what nodes you want to connect. Stillroom starts by asking what you want to accomplish, produces something useful, then lets you inspect and modify the system that produced it.
 
-Three independently reusable layers:
+Two reusable layers, and one pattern:
 
-- **Knowledge Engine.** Understand source material and maintain relationships between ideas.
-- **Recipe Engine.** Coordinate tools, models, skills, decisions, and execution.
-- **Artifact Engine.** Turn structured information into editable text, slides, diagrams, audio, and data.
+- **Recipe Engine.** Coordinate tools, models, agents, loops, human checkpoints, and execution. Every recipe uses it.
+- **Artifact Engine.** Show and edit whatever a recipe produces, chosen by output type and shape (text, tables, slides, diagrams, audio, data), never by recipe name.
+- **The Knowledge Spine pattern.** A recipe may convert its sources once into a structured representation and derive every output from it. The Learning Kit does this. It is a pattern a recipe can follow, not a layer the product imposes: an inbox-triage recipe has no spine and loses nothing.
 
-The Learning Kit recipe uses all three. Most future recipes will use one or two. That is what lets the design grow well beyond the showcase without forcing general-purpose workflow complexity onto first users.
+That is what lets the design grow well beyond the showcase without forcing general-purpose workflow complexity onto first users.
 
 The output is the entry point. The orchestration is the discoverable, editable mechanism behind it.
 
@@ -448,3 +448,9 @@ Revision 2, same day, after review:
 - Vocabulary rule flipped: friendly term first, technical term in parentheses.
 - Haystack and mozilla.ai checked and ruled out as workflow standards.
 - Hermes Agent and OpenClaw added to the competitor table; messaging triggers deferred to phase 5.
+
+Revision 3, same day, after the first six milestones:
+
+- Generality check. The engine was generic but the surface was learning-shaped: one recipe, learning-specific viewers in core UI, three tools, map and branch unsupported, no agent loop, no permissions enforcement, no human checkpoint. Fixed by building a second, non-learning recipe (Inbox Triage) that forced: `map` and `when` execution, an `agent` step with tool calling, a `review` step (the run pauses; approval is fed back as that step's output), enforced filesystem permissions, generic `fs.list`, `fs.write`, `email.parse`, `email.write_draft`, `list.filter`, `list.table` tools, a viewer registry keyed by output type and value shape, and `table` as an output type.
+- Resume semantics. Continuing a run (approval or edit) reuses every step the prior run completed with identical inputs, including non-cacheable ones, so a side effect such as filing an email never repeats.
+- The Knowledge Spine demoted from a product layer to a recipe pattern (section 15).

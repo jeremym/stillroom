@@ -9,6 +9,8 @@ use std::collections::{BTreeSet, HashMap};
 pub enum Ref {
     Input { name: String, path: Vec<String> },
     Step { step: String, path: Vec<String> },
+    /// A map-item variable such as `${email.path}`.
+    Var { name: String, path: Vec<String> },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +23,8 @@ pub enum RefError {
     MissingStep(String),
     #[error("path {path} not found in {root}")]
     MissingPath { root: String, path: String },
+    #[error("unknown variable {0} (not an input, a step, or a map item)")]
+    UnknownVar(String),
 }
 
 /// Parse a whole-string reference. Returns None if the string is not a reference at all.
@@ -40,6 +44,9 @@ pub fn parse_ref(s: &str) -> Option<Result<Ref, RefError>> {
             }
             _ => Err(RefError::Malformed(s.into())),
         },
+        name if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !name.is_empty() => {
+            Ok(Ref::Var { name: name.to_string(), path: parts })
+        }
         _ => Err(RefError::Malformed(s.into())),
     })
 }
@@ -48,6 +55,8 @@ pub fn parse_ref(s: &str) -> Option<Result<Ref, RefError>> {
 pub struct Context<'a> {
     pub inputs: &'a IndexMap<String, Value>,
     pub step_outputs: &'a HashMap<String, Value>,
+    /// Map-item bindings in scope, innermost last.
+    pub vars: &'a HashMap<String, Value>,
 }
 
 fn walk<'v>(mut v: &'v Value, path: &[String]) -> Option<&'v Value> {
@@ -77,6 +86,11 @@ pub fn resolve_value(v: &Value, ctx: &Context) -> Result<Value, RefError> {
                     Ref::Step { step, path } => (
                         ctx.step_outputs.get(step).ok_or_else(|| RefError::MissingStep(step.clone()))?,
                         format!("steps.{step}.output"),
+                        path,
+                    ),
+                    Ref::Var { name, path } => (
+                        ctx.vars.get(name).ok_or_else(|| RefError::UnknownVar(name.clone()))?,
+                        name.clone(),
                         path,
                     ),
                 };
@@ -127,6 +141,10 @@ mod tests {
         );
         assert!(parse_ref("plain text").is_none());
         assert!(parse_ref("${steps.read.text}").unwrap().is_err());
+        assert_eq!(
+            parse_ref("${email.path}").unwrap().unwrap(),
+            Ref::Var { name: "email".into(), path: vec!["path".into()] }
+        );
     }
 
     #[test]
@@ -134,12 +152,14 @@ mod tests {
         let inputs = IndexMap::from([("file".to_string(), json!("/tmp/a.txt"))]);
         let mut outputs = HashMap::new();
         outputs.insert("read".to_string(), json!({ "text": "hello", "bytes": 5 }));
-        let ctx = Context { inputs: &inputs, step_outputs: &outputs };
-        let v = json!({ "path": "${inputs.file}", "body": "${steps.read.output.text}", "n": 1 });
+        let vars = HashMap::from([("item".to_string(), json!({ "k": "v" }))]);
+        let ctx = Context { inputs: &inputs, step_outputs: &outputs, vars: &vars };
+        let v = json!({ "path": "${inputs.file}", "body": "${steps.read.output.text}", "n": 1, "it": "${item.k}" });
         assert_eq!(
             resolve_value(&v, &ctx).unwrap(),
-            json!({ "path": "/tmp/a.txt", "body": "hello", "n": 1 })
+            json!({ "path": "/tmp/a.txt", "body": "hello", "n": 1, "it": "v" })
         );
+        assert!(matches!(resolve_value(&json!("${nope.x}"), &ctx), Err(RefError::UnknownVar(_))));
         let mut deps = BTreeSet::new();
         step_refs(&v, &mut deps);
         assert_eq!(deps, BTreeSet::from(["read".to_string()]));

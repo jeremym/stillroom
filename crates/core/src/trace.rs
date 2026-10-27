@@ -12,6 +12,8 @@ pub enum RunStatus {
     Succeeded,
     Failed,
     Cancelled,
+    /// Finished as far as it can: a review step is waiting for the user.
+    NeedsReview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +53,25 @@ pub struct StepRecord {
     /// Set when the output is one the user edited (change propagation) rather than generated.
     #[serde(default)]
     pub edited: bool,
+    /// For steps inside a map: the map step's id.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Why a skipped step was skipped: a `when` that was not set, or a pending review.
+    #[serde(default)]
+    pub skip_reason: Option<String>,
+    /// For agent steps: every tool call the model made, in order.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCallRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallRecord {
+    pub tool: String,
+    pub inputs: Value,
+    pub output: Option<Value>,
+    pub error: Option<String>,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

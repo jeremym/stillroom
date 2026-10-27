@@ -1,0 +1,21 @@
+From: The Weekly Byte <news@weeklybyte.example>
+To: me@example.com
+Subject: This week: 7 tools for local AI, plus a reader survey
+Date: Tue, 27 Oct 2026 06:00:00 +0000
+Message-ID: <wb-412@weeklybyte.example>
+List-Unsubscribe: <https://weeklybyte.example/u>
+Content-Type: multipart/alternative; boundary="wb"
+
+--wb
+Content-Type: text/plain; charset=utf-8
+
+THE WEEKLY BYTE #412
+
+This week we look at seven tools for running models on your own machine, why context windows keep growing, and what the new agent standards mean for you. Take our two-minute reader survey!
+
+Unsubscribe: https://weeklybyte.example/u
+--wb
+Content-Type: text/html; charset=utf-8
+
+<h1>The Weekly Byte #412</h1><p>Seven tools for local AI...</p>
+--wb--

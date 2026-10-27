@@ -105,10 +105,11 @@ pub struct OutputSpec {
 pub enum Step {
     Tool(ToolStep),
     Model(ModelStep),
-    Agent(OpaqueStep),
+    Agent(AgentStep),
     Recipe(OpaqueStep),
     Branch(OpaqueStep),
-    Map(OpaqueStep),
+    Map(MapStep),
+    Review(ReviewStep),
 }
 
 impl Step {
@@ -116,7 +117,10 @@ impl Step {
         match self {
             Step::Tool(s) => &s.id,
             Step::Model(s) => &s.id,
-            Step::Agent(s) | Step::Recipe(s) | Step::Branch(s) | Step::Map(s) => &s.id,
+            Step::Agent(s) => &s.id,
+            Step::Map(s) => &s.id,
+            Step::Review(s) => &s.id,
+            Step::Recipe(s) | Step::Branch(s) => &s.id,
         }
     }
 
@@ -124,7 +128,42 @@ impl Step {
         match self {
             Step::Tool(s) => s.name.as_deref(),
             Step::Model(s) => s.name.as_deref(),
-            Step::Agent(s) | Step::Recipe(s) | Step::Branch(s) | Step::Map(s) => s.name.as_deref(),
+            Step::Agent(s) => s.name.as_deref(),
+            Step::Map(s) => s.name.as_deref(),
+            Step::Review(s) => s.name.as_deref(),
+            Step::Recipe(s) | Step::Branch(s) => s.name.as_deref(),
+        }
+    }
+
+    /// The `when` condition, a reference that must resolve truthy for the step to run.
+    pub fn when(&self) -> Option<&str> {
+        match self {
+            Step::Tool(s) => s.when.as_deref(),
+            Step::Model(s) => s.when.as_deref(),
+            Step::Agent(s) => s.when.as_deref(),
+            Step::Map(s) => s.when.as_deref(),
+            Step::Review(s) => s.when.as_deref(),
+            Step::Recipe(_) | Step::Branch(_) => None,
+        }
+    }
+
+    /// Whether the output may be reused from an earlier run.
+    pub fn checkpoint(&self) -> bool {
+        match self {
+            Step::Tool(s) => s.checkpoint,
+            Step::Model(s) => s.checkpoint,
+            Step::Agent(s) => s.checkpoint,
+            Step::Map(_) | Step::Review(_) | Step::Recipe(_) | Step::Branch(_) => false,
+        }
+    }
+
+    pub fn output_schema(&self) -> Option<&Value> {
+        match self {
+            Step::Tool(s) => s.output_schema.as_ref(),
+            Step::Model(s) => s.output_schema.as_ref(),
+            Step::Agent(s) => s.output_schema.as_ref(),
+            Step::Review(_) => Some(&REVIEW_OUTPUT_SCHEMA),
+            Step::Map(_) | Step::Recipe(_) | Step::Branch(_) => None,
         }
     }
 
@@ -136,6 +175,7 @@ impl Step {
             Step::Recipe(_) => "recipe",
             Step::Branch(_) => "branch",
             Step::Map(_) => "map",
+            Step::Review(_) => "review",
         }
     }
 
@@ -143,7 +183,10 @@ impl Step {
         match self {
             Step::Tool(s) => &s.inputs,
             Step::Model(s) => &s.inputs,
-            Step::Agent(s) | Step::Recipe(s) | Step::Branch(s) | Step::Map(s) => &s.inputs,
+            Step::Agent(s) => &s.inputs,
+            Step::Map(s) => &s.inputs,
+            Step::Review(s) => &s.inputs,
+            Step::Recipe(s) | Step::Branch(s) => &s.inputs,
         }
     }
 
@@ -151,10 +194,27 @@ impl Step {
         match self {
             Step::Tool(s) => &s.depends_on,
             Step::Model(s) => &s.depends_on,
-            Step::Agent(s) | Step::Recipe(s) | Step::Branch(s) | Step::Map(s) => &s.depends_on,
+            Step::Agent(s) => &s.depends_on,
+            Step::Map(s) => &s.depends_on,
+            Step::Review(s) => &s.depends_on,
+            Step::Recipe(s) | Step::Branch(s) => &s.depends_on,
         }
     }
 }
+
+/// What a review step produces once the user has decided.
+pub static REVIEW_OUTPUT_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    serde_json::json!({
+        "type": "object",
+        "required": ["decided", "approved", "rejected"],
+        "properties": {
+            "decided": { "type": "boolean" },
+            "approved": { "type": "array" },
+            "rejected": { "type": "array" },
+            "items": { "type": "array" }
+        }
+    })
+});
 
 /// Deterministic: always runs one registered capability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +230,8 @@ pub struct ToolStep {
     pub output_schema: Option<Value>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub when: Option<String>,
     /// If false, this step is never reused from a previous run.
     #[serde(default = "default_true")]
     pub checkpoint: bool,
@@ -198,9 +260,98 @@ pub struct ModelStep {
     pub params: Option<ModelParams>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub when: Option<String>,
     /// If false, this step is never reused from a previous run.
     #[serde(default = "default_true")]
     pub checkpoint: bool,
+}
+
+/// Agentic: the model may call tools from `allowed_tools` in a loop, inside the step envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStep {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub slot: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub prompt_version: Option<String>,
+    #[serde(default)]
+    pub inputs: IndexMap<String, Value>,
+    #[serde(default)]
+    pub output_schema: Option<Value>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: u32,
+    #[serde(default)]
+    pub params: Option<ModelParams>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub when: Option<String>,
+    #[serde(default = "default_true")]
+    pub checkpoint: bool,
+}
+
+fn default_max_turns() -> u32 {
+    10
+}
+fn default_max_tool_calls() -> u32 {
+    20
+}
+
+/// Runs its steps once per element of `over`, binding the element to `${<as>}`.
+/// Output: an array with one object per item, keyed by inner step id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MapStep {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub over: String,
+    #[serde(default = "default_item", rename = "as")]
+    pub item_name: String,
+    #[serde(default = "default_concurrency")]
+    pub concurrency: u32,
+    pub steps: Vec<Step>,
+    #[serde(default)]
+    pub inputs: IndexMap<String, Value>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub when: Option<String>,
+}
+
+fn default_item() -> String {
+    "item".into()
+}
+fn default_concurrency() -> u32 {
+    4
+}
+
+/// Human checkpoint: the run pauses with status needs_review until the user decides per item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewStep {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub items: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub show: Vec<String>,
+    #[serde(default)]
+    pub inputs: IndexMap<String, Value>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub when: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

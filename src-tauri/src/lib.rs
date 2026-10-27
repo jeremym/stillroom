@@ -187,6 +187,7 @@ async fn rerun_with_edit(app: AppHandle, state: State<'_, AppState>, args: EditA
     request.artifact_base = Some(state.artifacts_dir.clone());
     request.reuse = args.reuse;
     request.edits = edits;
+    request.resume_from = Some(Box::new(prior));
     let run = executor.run(request, Some(observer)).await;
 
     state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;

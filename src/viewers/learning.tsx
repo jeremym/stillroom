@@ -1,0 +1,60 @@
+import { useState } from "react";
+
+/* Viewers for the Learning Kit's shapes. They are chosen by the shape of the value, so any
+   recipe that emits the same shape gets them, and no other recipe sees them. */
+
+export interface Concept { id: string; name: string; definition: string; prerequisites: string[]; related: string[]; evidence: string[] }
+export interface Claim { id: string; text: string; concepts: string[]; evidence: string }
+export interface Card { front: string; back: string; concept: string }
+export interface SpineValue { title: string; summary: string; concepts: Concept[]; claims: Claim[] }
+
+export function isSpine(v: unknown): v is SpineValue {
+  return typeof v === "object" && v !== null && Array.isArray((v as { concepts?: unknown }).concepts) && Array.isArray((v as { claims?: unknown }).claims);
+}
+export function isCards(v: unknown): v is { cards: Card[] } {
+  return typeof v === "object" && v !== null && Array.isArray((v as { cards?: unknown }).cards);
+}
+
+export function Spine({ spine }: { spine: SpineValue }) {
+  const byId = new Map(spine.concepts.map((c) => [c.id, c.name]));
+  const name = (id: string) => byId.get(id) ?? id;
+  return (
+    <div className="spine">
+      <p><strong>{spine.title}</strong> · {spine.summary}</p>
+      <ul className="concepts">
+        {spine.concepts.map((c) => (
+          <li key={c.id}>
+            <strong>{c.name}</strong> — {c.definition}
+            {c.prerequisites.length > 0 && <div className="muted">needs: {c.prerequisites.map(name).join(", ")}</div>}
+            {c.related.length > 0 && <div className="muted">related: {c.related.map(name).join(", ")}</div>}
+            {c.evidence[0] && <div className="quote">“{c.evidence[0]}”</div>}
+          </li>
+        ))}
+      </ul>
+      {spine.claims.length > 0 && (
+        <>
+          <h4>Claims <span className="muted">({spine.claims.length})</span></h4>
+          <ul>
+            {spine.claims.map((cl) => (
+              <li key={cl.id}>{cl.text} <span className="muted">· {cl.concepts.map(name).join(", ")}</span></li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function Cards({ cards }: { cards: Card[] }) {
+  const [flipped, setFlipped] = useState<Record<number, boolean>>({});
+  return (
+    <div className="cards">
+      {cards.map((c, i) => (
+        <button key={i} className={`card ${flipped[i] ? "back" : ""}`} onClick={() => setFlipped((f) => ({ ...f, [i]: !f[i] }))}>
+          <div className="card-face">{flipped[i] ? c.back : c.front}</div>
+          <div className="muted mono">{flipped[i] ? "answer" : "question"} · {c.concept}</div>
+        </button>
+      ))}
+    </div>
+  );
+}

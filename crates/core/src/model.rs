@@ -35,11 +35,40 @@ impl InstalledModel {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// Tool calls the assistant made in this message (echoed back in the transcript).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// For `role: tool` messages, the tool that produced `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+}
+
+impl ChatMessage {
+    pub fn new(role: &str, content: impl Into<String>) -> Self {
+        Self { role: role.into(), content: content.into(), tool_calls: Vec::new(), tool_name: None }
+    }
+}
+
+/// A tool the model may call, described to the provider in JSON Schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub name: String,
+    pub arguments: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
+    /// Tools the model may call. Empty means a plain completion.
+    #[serde(default)]
+    pub tools: Vec<ToolSpec>,
     /// If set, the provider is asked to constrain output to this JSON Schema.
     pub json_schema: Option<serde_json::Value>,
     pub temperature: Option<f32>,
@@ -54,6 +83,9 @@ pub struct ChatRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub content: String,
+    /// Tool calls the model wants made before it can continue.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
 }

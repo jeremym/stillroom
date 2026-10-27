@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["folder", "path"],
+  "additionalProperties": false,
+  "properties": {
+    "folder": { "type": "string" },
+    "path": { "type": "string" }
+  }
+}

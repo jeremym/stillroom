@@ -6,6 +6,7 @@ import { ModelsPanel } from "./components/ModelsPanel";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
 import { ArtifactsPanel } from "./components/ArtifactsPanel";
+import { ReviewPanel } from "./components/ReviewPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { UsagePanel } from "./components/UsagePanel";
 import "./App.css";
@@ -103,6 +104,7 @@ function App() {
 
   const steps = run?.steps ?? liveSteps;
   const editedNames = run?.steps.filter((s) => s.edited).map((s) => s.name ?? s.stepId) ?? [];
+  const showResult = run && (run.status === "succeeded" || run.status === "needs_review");
 
   return (
     <main className="shell">
@@ -111,14 +113,17 @@ function App() {
         <p className="tagline">Describe the goal. Get the result. Open the door.</p>
       </header>
 
-      {run && run.status === "succeeded" && (
+      {showResult && (
         <p className="muted">
-          Latest result · {run.recipeName} · {new Date(run.startedAt).toLocaleString()}
-          {editedNames.length > 0 && <> · includes your edit to <strong>{editedNames.join(", ")}</strong></>}
+          {run.status === "needs_review" ? "Waiting for you" : "Latest result"} · {run.recipeName} · {new Date(run.startedAt).toLocaleString()}
+          {editedNames.length > 0 && <> · includes your {run.steps.some((s) => s.edited && s.kind === "review") ? "decision on" : "edit to"} <strong>{editedNames.join(", ")}</strong></>}
           <span className="muted"> · the recipe panel below starts a new run</span>
         </p>
       )}
-      {run && run.status === "succeeded" && (
+      {run && run.status === "needs_review" && (
+        <ReviewPanel run={run} steps={runRecipe?.steps ?? []} busy={running} onDecide={editAndRerun} />
+      )}
+      {showResult && (
         <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} steps={runRecipe?.steps ?? []} busy={running} onEdit={editAndRerun} />
       )}
       <TracePanel run={run} steps={steps} />

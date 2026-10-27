@@ -1,19 +1,22 @@
-//! Executes a recipe: orders steps by their data dependencies, runs tool and model
-//! steps, records a trace. Sequential for now; parallel branches come with Flow Studio.
+//! Executes a recipe: orders steps by their data dependencies, runs tool, model, agent,
+//! map, and review steps, records a trace. Sequential for now; parallel branches come with
+//! Flow Studio.
 
 use indexmap::IndexMap;
 
 use crate::cache::{fingerprint, CachedStep, StepCache};
-use crate::model::{ChatMessage, ChatRequest, ModelClient};
-use crate::propagate::{dependencies, inputs_fingerprint, StepEdit};
-use crate::recipe::{Recipe, Step};
+use crate::model::{ChatMessage, ChatRequest, ModelClient, ToolSpec};
+use crate::propagate::{dependencies, dependents, inputs_fingerprint, StepEdit};
+use crate::recipe::{AgentStep, MapStep, Recipe, Step};
 use crate::refs::{self, Context};
 use crate::resolve::Resolution;
-use crate::tools::{ToolContext, ToolRegistry};
-use crate::trace::{Run, RunStatus, StepRecord, StepStatus};
+use crate::tools::{normalize_path, FsPolicy, ToolContext, ToolRegistry};
+use crate::trace::{Run, RunStatus, StepRecord, StepStatus, ToolCallRecord};
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +43,12 @@ pub enum ExecError {
     Output { name: String, source: refs::RefError },
     #[error("step {step}: edited output does not match its schema: {message}")]
     BadEdit { step: String, message: String },
+    #[error("step {step}: `over` must resolve to an array, got {got}")]
+    NotAnArray { step: String, got: String },
+    #[error("step {step}: agent used all {turns} turns without finishing")]
+    AgentTurns { step: String, turns: u32 },
+    #[error("step {step}: tool {tool} cannot be given to an agent (it has no description)")]
+    ToolNotDescribable { step: String, tool: String },
 }
 
 pub struct RunRequest {
@@ -55,6 +64,10 @@ pub struct RunRequest {
     pub reuse: bool,
     /// User edits to apply as step outputs, by step id (change propagation).
     pub edits: BTreeMap<String, StepEdit>,
+    /// The run this one continues (an approval or an edit). Every step that run completed
+    /// with the same inputs is reused from its trace, even steps that are not cacheable, so
+    /// continuing never repeats a side effect such as filing an email.
+    pub resume_from: Option<Box<Run>>,
 }
 
 /// Called after each step record changes, so a UI can show live progress.
@@ -64,6 +77,83 @@ pub struct Executor {
     pub tools: Arc<ToolRegistry>,
     pub models: Arc<dyn ModelClient>,
     pub cache: Option<Arc<dyn StepCache>>,
+}
+
+/// Mutable state of one run while it executes.
+struct RunState<'a> {
+    req: &'a RunRequest,
+    run_id: String,
+    tool_ctx: ToolContext,
+    /// Outputs of top-level steps.
+    outputs: HashMap<String, Value>,
+    records: Vec<StepRecord>,
+    position: u32,
+    observe: Option<StepObserver>,
+    /// Top-level steps blocked behind a review that is still pending.
+    held: BTreeSet<String>,
+    needs_review: bool,
+}
+
+/// Where a step runs: map-item bindings and the outputs of sibling steps in the same list.
+struct Scope<'a> {
+    vars: &'a HashMap<String, Value>,
+    local: &'a HashMap<String, Value>,
+    parent: Option<&'a str>,
+}
+
+/// Build the filesystem policy from `permissions.filesystem` and the actual inputs.
+/// `input` means every file, files, or directory input; `output` the run's artifact folder;
+/// `${inputs.x}` one input; anything else a literal path. With no permissions block, inputs
+/// are readable and nothing outside the artifact folder is writable.
+pub fn fs_policy(recipe: &Recipe, inputs: &IndexMap<String, Value>, artifact_dir: &std::path::Path) -> FsPolicy {
+    let path_inputs: Vec<PathBufLike> = recipe
+        .inputs
+        .iter()
+        .filter(|(_, spec)| matches!(spec.get("type").and_then(Value::as_str), Some("file" | "files" | "directory")))
+        .filter_map(|(name, _)| inputs.get(name).map(|v| (name.clone(), v.clone())))
+        .collect();
+    let expand = |entry: &str| -> Vec<std::path::PathBuf> {
+        match entry {
+            "input" => path_inputs.iter().flat_map(|(_, v)| value_paths(v)).collect(),
+            "output" => vec![artifact_dir.to_path_buf()],
+            e => match refs::parse_ref(e) {
+                Some(Ok(refs::Ref::Input { name, .. })) => inputs.get(&name).map(value_paths).unwrap_or_default(),
+                Some(_) => Vec::new(),
+                None => vec![normalize_path(e)],
+            },
+        }
+    };
+    let fs = recipe.permissions.as_ref().and_then(|p| p.get("filesystem"));
+    let list = |key: &str| -> Option<Vec<String>> {
+        fs?.get(key)?.as_array().map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+    };
+    let read = list("read").unwrap_or_else(|| vec!["input".into()]);
+    let write = list("write").unwrap_or_default();
+    FsPolicy {
+        read_roots: read.iter().flat_map(|e| expand(e)).collect(),
+        write_roots: write.iter().flat_map(|e| expand(e)).collect(),
+    }
+}
+
+type PathBufLike = (String, Value);
+
+fn value_paths(v: &Value) -> Vec<std::path::PathBuf> {
+    match v {
+        Value::String(s) => vec![normalize_path(s)],
+        Value::Array(a) => a.iter().filter_map(Value::as_str).map(normalize_path).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::Object(_) => true,
+    }
 }
 
 impl Executor {
@@ -77,37 +167,44 @@ impl Executor {
     }
 
     /// Everything that determines a step's output: its definition, the resolved inputs,
-    /// and for model steps the model id and the prompt text.
+    /// and for model and agent steps the model id and the prompt text.
     fn cache_key(&self, req: &RunRequest, step: &Step, inputs: &Value) -> Option<String> {
         let def = serde_json::to_string(step).ok()?;
         let inputs = serde_json::to_string(inputs).ok()?;
-        let (model, prompt) = match step {
-            Step::Model(m) => (
-                req.resolutions.get(&m.slot).map(|r| r.model_id.clone()).unwrap_or_default(),
-                req.prompts.get(&m.prompt).cloned().unwrap_or_default(),
-            ),
-            _ => (String::new(), String::new()),
+        let (slot, prompt) = match step {
+            Step::Model(m) => (Some(&m.slot), Some(&m.prompt)),
+            Step::Agent(a) => (Some(&a.slot), Some(&a.prompt)),
+            _ => (None, None),
         };
+        let model = slot.and_then(|s| req.resolutions.get(s)).map(|r| r.model_id.clone()).unwrap_or_default();
+        let prompt = prompt.and_then(|p| req.prompts.get(p)).cloned().unwrap_or_default();
         Some(fingerprint(&[&req.recipe.id, step.id(), &def, &inputs, &model, &prompt]))
     }
 
     fn reusable(&self, req: &RunRequest, step: &Step) -> bool {
-        if !req.reuse || self.cache.is_none() {
+        if !req.reuse || self.cache.is_none() || !step.checkpoint() {
             return false;
         }
         match step {
-            Step::Tool(t) => t.checkpoint && self.tools.get(&t.tool).is_some_and(|tool| tool.cacheable()),
-            Step::Model(m) => m.checkpoint,
+            Step::Tool(t) => self.tools.get(&t.tool).is_some_and(|tool| tool.cacheable()),
+            Step::Model(_) => true,
+            // An agent may have acted on the world through its tools; only reuse when every
+            // tool it may call is itself cacheable.
+            Step::Agent(a) => a.allowed_tools.iter().all(|t| self.tools.get(t).is_some_and(|tool| tool.cacheable())),
             _ => false,
         }
     }
 
     /// Topological order from data references plus explicit `dependsOn`.
     pub fn order(recipe: &Recipe) -> Result<Vec<usize>, ExecError> {
-        let n = recipe.steps.len();
-        let index: HashMap<&str, usize> = recipe.steps.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
+        Self::order_steps(&recipe.steps)
+    }
+
+    fn order_steps(steps: &[Step]) -> Result<Vec<usize>, ExecError> {
+        let n = steps.len();
+        let index: HashMap<&str, usize> = steps.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
         let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
-        for (i, step) in recipe.steps.iter().enumerate() {
+        for (i, step) in steps.iter().enumerate() {
             for name in dependencies(step) {
                 if let Some(&j) = index.get(name.as_str()) {
                     deps[i].insert(j);
@@ -124,7 +221,7 @@ impl Executor {
                     order.push(i);
                 }
                 None => {
-                    let stuck = (0..n).filter(|&i| !done[i]).map(|i| recipe.steps[i].id().to_string()).collect();
+                    let stuck = (0..n).filter(|&i| !done[i]).map(|i| steps[i].id().to_string()).collect();
                     return Err(ExecError::Cycle(stuck));
                 }
             }
@@ -162,24 +259,87 @@ impl Executor {
         }
         let req = &req;
 
+        let artifact_dir = req
+            .artifact_base
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("stillroom-artifacts"))
+            .join(&run_id);
         let tool_ctx = ToolContext {
             run_id: run_id.clone(),
-            artifact_dir: req
-                .artifact_base
-                .clone()
-                .unwrap_or_else(|| std::env::temp_dir().join("stillroom-artifacts"))
-                .join(&run_id),
+            fs: fs_policy(&req.recipe, &req.inputs, &artifact_dir),
+            artifact_dir,
         };
 
-        let mut outputs: HashMap<String, Value> = HashMap::new();
-        for (position, &i) in order.iter().enumerate() {
+        let mut state = RunState {
+            req,
+            run_id: run_id.clone(),
+            tool_ctx,
+            outputs: HashMap::new(),
+            records: Vec::new(),
+            position: 0,
+            observe,
+            held: BTreeSet::new(),
+            needs_review: false,
+        };
+
+        let empty_vars = HashMap::new();
+        let empty_local = HashMap::new();
+        let mut failure = None;
+        for &i in &order {
             let step = &req.recipe.steps[i];
+            let scope = Scope { vars: &empty_vars, local: &empty_local, parent: None };
+            match self.run_one(step, step.id().to_string(), &scope, &mut state).await {
+                Ok(out) => {
+                    state.outputs.insert(step.id().to_string(), out);
+                }
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+        }
+        run.steps = std::mem::take(&mut state.records);
+        if let Some(e) = failure {
+            return finish(run, Err(e));
+        }
+
+        // Collect declared outputs. While a review is pending, outputs behind it are null.
+        let ctx = Context { inputs: &req.inputs, step_outputs: &state.outputs, vars: &empty_vars };
+        for (name, spec) in &req.recipe.outputs {
+            match refs::resolve_value(&Value::String(spec.from.clone()), &ctx) {
+                Ok(v) => {
+                    run.outputs.insert(name.clone(), v);
+                }
+                Err(_) if state.needs_review => {
+                    run.outputs.insert(name.clone(), Value::Null);
+                }
+                Err(source) => return finish(run, Err(ExecError::Output { name: name.clone(), source })),
+            }
+        }
+        if state.needs_review {
+            run.finished_at = Some(Utc::now());
+            run.status = RunStatus::NeedsReview;
+            return run;
+        }
+        finish(run, Ok(()))
+    }
+
+    /// Run one step in a scope and return its output. Records the trace entry.
+    fn run_one<'s, 'a: 's>(
+        &'s self,
+        step: &'a Step,
+        record_id: String,
+        scope: &'s Scope<'s>,
+        state: &'s mut RunState<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ExecError>> + Send + 's>> {
+        Box::pin(async move {
+            let req = state.req;
             let mut rec = StepRecord {
-                run_id: run_id.clone(),
-                step_id: step.id().to_string(),
+                run_id: state.run_id.clone(),
+                step_id: record_id.clone(),
                 kind: step.kind_name().to_string(),
                 name: step.name().map(str::to_string),
-                position: position as u32,
+                position: state.position,
                 status: StepStatus::Running,
                 started_at: Some(Utc::now()),
                 finished_at: None,
@@ -193,116 +353,203 @@ impl Executor {
                 error: None,
                 reused_from: None,
                 edited: false,
+                parent: scope.parent.map(String::from),
+                skip_reason: None,
+                tool_calls: Vec::new(),
             };
-            if let Some(o) = &observe {
+            state.position += 1;
+            if let Some(o) = &state.observe {
                 o(&rec);
             }
 
-            // Resolve inputs up front so the cache key can see them.
-            let ctx = Context { inputs: &req.inputs, step_outputs: &outputs };
-            let raw = Value::Object(step.inputs().clone().into_iter().collect());
-            let resolved = refs::resolve_value(&raw, &ctx).map_err(|source| ExecError::Ref { step: step.id().into(), source });
-            let mut cache_key = None;
-            let result = match resolved {
-                Err(e) => Err(e),
-                Ok(inputs) => {
-                    rec.inputs = inputs.clone();
-                    // A user edit stands in for the step while the inputs it was made against hold.
-                    let edit = req
-                        .edits
-                        .get(step.id())
-                        .filter(|e| e.inputs_fingerprint == inputs_fingerprint(&inputs));
-                    let key = self.cache_key(req, step, &inputs);
-                    let hit = if edit.is_none() && self.reusable(req, step) {
-                        key.as_deref().and_then(|k| self.cache.as_ref()?.get(k))
-                    } else {
-                        None
-                    };
-                    match (edit, hit) {
-                        (Some(edit), _) => {
-                            rec.edited = true;
-                            if let Step::Model(m) = step {
-                                rec.prompt_path = Some(m.prompt.clone());
-                            }
-                            let schema = match step {
-                                Step::Model(m) => m.output_schema.as_ref(),
-                                Step::Tool(t) => t.output_schema.as_ref(),
-                                _ => None,
-                            };
-                            match schema.map(|s| validate_against(s, &edit.output)) {
-                                Some(Err(message)) => Err(ExecError::BadEdit { step: step.id().into(), message }),
-                                _ => Ok(edit.output.clone()),
-                            }
-                        }
-                        (None, Some(cached)) => {
-                            rec.reused_from = Some(cached.run_id.clone());
-                            rec.model = cached.model.clone();
-                            if let Step::Model(m) = step {
-                                rec.prompt_path = Some(m.prompt.clone());
-                            }
-                            Ok(cached.output)
-                        }
-                        (None, None) => {
-                            cache_key = key;
-                            self.run_step(step, req, &tool_ctx, &mut rec, &inputs).await
+            // References see this list's outputs first, then the top-level ones. Cloned so the
+            // state stays free to mutate while the step runs.
+            let mut step_outputs = state.outputs.clone();
+            step_outputs.extend(scope.local.iter().map(|(k, v)| (k.clone(), v.clone())));
+            let ctx = Context { inputs: &req.inputs, step_outputs: &step_outputs, vars: scope.vars };
+
+            let result: Result<Value, ExecError> = async {
+                // Held behind a pending review?
+                if scope.parent.is_none() && state.held.contains(step.id()) {
+                    rec.skip_reason = Some("waiting for review".into());
+                    return Ok(Value::Null);
+                }
+                // `when` condition.
+                if let Some(cond) = step.when() {
+                    let v = refs::resolve_value(&Value::String(cond.to_string()), &ctx)
+                        .map_err(|source| ExecError::Ref { step: record_id.clone(), source })?;
+                    if !truthy(&v) {
+                        rec.skip_reason = Some(format!("{cond} was not set"));
+                        return Ok(Value::Null);
+                    }
+                }
+                let raw = Value::Object(step.inputs().clone().into_iter().collect());
+                let inputs = refs::resolve_value(&raw, &ctx).map_err(|source| ExecError::Ref { step: record_id.clone(), source })?;
+                rec.inputs = inputs.clone();
+
+                // Continuing a run: anything it already did with these inputs is done.
+                if let Some(prior) = req.resume_from.as_deref() {
+                    if !req.edits.contains_key(&record_id) {
+                        if let Some(done) = prior_result(prior, &record_id, step, &ctx, &inputs) {
+                            rec.reused_from = Some(prior.id.clone());
+                            rec.model = done.model.clone();
+                            rec.prompt_path = done.prompt_path.clone();
+                            rec.tool_calls = done.tool_calls.clone();
+                            rec.inputs = done.inputs.clone();
+                            return Ok(done.output.clone().unwrap_or(Value::Null));
                         }
                     }
                 }
-            };
+
+                match step {
+                    Step::Map(m) => return self.run_map(m, &record_id, &ctx, &mut rec, state).await,
+                    Step::Review(r) => {
+                        let items = refs::resolve_value(&Value::String(r.items.clone()), &ctx)
+                            .map_err(|source| ExecError::Ref { step: record_id.clone(), source })?;
+                        let pinned = Value::Object(serde_json::Map::from_iter([("items".to_string(), items.clone())]));
+                        rec.inputs = pinned.clone();
+                        let edit = req.edits.get(&record_id).filter(|e| e.inputs_fingerprint == inputs_fingerprint(&pinned));
+                        return match edit {
+                            Some(edit) => {
+                                rec.edited = true;
+                                validate_against(&crate::recipe::REVIEW_OUTPUT_SCHEMA, &edit.output)
+                                    .map_err(|message| ExecError::BadEdit { step: record_id.clone(), message })?;
+                                Ok(edit.output.clone())
+                            }
+                            None => {
+                                state.needs_review = true;
+                                if scope.parent.is_none() {
+                                    state.held.extend(dependents(&req.recipe, step.id()));
+                                }
+                                let n = items.as_array().map(Vec::len).unwrap_or(0);
+                                rec.skip_reason = Some(format!("{n} item{} waiting for your decision", if n == 1 { "" } else { "s" }));
+                                Ok(serde_json::json!({ "decided": false, "items": items, "approved": [], "rejected": [] }))
+                            }
+                        };
+                    }
+                    _ => {}
+                }
+
+                // A user edit stands in for the step while the inputs it was made against hold.
+                let edit = req.edits.get(&record_id).filter(|e| e.inputs_fingerprint == inputs_fingerprint(&inputs));
+                let key = self.cache_key(req, step, &inputs);
+                let hit = if edit.is_none() && self.reusable(req, step) {
+                    key.as_deref().and_then(|k| self.cache.as_ref()?.get(k))
+                } else {
+                    None
+                };
+                match (edit, hit) {
+                    (Some(edit), _) => {
+                        rec.edited = true;
+                        if let Step::Model(m) = step {
+                            rec.prompt_path = Some(m.prompt.clone());
+                        }
+                        match step.output_schema().map(|s| validate_against(s, &edit.output)) {
+                            Some(Err(message)) => Err(ExecError::BadEdit { step: record_id.clone(), message }),
+                            _ => Ok(edit.output.clone()),
+                        }
+                    }
+                    (None, Some(cached)) => {
+                        rec.reused_from = Some(cached.run_id.clone());
+                        rec.model = cached.model.clone();
+                        if let Step::Model(m) = step {
+                            rec.prompt_path = Some(m.prompt.clone());
+                        }
+                        Ok(cached.output)
+                    }
+                    (None, None) => {
+                        let out = self.run_step(step, &record_id, req, &state.tool_ctx, &mut rec, &inputs).await?;
+                        if let (Some(cache), Some(key), true) = (&self.cache, key.as_deref(), self.reusable(req, step)) {
+                            cache.put(
+                                key,
+                                &CachedStep {
+                                    run_id: state.run_id.clone(),
+                                    step_id: record_id.clone(),
+                                    model: rec.model.clone(),
+                                    output: out.clone(),
+                                    created_at: Utc::now(),
+                                },
+                            );
+                        }
+                        Ok(out)
+                    }
+                }
+            }
+            .await;
+
             let now = Utc::now();
             rec.finished_at = Some(now);
             rec.duration_ms = rec.started_at.map(|s| (now - s).num_milliseconds().max(0) as u64);
             match result {
                 Ok(out) => {
-                    rec.status = StepStatus::Succeeded;
-                    if let (Some(cache), Some(key), true) = (&self.cache, cache_key.as_deref(), self.reusable(req, step)) {
-                        cache.put(
-                            key,
-                            &CachedStep {
-                                run_id: run_id.clone(),
-                                step_id: step.id().to_string(),
-                                model: rec.model.clone(),
-                                output: out.clone(),
-                                created_at: now,
-                            },
-                        );
-                    }
-                    outputs.insert(step.id().to_string(), out.clone());
-                    rec.output = Some(out);
-                    if let Some(o) = &observe {
+                    rec.status = if rec.skip_reason.is_some() { StepStatus::Skipped } else { StepStatus::Succeeded };
+                    rec.output = Some(out.clone());
+                    if let Some(o) = &state.observe {
                         o(&rec);
                     }
-                    run.steps.push(rec);
+                    state.records.push(rec);
+                    Ok(out)
                 }
                 Err(e) => {
                     rec.status = StepStatus::Failed;
                     rec.error = Some(e.to_string());
-                    if let Some(o) = &observe {
+                    if let Some(o) = &state.observe {
                         o(&rec);
                     }
-                    run.steps.push(rec);
-                    return finish(run, Err(e));
+                    state.records.push(rec);
+                    Err(e)
                 }
             }
-        }
+        })
+    }
 
-        // Collect declared outputs.
-        let ctx = Context { inputs: &req.inputs, step_outputs: &outputs };
-        let mut run = run;
-        for (name, spec) in &req.recipe.outputs {
-            match refs::resolve_value(&Value::String(spec.from.clone()), &ctx) {
-                Ok(v) => {
-                    run.outputs.insert(name.clone(), v);
+    /// Run a map step: its inner steps once per item, in dependency order. Output is an array
+    /// with one object per item, keyed by inner step id.
+    async fn run_map<'a>(
+        &self,
+        m: &'a MapStep,
+        record_id: &str,
+        ctx: &Context<'_>,
+        rec: &mut StepRecord,
+        state: &mut RunState<'a>,
+    ) -> Result<Value, ExecError> {
+        let over = refs::resolve_value(&Value::String(m.over.clone()), ctx)
+            .map_err(|source| ExecError::Ref { step: record_id.to_string(), source })?;
+        let items = over
+            .as_array()
+            .ok_or_else(|| ExecError::NotAnArray { step: record_id.to_string(), got: kind_of(&over) })?
+            .clone();
+        rec.inputs = serde_json::json!({ "over": over });
+        let order = Self::order_steps(&m.steps)?;
+        let mut results = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let mut vars = ctx.vars.clone();
+            vars.insert(m.item_name.clone(), item.clone());
+            let mut local: HashMap<String, Value> = HashMap::new();
+            for &j in &order {
+                let sub = &m.steps[j];
+                if matches!(sub, Step::Map(_) | Step::Review(_)) {
+                    return Err(ExecError::Unsupported { step: sub.id().into(), kind: "nested map/review" });
                 }
-                Err(source) => return finish(run, Err(ExecError::Output { name: name.clone(), source })),
+                let scope = Scope { vars: &vars, local: &local, parent: Some(record_id) };
+                let sub_id = format!("{record_id}[{i}].{}", sub.id());
+                let out = self.run_one(sub, sub_id, &scope, state).await?;
+                local.insert(sub.id().to_string(), out);
             }
+            let mut obj = serde_json::Map::new();
+            obj.insert(m.item_name.clone(), item.clone());
+            for sub in &m.steps {
+                obj.insert(sub.id().to_string(), local.remove(sub.id()).unwrap_or(Value::Null));
+            }
+            results.push(Value::Object(obj));
         }
-        finish(run, Ok(()))
+        Ok(Value::Array(results))
     }
 
     async fn run_step(
         &self,
         step: &Step,
+        record_id: &str,
         req: &RunRequest,
         tool_ctx: &ToolContext,
         rec: &mut StepRecord,
@@ -314,28 +561,26 @@ impl Executor {
                 let tool = self
                     .tools
                     .get(&t.tool)
-                    .ok_or_else(|| ExecError::UnknownTool { step: t.id.clone(), tool: t.tool.clone() })?;
-                tool.call(tool_ctx, inputs).await.map_err(|e| ExecError::Tool { step: t.id.clone(), message: e.to_string() })
+                    .ok_or_else(|| ExecError::UnknownTool { step: record_id.into(), tool: t.tool.clone() })?;
+                tool.call(tool_ctx, inputs).await.map_err(|e| ExecError::Tool { step: record_id.into(), message: e.to_string() })
             }
             Step::Model(m) => {
                 let res = req
                     .resolutions
                     .get(&m.slot)
-                    .ok_or_else(|| ExecError::UnresolvedSlot { step: m.id.clone(), slot: m.slot.clone() })?;
+                    .ok_or_else(|| ExecError::UnresolvedSlot { step: record_id.into(), slot: m.slot.clone() })?;
                 let system = req
                     .prompts
                     .get(&m.prompt)
-                    .ok_or_else(|| ExecError::MissingPrompt { step: m.id.clone(), path: m.prompt.clone() })?;
+                    .ok_or_else(|| ExecError::MissingPrompt { step: record_id.into(), path: m.prompt.clone() })?;
                 rec.model = Some(res.model_id.clone());
                 rec.prompt_path = Some(m.prompt.clone());
 
                 let user = user_message(&inputs);
                 let params = m.params.clone().unwrap_or_default();
                 let chat = ChatRequest {
-                    messages: vec![
-                        ChatMessage { role: "system".into(), content: system.clone() },
-                        ChatMessage { role: "user".into(), content: user },
-                    ],
+                    messages: vec![ChatMessage::new("system", system.clone()), ChatMessage::new("user", user)],
+                    tools: Vec::new(),
                     json_schema: m.output_schema.clone(),
                     temperature: params.temperature,
                     max_tokens: params.max_tokens,
@@ -346,22 +591,182 @@ impl Executor {
                     .models
                     .chat(&res.model_id, chat)
                     .await
-                    .map_err(|e| ExecError::Model { step: m.id.clone(), message: e.to_string() })?;
+                    .map_err(|e| ExecError::Model { step: record_id.into(), message: e.to_string() })?;
                 rec.prompt_tokens = resp.prompt_tokens;
                 rec.completion_tokens = resp.completion_tokens;
-                match &m.output_schema {
-                    Some(schema) => {
-                        let value = serde_json::from_str::<Value>(&resp.content)
-                            .map_err(|e| ExecError::BadStructuredOutput { step: m.id.clone(), message: e.to_string() })?;
-                        validate_against(schema, &value)
-                            .map_err(|message| ExecError::BadStructuredOutput { step: m.id.clone(), message })?;
-                        Ok(value)
-                    }
-                    None => Ok(Value::String(resp.content)),
-                }
+                structured(record_id, m.output_schema.as_ref(), resp.content)
             }
-            other => Err(ExecError::Unsupported { step: other.id().into(), kind: other.kind_name() }),
+            Step::Agent(a) => self.run_agent(a, record_id, req, tool_ctx, rec, &inputs).await,
+            other => Err(ExecError::Unsupported { step: record_id.into(), kind: other.kind_name() }),
         }
+    }
+
+    /// The agent loop: the model may call allowed tools until it answers without one.
+    async fn run_agent(
+        &self,
+        a: &AgentStep,
+        record_id: &str,
+        req: &RunRequest,
+        tool_ctx: &ToolContext,
+        rec: &mut StepRecord,
+        inputs: &Value,
+    ) -> Result<Value, ExecError> {
+        let res = req
+            .resolutions
+            .get(&a.slot)
+            .ok_or_else(|| ExecError::UnresolvedSlot { step: record_id.into(), slot: a.slot.clone() })?;
+        let system = req
+            .prompts
+            .get(&a.prompt)
+            .ok_or_else(|| ExecError::MissingPrompt { step: record_id.into(), path: a.prompt.clone() })?;
+        rec.model = Some(res.model_id.clone());
+        rec.prompt_path = Some(a.prompt.clone());
+
+        let mut specs = Vec::new();
+        for id in &a.allowed_tools {
+            let tool = self.tools.get(id).ok_or_else(|| ExecError::UnknownTool { step: record_id.into(), tool: id.clone() })?;
+            let d = tool.describe().ok_or_else(|| ExecError::ToolNotDescribable { step: record_id.into(), tool: id.clone() })?;
+            specs.push(ToolSpec { name: id.clone(), description: d.description, parameters: d.parameters });
+        }
+        let envelope = format!(
+            "{}\n\n{}",
+            system.trim_end(),
+            AGENT_ENVELOPE.replace("{tools}", &a.allowed_tools.join(", "))
+        );
+        let params = a.params.clone().unwrap_or_default();
+        let mut messages = vec![ChatMessage::new("system", envelope), ChatMessage::new("user", user_message(inputs))];
+        let mut prompt_tokens = 0u64;
+        let mut completion_tokens = 0u64;
+        let mut calls_made = 0u32;
+
+        for _turn in 0..a.max_turns {
+            let chat = ChatRequest {
+                messages: messages.clone(),
+                tools: specs.clone(),
+                json_schema: None,
+                temperature: params.temperature,
+                max_tokens: params.max_tokens,
+                context_length: params.context_length,
+                think: params.think.clone(),
+            };
+            let resp = self
+                .models
+                .chat(&res.model_id, chat)
+                .await
+                .map_err(|e| ExecError::Model { step: record_id.into(), message: e.to_string() })?;
+            prompt_tokens += resp.prompt_tokens.unwrap_or(0);
+            completion_tokens += resp.completion_tokens.unwrap_or(0);
+            rec.prompt_tokens = Some(prompt_tokens);
+            rec.completion_tokens = Some(completion_tokens);
+
+            if resp.tool_calls.is_empty() {
+                // Final answer. If a schema is required and the text is not valid for it, ask
+                // once more with the schema enforced.
+                let content = resp.content;
+                let Some(schema) = a.output_schema.as_ref() else { return Ok(Value::String(content)) };
+                if let Ok(v) = serde_json::from_str::<Value>(&content) {
+                    if validate_against(schema, &v).is_ok() {
+                        return Ok(v);
+                    }
+                }
+                messages.push(ChatMessage::new("assistant", content));
+                messages.push(ChatMessage::new("user", "Now give the final answer as JSON matching the required schema, nothing else."));
+                let chat = ChatRequest {
+                    messages: messages.clone(),
+                    tools: Vec::new(),
+                    json_schema: Some(schema.clone()),
+                    temperature: params.temperature,
+                    max_tokens: params.max_tokens,
+                    context_length: params.context_length,
+                    think: Some(Value::Bool(false)),
+                };
+                let resp = self
+                    .models
+                    .chat(&res.model_id, chat)
+                    .await
+                    .map_err(|e| ExecError::Model { step: record_id.into(), message: e.to_string() })?;
+                rec.prompt_tokens = Some(prompt_tokens + resp.prompt_tokens.unwrap_or(0));
+                rec.completion_tokens = Some(completion_tokens + resp.completion_tokens.unwrap_or(0));
+                return structured(record_id, Some(schema), resp.content);
+            }
+
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: resp.content.clone(),
+                tool_calls: resp.tool_calls.clone(),
+                tool_name: None,
+            });
+            for call in resp.tool_calls {
+                let started = std::time::Instant::now();
+                let result: Result<Value, String> = if calls_made >= a.max_tool_calls {
+                    Err(format!("tool call budget of {} exhausted; finish with what you have", a.max_tool_calls))
+                } else if !a.allowed_tools.contains(&call.name) {
+                    Err(format!("tool {} is not allowed in this step; allowed: {}", call.name, a.allowed_tools.join(", ")))
+                } else {
+                    calls_made += 1;
+                    match self.tools.get(&call.name) {
+                        Some(tool) => tool.call(tool_ctx, call.arguments.clone()).await.map_err(|e| e.to_string()),
+                        None => Err(format!("unknown tool {}", call.name)),
+                    }
+                };
+                let content = match &result {
+                    Ok(v) => serde_json::to_string(v).unwrap_or_default(),
+                    Err(e) => serde_json::json!({ "error": e }).to_string(),
+                };
+                rec.tool_calls.push(ToolCallRecord {
+                    tool: call.name.clone(),
+                    inputs: call.arguments,
+                    output: result.as_ref().ok().cloned(),
+                    error: result.err(),
+                    duration_ms: started.elapsed().as_millis() as u64,
+                });
+                messages.push(ChatMessage { role: "tool".into(), content, tool_calls: Vec::new(), tool_name: Some(call.name) });
+            }
+        }
+        Err(ExecError::AgentTurns { step: record_id.into(), turns: a.max_turns })
+    }
+}
+
+/// The prior run's record for this step, if it succeeded on the same inputs. Map steps are
+/// matched on the resolved array they iterate.
+fn prior_result<'p>(prior: &'p Run, record_id: &str, step: &Step, ctx: &Context<'_>, inputs: &Value) -> Option<&'p StepRecord> {
+    let done = prior.steps.iter().find(|r| r.step_id == record_id && r.status == StepStatus::Succeeded && r.output.is_some())?;
+    let current = match step {
+        Step::Map(m) => {
+            let over = refs::resolve_value(&Value::String(m.over.clone()), ctx).ok()?;
+            serde_json::json!({ "over": over })
+        }
+        _ => inputs.clone(),
+    };
+    (inputs_fingerprint(&done.inputs) == inputs_fingerprint(&current)).then_some(done)
+}
+
+/// Appended to every agent step's prompt. The step envelope in the Prompt Stack.
+pub const AGENT_ENVELOPE: &str = "You may call these tools: {tools}. Call a tool when you need information or need to act; \
+each call's result comes back to you. Keep going until the task is done, then reply with the final answer and no tool call. \
+Do not invent paths or facts the tools did not give you.";
+
+fn kind_of(v: &Value) -> String {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+    .to_string()
+}
+
+fn structured(record_id: &str, schema: Option<&Value>, content: String) -> Result<Value, ExecError> {
+    match schema {
+        Some(schema) => {
+            let value = serde_json::from_str::<Value>(&content)
+                .map_err(|e| ExecError::BadStructuredOutput { step: record_id.into(), message: e.to_string() })?;
+            validate_against(schema, &value).map_err(|message| ExecError::BadStructuredOutput { step: record_id.into(), message })?;
+            Ok(value)
+        }
+        None => Ok(Value::String(content)),
     }
 }
 
@@ -419,6 +824,7 @@ mod tests {
             let user = &req.messages.last().unwrap().content;
             Ok(ChatResponse {
                 content: format!("[{model_id}] {}", user.trim()),
+                tool_calls: Vec::new(),
                 prompt_tokens: Some(10),
                 completion_tokens: Some(5),
             })
@@ -447,6 +853,7 @@ mod tests {
             artifact_base: Some(dir.clone()),
             reuse: true,
             edits: BTreeMap::new(),
+            resume_from: None,
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
         let run = exec.run(req, None).await;
@@ -479,6 +886,7 @@ mod tests {
             artifact_base: Some(dir.clone()),
             reuse: true,
             edits: BTreeMap::new(),
+            resume_from: None,
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel)).with_cache(Arc::new(MemoryCache::default()));
         let first = exec.run(make(), None).await;
@@ -501,6 +909,8 @@ mod tests {
 schemaVersion: "0"
 id: fan
 name: Fan
+inputs:
+  file: { type: file }
 modelSlots:
   writer: { requires: [text] }
 steps:
@@ -544,6 +954,7 @@ outputs:
             artifact_base: Some(dir.to_path_buf()),
             reuse: true,
             edits: BTreeMap::new(),
+            resume_from: None,
         }
     }
 
@@ -609,6 +1020,262 @@ outputs:
         assert_eq!(run.status, RunStatus::Failed);
         assert!(run.error.unwrap().contains("edited output does not match"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A model that classifies by whether the subject has a question mark, drafts a reply,
+    /// and as an agent lists a folder before answering.
+    struct TriageModel;
+    #[async_trait::async_trait]
+    impl ModelClient for TriageModel {
+        async fn chat(&self, _model_id: &str, req: ChatRequest) -> Result<ChatResponse, ModelError> {
+            let system = &req.messages[0].content;
+            let last = req.messages.last().unwrap();
+            let reply = |content: String, tool_calls: Vec<crate::model::ToolCall>| ChatResponse { content, tool_calls, prompt_tokens: Some(1), completion_tokens: Some(1) };
+            if system.starts_with("CLASSIFY") {
+                let needs = last.content.contains('?');
+                return Ok(reply(format!("{{\"needsReply\": {needs}, \"category\": \"{}\"}}", if needs { "question" } else { "fyi" }), vec![]));
+            }
+            if system.starts_with("DRAFT") {
+                return Ok(reply("Thanks for asking. Yes.".into(), vec![]));
+            }
+            if system.starts_with("AGENT") {
+                // Turn 1: one disallowed call and one allowed call. Turn 2: the answer.
+                if last.role == "user" {
+                    let dir = last.content.trim().to_string();
+                    return Ok(reply(
+                        String::new(),
+                        vec![
+                            crate::model::ToolCall { name: "fs.write".into(), arguments: serde_json::json!({ "path": "/x", "text": "no" }) },
+                            crate::model::ToolCall { name: "fs.list".into(), arguments: serde_json::json!({ "path": dir }) },
+                        ],
+                    ));
+                }
+                let listing: Value = serde_json::from_str(&last.content).unwrap();
+                return Ok(reply(format!("{{\"count\": {}}}", listing["count"]), vec![]));
+            }
+            Ok(reply("?".into(), vec![]))
+        }
+    }
+
+    const TRIAGE_YAML: &str = r#"
+schemaVersion: "0"
+id: triage-mini
+name: Triage mini
+inputs:
+  inbox: { type: directory }
+  outbox: { type: directory }
+modelSlots:
+  triager: { requires: [text] }
+permissions:
+  filesystem:
+    read: [input]
+    write: ["${inputs.outbox}"]
+steps:
+  - id: list
+    kind: tool
+    tool: fs.list
+    inputs: { path: "${inputs.inbox}", extensions: [eml] }
+  - id: each
+    kind: map
+    over: "${steps.list.output.entries}"
+    as: email
+    steps:
+      - id: parse
+        kind: tool
+        tool: email.parse
+        inputs: { path: "${email.path}" }
+      - id: classify
+        kind: model
+        slot: triager
+        prompt: prompts/classify.md
+        inputs: { email: "${steps.parse.output}" }
+        outputSchema: { type: object, required: [needsReply], properties: { needsReply: { type: boolean } } }
+      - id: draft
+        kind: model
+        slot: triager
+        prompt: prompts/draft.md
+        when: "${steps.classify.output.needsReply}"
+        inputs: { email: "${steps.parse.output}" }
+  - id: with_drafts
+    kind: tool
+    tool: list.filter
+    inputs: { items: "${steps.each.output}", path: draft }
+  - id: review
+    kind: review
+    title: Replies to send
+    items: "${steps.with_drafts.output.items}"
+    show: [parse.subject, draft]
+  - id: send
+    kind: map
+    over: "${steps.review.output.approved}"
+    as: reply
+    steps:
+      - id: write
+        kind: tool
+        tool: email.write_draft
+        inputs: { dir: "${inputs.outbox}", to: "${reply.parse.from}", subject: "${reply.parse.subject}", body: "${reply.draft}" }
+outputs:
+  triage: { from: "${steps.each.output}", type: json }
+  sent: { from: "${steps.send.output}", type: json }
+"#;
+
+    fn triage_request(dir: &std::path::Path) -> RunRequest {
+        RunRequest {
+            recipe: Recipe::from_yaml(TRIAGE_YAML).unwrap(),
+            prompts: HashMap::from([
+                ("prompts/classify.md".to_string(), "CLASSIFY".to_string()),
+                ("prompts/draft.md".to_string(), "DRAFT".to_string()),
+            ]),
+            inputs: IndexMap::from([
+                ("inbox".to_string(), Value::String(dir.join("inbox").to_string_lossy().into())),
+                ("outbox".to_string(), Value::String(dir.join("outbox").to_string_lossy().into())),
+            ]),
+            resolutions: BTreeMap::from([(
+                "triager".to_string(),
+                Resolution { slot: "triager".into(), model_id: "test:triage".into(), via: ResolvedVia::Capability },
+            )]),
+            artifact_base: Some(dir.to_path_buf()),
+            reuse: true,
+            edits: BTreeMap::new(),
+            resume_from: None,
+        }
+    }
+
+    fn eml(from: &str, subject: &str, body: &str) -> String {
+        format!("From: {from}\r\nTo: me@example.com\r\nSubject: {subject}\r\nMessage-ID: <{}@x>\r\nContent-Type: text/plain\r\n\r\n{body}\r\n", subject.len())
+    }
+
+    #[tokio::test]
+    async fn map_when_review_and_approval_flow() {
+        use crate::cache::MemoryCache;
+        let dir = std::env::temp_dir().join(format!("stillroom-triage-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::create_dir_all(dir.join("outbox")).unwrap();
+        std::fs::write(dir.join("inbox/a.eml"), eml("ana@example.com", "Is invoice 42 paid?", "Hi")).unwrap();
+        std::fs::write(dir.join("inbox/b.eml"), eml("news@example.com", "October newsletter", "Read all about it")).unwrap();
+        std::fs::write(dir.join("inbox/notes.txt"), "not an email").unwrap();
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(TriageModel)).with_cache(Arc::new(MemoryCache::default()));
+
+        let first = exec.run(triage_request(&dir), None).await;
+        assert_eq!(first.status, RunStatus::NeedsReview, "{:?}", first.error);
+        let by_id = |run: &Run, id: &str| run.steps.iter().find(|s| s.step_id == id).cloned().unwrap_or_else(|| panic!("no step {id} in {:?}", run.steps.iter().map(|s| s.step_id.clone()).collect::<Vec<_>>()));
+        assert_eq!(by_id(&first, "each").output.as_ref().unwrap().as_array().unwrap().len(), 2, "two emails, not the txt");
+        assert_eq!(by_id(&first, "each[0].parse").parent.as_deref(), Some("each"));
+        assert_eq!(by_id(&first, "each[0].draft").status, StepStatus::Succeeded);
+        assert_eq!(by_id(&first, "each[1].draft").status, StepStatus::Skipped, "newsletter needs no reply");
+        assert!(by_id(&first, "each[1].draft").skip_reason.as_deref().unwrap().contains("needsReply"));
+        assert_eq!(by_id(&first, "with_drafts").output.as_ref().unwrap()["kept"], 1);
+        let review = by_id(&first, "review");
+        assert_eq!(review.status, StepStatus::Skipped);
+        assert_eq!(review.output.as_ref().unwrap()["decided"], false);
+        assert_eq!(review.output.as_ref().unwrap()["items"].as_array().unwrap().len(), 1);
+        assert_eq!(by_id(&first, "send").skip_reason.as_deref(), Some("waiting for review"));
+        assert_eq!(first.outputs["sent"], Value::Null);
+        assert!(std::fs::read_dir(dir.join("outbox")).unwrap().next().is_none(), "nothing written before approval");
+
+        // The user approves the one reply.
+        let item = review.output.as_ref().unwrap()["items"][0].clone();
+        let decision = serde_json::json!({ "decided": true, "approved": [item], "rejected": [] });
+        let mut req = triage_request(&dir);
+        req.edits = crate::propagate::edits_for_rerun(&first, "review", decision).unwrap();
+        req.resume_from = Some(Box::new(first.clone()));
+        let second = exec.run(req, None).await;
+        assert_eq!(second.status, RunStatus::Succeeded, "{:?}", second.error);
+        assert!(by_id(&second, "review").edited);
+        assert_eq!(by_id(&second, "each").reused_from.as_deref(), Some(first.id.as_str()), "the whole map is resumed, not re-run");
+        assert!(second.steps.iter().all(|s| !s.step_id.starts_with("each[")), "no inner steps re-executed");
+        assert_eq!(by_id(&second, "list").reused_from.as_deref(), Some(first.id.as_str()), "non-cacheable tool resumed too");
+        let sent = &second.outputs["sent"];
+        assert_eq!(sent.as_array().unwrap().len(), 1, "{sent}");
+        let written = std::path::PathBuf::from(sent[0]["write"]["path"].as_str().unwrap());
+        assert!(written.starts_with(dir.join("outbox").canonicalize().unwrap()), "{written:?}");
+        assert!(std::fs::read_to_string(&written).unwrap().contains("Thanks for asking. Yes."));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn agent_calls_allowed_tools_and_is_refused_others() {
+        let dir = std::env::temp_dir().join(format!("stillroom-agent-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(dir.join("archive/Clients")).unwrap();
+        std::fs::create_dir_all(dir.join("archive/Finance")).unwrap();
+        let yaml = r#"
+schemaVersion: "0"
+id: agent-mini
+name: Agent mini
+inputs:
+  archive: { type: directory }
+modelSlots:
+  filer: { requires: [text, tool_calling] }
+steps:
+  - id: look
+    kind: agent
+    slot: filer
+    prompt: prompts/agent.md
+    allowedTools: [fs.list]
+    maxTurns: 3
+    inputs: { dir: "${inputs.archive}" }
+    outputSchema: { type: object, required: [count], properties: { count: { type: integer } } }
+outputs:
+  result: { from: "${steps.look.output}", type: json }
+"#;
+        let req = RunRequest {
+            recipe: Recipe::from_yaml(yaml).unwrap(),
+            prompts: HashMap::from([("prompts/agent.md".to_string(), "AGENT".to_string())]),
+            inputs: IndexMap::from([("archive".to_string(), Value::String(dir.join("archive").to_string_lossy().into()))]),
+            resolutions: BTreeMap::from([(
+                "filer".to_string(),
+                Resolution { slot: "filer".into(), model_id: "test:agent".into(), via: ResolvedVia::Capability },
+            )]),
+            artifact_base: Some(dir.clone()),
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+        };
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(TriageModel));
+        let run = exec.run(req, None).await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        let rec = &run.steps[0];
+        assert_eq!(rec.tool_calls.len(), 2);
+        assert!(rec.tool_calls[0].error.as_deref().unwrap().contains("not allowed"));
+        assert_eq!(rec.tool_calls[1].tool, "fs.list");
+        assert_eq!(run.outputs["result"]["count"], 2);
+        assert_eq!(rec.prompt_tokens, Some(2), "tokens summed over turns");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn fs_policy_expands_input_output_and_refs() {
+        let yaml = r#"
+schemaVersion: "0"
+id: p
+name: P
+inputs:
+  inbox: { type: directory }
+  archive: { type: directory }
+  note: { type: string }
+permissions:
+  filesystem:
+    read: [input]
+    write: ["${inputs.archive}", output, "~/Drafts"]
+steps:
+  - id: a
+    kind: tool
+    tool: fs.list
+    inputs: { path: "${inputs.inbox}" }
+outputs:
+  o: { from: "${steps.a.output}", type: json }
+"#;
+        let recipe = Recipe::from_yaml(yaml).unwrap();
+        let inputs = IndexMap::from([
+            ("inbox".to_string(), Value::String("/tmp/in".into())),
+            ("archive".to_string(), Value::String("/tmp/arc".into())),
+            ("note".to_string(), Value::String("/etc".into())),
+        ]);
+        let p = fs_policy(&recipe, &inputs, std::path::Path::new("/tmp/art"));
+        assert_eq!(p.read_roots.len(), 2, "only path-typed inputs: {:?}", p.read_roots);
+        assert!(!p.read_roots.iter().any(|r| r.ends_with("etc")));
+        assert_eq!(p.write_roots.len(), 3);
+        assert!(p.write_roots.iter().any(|r| r.ends_with("Drafts")));
     }
 
     #[test]

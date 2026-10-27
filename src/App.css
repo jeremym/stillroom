@@ -141,3 +141,18 @@ h4 { font-size: 0.9rem; font-weight: 600; margin: 14px 0 6px; }
 .editor textarea.mono { font-family: var(--mono); font-size: 0.85rem; }
 .editor .row.space input[type="text"] { flex: 1; min-width: 160px; }
 .edit-block { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+
+tr.skipped td { color: var(--muted); }
+tr.nested td:nth-child(2) { padding-left: 24px; }
+.tool-calls { margin-top: 4px; font-size: 0.85rem; }
+.tool-calls summary { cursor: pointer; }
+.tool-calls ol { padding-left: 18px; margin: 6px 0; }
+.tool-calls pre { margin: 2px 0 6px; font-size: 0.78rem; }
+.review { border-color: var(--accent); }
+.review-items { list-style: none; padding: 0; margin: 0 0 8px; }
+.review-items li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.review-items li.rejected { opacity: 0.55; }
+.review-items input[type="checkbox"] { margin-top: 6px; }
+.review-body { margin: 6px 0 0; font-size: 0.95rem; }
+.tab.pending { opacity: 0.55; }
+.table-scroll { overflow-x: auto; }

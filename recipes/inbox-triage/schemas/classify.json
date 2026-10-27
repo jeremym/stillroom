@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["category", "needsReply", "urgency", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "category": { "type": "string", "enum": ["needs_reply", "action", "fyi", "newsletter", "spam"] },
+    "needsReply": { "type": "boolean" },
+    "urgency": { "type": "string", "enum": ["high", "normal", "low"] },
+    "summary": { "type": "string" }
+  }
+}

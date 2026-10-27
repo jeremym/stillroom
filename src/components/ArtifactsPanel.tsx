@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import Markdown from "react-markdown";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
-import { DiagramView, asDiagram } from "./DiagramView";
-import { SlidesView, isDeck, deckToHtml, deckToPptx } from "./SlidesView";
-import { AudioView, ScriptView, isAudio, isScript } from "./AudioView";
+import { asDiagram } from "./DiagramView";
+import { isDeck, deckToHtml, deckToPptx } from "./SlidesView";
+import { isAudio } from "./AudioView";
 import { ArtifactEditor } from "./ArtifactEditor";
+import { pickViewer } from "../viewers";
 import type { OutputSpec, Run, StepInfo } from "../types";
 
 /** The step an output comes straight from, if `from` is `${steps.<id>.output}` with no deeper path. */
@@ -30,61 +30,6 @@ function dependentsOf(steps: StepInfo[], stepId: string): StepInfo[] {
   return steps.filter((s) => s.id !== stepId && affected.has(s.id));
 }
 
-interface Concept { id: string; name: string; definition: string; prerequisites: string[]; related: string[]; evidence: string[] }
-interface Claim { id: string; text: string; concepts: string[]; evidence: string }
-interface Card { front: string; back: string; concept: string }
-
-function isSpine(v: unknown): v is { title: string; summary: string; concepts: Concept[]; claims: Claim[] } {
-  return typeof v === "object" && v !== null && Array.isArray((v as { concepts?: unknown }).concepts);
-}
-function isCards(v: unknown): v is { cards: Card[] } {
-  return typeof v === "object" && v !== null && Array.isArray((v as { cards?: unknown }).cards);
-}
-
-function Spine({ spine }: { spine: { title: string; summary: string; concepts: Concept[]; claims: Claim[] } }) {
-  const byId = new Map(spine.concepts.map((c) => [c.id, c.name]));
-  const name = (id: string) => byId.get(id) ?? id;
-  return (
-    <div className="spine">
-      <p><strong>{spine.title}</strong> · {spine.summary}</p>
-      <ul className="concepts">
-        {spine.concepts.map((c) => (
-          <li key={c.id}>
-            <strong>{c.name}</strong> — {c.definition}
-            {c.prerequisites.length > 0 && <div className="muted">needs: {c.prerequisites.map(name).join(", ")}</div>}
-            {c.related.length > 0 && <div className="muted">related: {c.related.map(name).join(", ")}</div>}
-            {c.evidence[0] && <div className="quote">“{c.evidence[0]}”</div>}
-          </li>
-        ))}
-      </ul>
-      {spine.claims.length > 0 && (
-        <>
-          <h4>Claims <span className="muted">({spine.claims.length})</span></h4>
-          <ul>
-            {spine.claims.map((cl) => (
-              <li key={cl.id}>{cl.text} <span className="muted">· {cl.concepts.map(name).join(", ")}</span></li>
-            ))}
-          </ul>
-        </>
-      )}
-    </div>
-  );
-}
-
-function Cards({ cards }: { cards: Card[] }) {
-  const [flipped, setFlipped] = useState<Record<number, boolean>>({});
-  return (
-    <div className="cards">
-      {cards.map((c, i) => (
-        <button key={i} className={`card ${flipped[i] ? "back" : ""}`} onClick={() => setFlipped((f) => ({ ...f, [i]: !f[i] }))}>
-          <div className="card-face">{flipped[i] ? c.back : c.front}</div>
-          <div className="muted mono">{flipped[i] ? "answer" : "question"} · {c.concept}</div>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 interface ExportOption { label: string; ext: string; build: () => Promise<string | Uint8Array | { copyFrom: string }>; }
 
 interface ArtifactProps {
@@ -94,6 +39,12 @@ interface ArtifactProps {
   steps: StepInfo[];
   busy: boolean;
   onEdit?: (stepId: string, output: unknown) => void;
+}
+
+/** Media produced by tools from files cannot be edited in place; edit what made them. */
+function kindIsEditable(kind: string | undefined, value: unknown) {
+  if (kind === "audio" || kind === "image" || kind === "video" || kind === "file" || kind === "files") return false;
+  return typeof value === "string" || (typeof value === "object" && value !== null);
 }
 
 function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
@@ -119,10 +70,10 @@ function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
     : audio
       ? [{ label: "Save audio…", ext: audio.format ?? "m4a", build: async () => ({ copyFrom: audio.path }) }]
     : diagram
-      ? [
-          { label: svg ? "Save SVG…" : "Save Mermaid…", ext: svg ? "svg" : "mmd", build: async () => svg ?? diagram.source },
-        ]
-      : [{ label: "Save…", ext: kind === "markdown" ? "md" : kind === "json" ? "json" : "txt", build: async () => text }];
+      ? [{ label: svg ? "Save SVG…" : "Save Mermaid…", ext: svg ? "svg" : "mmd", build: async () => svg ?? diagram.source }]
+      : kind === "table" && Array.isArray(value)
+        ? [{ label: "Save CSV…", ext: "csv", build: async () => toCsv(value as Record<string, unknown>[]) }, { label: "Save JSON…", ext: "json", build: async () => text }]
+        : [{ label: "Save…", ext: kind === "markdown" ? "md" : kind === "json" ? "json" : "txt", build: async () => text }];
 
   async function exportWith(opt: ExportOption) {
     const path = await save({ defaultPath: `${name}.${opt.ext}`, filters: [{ name: opt.ext.toUpperCase(), extensions: [opt.ext] }] });
@@ -144,7 +95,7 @@ function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
         <h2 style={{ margin: 0 }}>{label} <span className="muted">(artifact · {kind})</span></h2>
         <span className="row">
           {editable && !editing && <button disabled={busy} onClick={() => setEditing(true)}>Edit…</button>}
-          {exports.map((opt) => (
+          {value != null && exports.map((opt) => (
             <button key={opt.ext} disabled={busy || exporting} onClick={() => exportWith(opt)}>{opt.label}</button>
           ))}
         </span>
@@ -159,36 +110,22 @@ function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
           onCancel={() => setEditing(false)}
           onSave={(output) => { setEditing(false); onEdit?.(stepId, output); }}
         />
-      ) : deck ? (
-        <SlidesView deck={deck} />
-      ) : audio ? (
-        <AudioView audio={audio} />
-      ) : isScript(value) ? (
-        <ScriptView script={value} />
-      ) : diagram ? (
-        <>
-          {diagram.title && <p><strong>{diagram.title}</strong></p>}
-          <DiagramView diagram={diagram} onSvg={setSvg} />
-        </>
-      ) : kind === "markdown" && typeof value === "string" ? (
-        <div className="markdown"><Markdown>{value}</Markdown></div>
-      ) : isSpine(value) ? (
-        <Spine spine={value} />
-      ) : isCards(value) ? (
-        <Cards cards={value.cards} />
-      ) : typeof value === "string" ? (
-        <pre className="artifact">{value}</pre>
+      ) : value == null ? (
+        <p className="muted">Not produced yet. This comes after the review above.</p>
       ) : (
-        <pre>{text}</pre>
+        pickViewer({ kind, value, onSvg: setSvg })
       )}
     </section>
   );
 }
 
-/** Audio is produced by a tool from a file; edit the script instead. */
-function kindIsEditable(kind: string | undefined, value: unknown) {
-  if (kind === "audio" || kind === "image" || kind === "video" || kind === "file" || kind === "files") return false;
-  return typeof value === "string" || (typeof value === "object" && value !== null);
+function toCsv(rows: Record<string, unknown>[]) {
+  const cols = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+  const cell = (v: unknown) => {
+    const s = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [cols.join(","), ...rows.map((r) => cols.map((c) => cell(r[c])).join(","))].join("\n");
 }
 
 interface PanelProps {
@@ -210,8 +147,8 @@ export function ArtifactsPanel({ run, outputs, steps, busy, onEdit }: PanelProps
     <>
       {entries.length > 1 && (
         <nav className="tabs">
-          {entries.map(([n], k) => (
-            <button key={n} className={`tab ${k === idx ? "active" : ""}`} onClick={() => setActive(k)}>
+          {entries.map(([n, v], k) => (
+            <button key={n} className={`tab ${k === idx ? "active" : ""} ${v == null ? "pending" : ""}`} onClick={() => setActive(k)}>
               {outputs[n]?.label ?? n}
             </button>
           ))}

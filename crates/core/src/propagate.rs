@@ -28,10 +28,30 @@ pub fn inputs_fingerprint(inputs: &Value) -> String {
     fingerprint(&[&serde_json::to_string(inputs).unwrap_or_default()])
 }
 
-/// Step ids this step reads from: data references plus explicit `dependsOn`.
+/// Step ids this step reads from: data references in its inputs, `when`, `over`, `items`,
+/// and (for a map) its inner steps, plus explicit `dependsOn`. A map's inner steps are not
+/// dependencies of the map.
 pub fn dependencies(step: &Step) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     refs::step_refs(&Value::Object(step.inputs().clone().into_iter().collect()), &mut names);
+    if let Some(w) = step.when() {
+        refs::step_refs(&Value::String(w.to_string()), &mut names);
+    }
+    match step {
+        Step::Map(m) => {
+            refs::step_refs(&Value::String(m.over.clone()), &mut names);
+            let inner: BTreeSet<&str> = m.steps.iter().map(|s| s.id()).collect();
+            for sub in &m.steps {
+                for d in dependencies(sub) {
+                    if !inner.contains(d.as_str()) {
+                        names.insert(d);
+                    }
+                }
+            }
+        }
+        Step::Review(r) => refs::step_refs(&Value::String(r.items.clone()), &mut names),
+        _ => {}
+    }
     names.extend(step.depends_on().iter().cloned());
     names
 }

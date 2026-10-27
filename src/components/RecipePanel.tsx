@@ -1,7 +1,32 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, fmtMs, fmtTokens } from "../api";
-import type { InputSpec, InstalledModel, RecipeInfo, RunEstimate } from "../types";
+import type { InputSpec, InstalledModel, RecipeInfo, RunEstimate, StepInfo } from "../types";
+
+function stepLabel(s: StepInfo): string {
+  const name = s.name ?? s.id;
+  if (s.kind === "map" && s.steps?.length) return `${name} (for each: ${s.steps.map(stepLabel).join(" → ")})`;
+  if (s.kind === "agent") return `${name} (agent with ${s.allowedTools?.join(", ") || "no tools"})`;
+  if (s.kind === "review") return `${name} (you approve)`;
+  return name;
+}
+
+function describePermissions(recipe: RecipeInfo): string {
+  const fs = recipe.permissions?.filesystem;
+  const label = (e: string) => {
+    const m = e.match(/^\$\{inputs\.([A-Za-z0-9_]+)\}$/);
+    if (m) return recipe.inputs[m[1]]?.label ?? m[1];
+    if (e === "input") return "the folders and files you choose";
+    if (e === "output") return "the run's own folder";
+    return e;
+  };
+  const read = (fs?.read ?? ["input"]).map(label);
+  const write = (fs?.write ?? []).map(label);
+  const parts = [`reads ${read.join(", ") || "nothing"}`, `writes ${write.length ? write.join(", ") : "only its own results"}`];
+  if (recipe.permissions?.shell) parts.push("may run programs");
+  if (recipe.permissions?.network?.length) parts.push(`may reach ${recipe.permissions.network.join(", ")}`);
+  return parts.join(" · ");
+}
 
 interface Props {
   recipes: RecipeInfo[];
@@ -141,8 +166,9 @@ export function RecipePanel({ recipes, models, running, onRun }: Props) {
         );
       })}
 
+      <p className="muted">Permissions: {describePermissions(recipe)}. Nothing else on disk is touched.</p>
       <p className="muted">
-        Steps: {recipe.steps.map((s) => s.name ?? s.id).join(" → ")}
+        Steps: {recipe.steps.map(stepLabel).join(" → ")}
         {estimate
           ? ` · last ${estimate.basedOnRuns} run${estimate.basedOnRuns === 1 ? "" : "s"} averaged ${fmtTokens(estimate.avgPromptTokens + estimate.avgCompletionTokens)} tokens, ${fmtMs(estimate.avgDurationMs)}`
           : " · no previous runs to estimate from"}

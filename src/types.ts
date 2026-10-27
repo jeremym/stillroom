@@ -31,7 +31,7 @@ export interface ModelSlot {
 }
 
 export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type RunStatus = "running" | "succeeded" | "failed" | "cancelled";
+export type RunStatus = "running" | "succeeded" | "failed" | "cancelled" | "needs_review";
 
 export interface StepRecord {
   runId: string;
@@ -53,6 +53,20 @@ export interface StepRecord {
   reusedFrom?: string | null;
   /** The output is one the user edited, not generated. */
   edited?: boolean;
+  /** For steps inside a map: the map step's id. */
+  parent?: string | null;
+  /** Why a skipped step was skipped. */
+  skipReason?: string | null;
+  /** For agent steps: every tool call the model made. */
+  toolCalls?: ToolCallRecord[];
+}
+
+export interface ToolCallRecord {
+  tool: string;
+  inputs: unknown;
+  output: unknown;
+  error: string | null;
+  durationMs: number;
 }
 
 export interface Run {
@@ -109,6 +123,21 @@ export interface StepInfo {
   slot: string | null;
   tool: string | null;
   dependsOn: string[];
+  /** For map steps: the inner steps. */
+  steps?: StepInfo[];
+  /** For agent steps: tools it may call. */
+  allowedTools?: string[];
+  /** For review steps: paths inside each item to display. */
+  show?: string[];
+  title?: string | null;
+}
+
+export interface Permissions {
+  filesystem?: { read?: string[]; write?: string[] };
+  network?: string[];
+  cloudModels?: boolean;
+  shell?: boolean;
+  credentials?: string[];
 }
 
 export interface OutputSpec {
@@ -127,6 +156,7 @@ export interface RecipeInfo {
   path: string;
   inputs: Record<string, InputSpec>;
   modelSlots: Record<string, ModelSlot>;
+  permissions?: Permissions | null;
   steps: StepInfo[];
   outputs: Record<string, OutputSpec>;
 }

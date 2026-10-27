@@ -20,3 +20,4 @@ tracing.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 rusqlite.workspace = true
+mailparse = "0.16"

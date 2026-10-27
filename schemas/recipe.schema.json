@@ -303,8 +303,8 @@
     },
     "ref": {
       "type": "string",
-      "pattern": "^\\$\\{(inputs|steps)\\.[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*\\}$",
-      "description": "A reference to a recipe input or a prior step's output, e.g. ${inputs.sources} or ${steps.extract.output.concepts}."
+      "pattern": "^\\$\\{[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)*\\}$",
+      "description": "A reference to a recipe input (${inputs.sources}), a prior step's output (${steps.extract.output.concepts}), or inside a map step, the current item (${item.path})."
     },
     "value": {
       "description": "A literal value or a reference.",
@@ -354,7 +354,8 @@
             "agent",
             "recipe",
             "branch",
-            "map"
+            "map",
+            "review"
           ]
         },
         "dependsOn": {
@@ -679,6 +680,9 @@
         },
         {
           "$ref": "#/$defs/mapStep"
+        },
+        {
+          "$ref": "#/$defs/reviewStep"
         }
       ]
     },
@@ -705,7 +709,8 @@
             "audio",
             "video",
             "file",
-            "files"
+            "files",
+            "table"
           ]
         },
         "label": {
@@ -720,6 +725,39 @@
         }
       },
       "additionalProperties": false
+    },
+    "reviewStep": {
+      "description": "Human checkpoint. The run pauses here with status needs_review; the user approves or rejects each item in the app, and the run continues with the approved ones. Output { decided, approved, rejected }.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/stepBase"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "review"
+            },
+            "items": {
+              "$ref": "#/$defs/ref",
+              "description": "Array to review, one decision per element."
+            },
+            "title": {
+              "type": "string",
+              "description": "What the user is deciding, e.g. 'Replies to send'."
+            },
+            "show": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths inside each item to display, first one as the headline, e.g. [\"draft.subject\", \"parse.from\", \"draft.body\"]."
+            }
+          },
+          "required": [
+            "items"
+          ]
+        }
+      ]
     }
   }
 }

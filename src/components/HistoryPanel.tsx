@@ -10,7 +10,7 @@ export function HistoryPanel({ history, onOpen }: { history: RunSummary[]; onOpe
         {history.map((h) => (
           <li key={h.id}>
             <button className="link" onClick={() => onOpen(h.id)}>
-              {new Date(h.startedAt).toLocaleString()} · {h.recipeName} · {h.status} · {fmtTokens(h.promptTokens + h.completionTokens)} tokens
+              {new Date(h.startedAt).toLocaleString()} · {h.recipeName} · {h.status === "needs_review" ? "needs your review" : h.status} · {fmtTokens(h.promptTokens + h.completionTokens)} tokens
             </button>
           </li>
         ))}

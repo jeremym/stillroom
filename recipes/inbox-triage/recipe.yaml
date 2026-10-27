@@ -1,0 +1,193 @@
+schemaVersion: "0"
+id: inbox-triage
+name: Inbox Triage
+version: 0.1.0
+description: Reads every saved email (.eml) in a folder, sorts each one, drafts replies to the ones that need an answer, files each email into your archive, and holds the replies for your approval before any draft is written out.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, email, agent]
+
+inputs:
+  inbox:
+    type: directory
+    label: Inbox folder
+    description: A folder of saved emails (.eml files). Nothing in it is changed.
+  archive:
+    type: directory
+    label: Archive folder
+    description: Where emails get filed. The filer picks an existing subfolder, or makes one if none fits.
+  outbox:
+    type: directory
+    label: Outbox folder
+    description: Approved replies are written here as draft .eml files you can open in your mail app.
+  about:
+    type: text
+    label: About you
+    description: Optional. Who you are and how you like to reply (tone, sign-off, what to never promise).
+    required: false
+
+modelSlots:
+  triager:
+    requires: [text, structured_output]
+    preference: accuracy
+    description: Sorts each email and drafts replies.
+  filer:
+    requires: [text, tool_calling]
+    preference: accuracy
+    description: Files each email into the archive using the folder tools (an agent step).
+
+permissions:
+  filesystem:
+    read: ["${inputs.inbox}", "${inputs.archive}"]
+    write: ["${inputs.archive}", "${inputs.outbox}"]
+
+steps:
+  - id: list
+    kind: tool
+    name: Find the emails
+    tool: fs.list
+    inputs:
+      path: ${inputs.inbox}
+      extensions: [eml]
+
+  - id: triage
+    kind: map
+    name: Handle each email
+    over: ${steps.list.output.entries}
+    as: email
+    steps:
+      - id: parse
+        kind: tool
+        name: Read the email
+        tool: email.parse
+        inputs:
+          path: ${email.path}
+
+      - id: classify
+        kind: model
+        name: Sort it
+        slot: triager
+        prompt: prompts/classify.md
+        inputs:
+          email: ${steps.parse.output}
+          about: ${inputs.about}
+        outputSchema: schemas/classify.json
+        params:
+          think: false
+          temperature: 0.1
+          contextLength: 16384
+
+      - id: draft
+        kind: model
+        name: Draft a reply
+        slot: triager
+        prompt: prompts/draft.md
+        when: ${steps.classify.output.needsReply}
+        inputs:
+          email: ${steps.parse.output}
+          classification: ${steps.classify.output}
+          about: ${inputs.about}
+        outputSchema: schemas/draft.json
+        params:
+          think: false
+          temperature: 0.4
+          contextLength: 16384
+
+      - id: file
+        kind: agent
+        name: File it in the archive
+        slot: filer
+        prompt: prompts/file.md
+        allowedTools: [fs.list, fs.write]
+        maxTurns: 8
+        maxToolCalls: 6
+        inputs:
+          archive: ${inputs.archive}
+          email: ${steps.parse.output}
+          summary: ${steps.classify.output.summary}
+          category: ${steps.classify.output.category}
+        outputSchema: schemas/filed.json
+        params:
+          think: false
+          temperature: 0.1
+          contextLength: 16384
+
+  - id: table
+    kind: tool
+    name: Summarize the triage
+    tool: list.table
+    inputs:
+      items: ${steps.triage.output}
+      columns:
+        From: parse.from
+        Subject: parse.subject
+        Category: classify.category
+        Summary: classify.summary
+        Reply drafted: classify.needsReply
+        Filed under: file.folder
+
+  - id: with_drafts
+    kind: tool
+    name: Keep the ones with a reply
+    tool: list.filter
+    inputs:
+      items: ${steps.triage.output}
+      path: draft
+
+  - id: review
+    kind: review
+    name: Approve replies
+    title: Replies to send
+    items: ${steps.with_drafts.output.items}
+    show: [draft.subject, parse.from, classify.summary, draft.body]
+
+  - id: outbox
+    kind: map
+    name: Write approved drafts
+    over: ${steps.review.output.approved}
+    as: reply
+    steps:
+      - id: write
+        kind: tool
+        name: Save the draft
+        tool: email.write_draft
+        inputs:
+          dir: ${inputs.outbox}
+          to: ${reply.parse.from}
+          subject: ${reply.draft.subject}
+          body: ${reply.draft.body}
+          inReplyTo: ${reply.parse.messageId}
+
+  - id: sent
+    kind: tool
+    name: Summarize what was written
+    tool: list.table
+    inputs:
+      items: ${steps.outbox.output}
+      columns:
+        To: reply.parse.from
+        Subject: reply.draft.subject
+        Draft file: write.path
+
+outputs:
+  triage:
+    from: ${steps.table.output.rows}
+    type: table
+    label: Triage
+    description: One row per email, with how it was sorted and where it was filed.
+  sent:
+    from: ${steps.sent.output.rows}
+    type: table
+    label: Drafts written
+    description: Replies you approved, written to the outbox as draft .eml files.
+  replies:
+    from: ${steps.review.output}
+    type: json
+    label: Review decisions
+    description: Which replies were approved and which were rejected.
+  details:
+    from: ${steps.triage.output}
+    type: json
+    label: Everything
+    description: The full parsed email, classification, draft, and filing result for each message.

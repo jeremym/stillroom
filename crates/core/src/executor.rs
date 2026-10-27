@@ -10,7 +10,7 @@ use crate::propagate::{dependencies, dependents, inputs_fingerprint, StepEdit};
 use crate::recipe::{AgentStep, MapStep, Recipe, Step};
 use crate::refs::{self, Context};
 use crate::resolve::Resolution;
-use crate::tools::{normalize_path, FsPolicy, ToolContext, ToolRegistry};
+use crate::tools::{NetPolicy, normalize_path, FsPolicy, ToolContext, ToolRegistry};
 use crate::trace::{Run, RunStatus, StepRecord, StepStatus, ToolCallRecord};
 use chrono::Utc;
 use serde_json::Value;
@@ -136,6 +136,53 @@ pub fn fs_policy(recipe: &Recipe, inputs: &IndexMap<String, Value>, artifact_dir
 }
 
 type PathBufLike = (String, Value);
+
+/// The hosts a run may reach: `permissions.network` entries, where `input` means the hosts of
+/// every link the user gave as a `url` or `urls` input and anything else is a host pattern.
+pub fn net_policy(recipe: &Recipe, inputs: &IndexMap<String, Value>) -> NetPolicy {
+    let link_hosts = || -> Vec<String> {
+        recipe
+            .inputs
+            .iter()
+            .filter(|(_, spec)| matches!(spec.get("type").and_then(Value::as_str), Some("url" | "urls")))
+            .filter_map(|(name, _)| inputs.get(name))
+            .flat_map(|v| match v {
+                Value::String(s) => vec![s.clone()],
+                Value::Array(a) => a.iter().filter_map(Value::as_str).map(String::from).collect(),
+                _ => Vec::new(),
+            })
+            .filter_map(|s| url::Url::parse(s.trim()).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase())))
+            .collect()
+    };
+    let entries: Vec<String> = recipe
+        .permissions
+        .as_ref()
+        .and_then(|p| p.get("network"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+        .unwrap_or_default();
+    let mut allow = Vec::new();
+    for e in entries {
+        match e.as_str() {
+            "input" => allow.extend(link_hosts()),
+            other => match refs::parse_ref(other) {
+                Some(Ok(refs::Ref::Input { name, .. })) => {
+                    if let Some(v) = inputs.get(&name) {
+                        let vals: Vec<&str> = match v {
+                            Value::String(s) => vec![s.as_str()],
+                            Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+                            _ => Vec::new(),
+                        };
+                        allow.extend(vals.into_iter().filter_map(|s| url::Url::parse(s.trim()).ok().and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))));
+                    }
+                }
+                Some(_) => {}
+                None => allow.push(other.to_string()),
+            },
+        }
+    }
+    NetPolicy { allow }
+}
 
 fn value_paths(v: &Value) -> Vec<std::path::PathBuf> {
     match v {
@@ -267,6 +314,7 @@ impl Executor {
         let tool_ctx = ToolContext {
             run_id: run_id.clone(),
             fs: fs_policy(&req.recipe, &req.inputs, &artifact_dir),
+            net: net_policy(&req.recipe, &req.inputs),
             artifact_dir,
         };
 
@@ -815,6 +863,7 @@ mod tests {
     use super::*;
     use crate::model::{ChatResponse, ModelError};
     use crate::resolve::ResolvedVia;
+    use serde_json::json;
     use std::io::Write;
 
     struct EchoModel;
@@ -1241,6 +1290,39 @@ outputs:
         assert_eq!(run.outputs["result"]["count"], 2);
         assert_eq!(rec.prompt_tokens, Some(2), "tokens summed over turns");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn net_policy_takes_hosts_from_link_inputs_and_patterns() {
+        let yaml = r#"
+schemaVersion: "0"
+id: n
+name: N
+inputs:
+  links: { type: urls }
+  home: { type: url }
+permissions:
+  network: [input, "*.example.org", "${inputs.home}"]
+steps:
+  - id: a
+    kind: tool
+    tool: http.fetch
+    inputs: { url: "${inputs.home}" }
+outputs:
+  a: { from: "${steps.a.output}", type: json }
+"#;
+        let recipe = Recipe::from_yaml(yaml).unwrap();
+        let mut inputs = IndexMap::new();
+        inputs.insert("links".to_string(), json!(["https://En.Wikipedia.org/wiki/A", "http://docs.rs/x"]));
+        inputs.insert("home".to_string(), json!("https://stillroom.test/"));
+        let p = net_policy(&recipe, &inputs);
+        assert!(p.allows("en.wikipedia.org"));
+        assert!(p.allows("docs.rs"));
+        assert!(p.allows("stillroom.test"));
+        assert!(p.allows("api.example.org"));
+        assert!(!p.allows("example.com"));
+        let none = net_policy(&Recipe::from_yaml(&yaml.replace("permissions:\n  network: [input, \"*.example.org\", \"${inputs.home}\"]\n", "")).unwrap(), &inputs);
+        assert!(!none.allows("en.wikipedia.org"), "no network permission means no hosts");
     }
 
     #[test]

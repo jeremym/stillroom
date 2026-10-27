@@ -1,0 +1,105 @@
+schemaVersion: "0"
+id: research-brief
+name: Research Brief
+version: 0.1.0
+description: Reads the web pages you give it, pulls out what each one says about your question with exact quotes, and writes a short brief that cites its sources by number. Reaches only the sites in your links.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, research, web]
+
+inputs:
+  question:
+    type: text
+    label: What do you want to know?
+    description: One clear question. The brief answers this and nothing else.
+  urls:
+    type: urls
+    label: Pages to read
+    description: One link per line. The recipe may reach these sites and no others.
+
+modelSlots:
+  reader:
+    requires: [text, structured_output]
+    preference: accuracy
+    description: Reads each page and pulls out findings with quotes.
+  writer:
+    requires: [text]
+    preference: accuracy
+    description: Writes the brief from the findings.
+
+permissions:
+  network: [input]
+
+steps:
+  - id: read
+    kind: map
+    name: Read each page
+    over: ${inputs.urls}
+    as: url
+    concurrency: 3
+    steps:
+      - id: fetch
+        kind: tool
+        name: Fetch the page
+        tool: http.fetch
+        inputs:
+          url: ${url}
+          maxChars: 14000
+
+      - id: extract
+        kind: model
+        name: Pull out findings
+        slot: reader
+        prompt: prompts/extract.md
+        inputs:
+          question: ${inputs.question}
+          page: ${steps.fetch.output}
+        outputSchema: schemas/extract.json
+        params:
+          think: false
+          temperature: 0.1
+          contextLength: 16384
+
+  - id: brief
+    kind: model
+    name: Write the brief
+    slot: writer
+    prompt: prompts/brief.md
+    inputs:
+      question: ${inputs.question}
+      sources: ${steps.read.output}
+    params:
+      think: false
+      temperature: 0.3
+      contextLength: 16384
+
+  - id: sources
+    kind: tool
+    name: List the sources
+    tool: list.table
+    inputs:
+      items: ${steps.read.output}
+      columns:
+        Page: item
+        Title: fetch.title
+        Fetched: fetch.ok
+        About: extract.summary
+        Findings: extract.findings
+
+outputs:
+  brief:
+    from: ${steps.brief.output}
+    type: markdown
+    label: Brief
+    description: The answer, with [n] citations pointing at the sources below.
+  sources:
+    from: ${steps.sources.output.rows}
+    type: table
+    label: Sources
+    description: Every page, whether it loaded, and what was found in it.
+  findings:
+    from: ${steps.read.output}
+    type: json
+    label: Everything
+    description: The fetched text and the extracted findings for each page.

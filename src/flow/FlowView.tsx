@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Background, Handle, Position, ReactFlow, type Connection, type Edge, type NodeProps, type NodeTypes } from "@xyflow/react";
+import { Background, BaseEdge, Handle, Position, ReactFlow, type Connection, type Edge, type EdgeProps, type EdgeTypes, type NodeProps, type NodeTypes } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api } from "../api";
 import { buildGraph, type FlowNode } from "./graph";
 import { StepDetails } from "./StepDetails";
 import { addStep, connect, disconnect, docToInfo, mutate, removeStep, stepPathOf } from "./draft";
 import {
-  AddStepSelect, ConnectionPanel, InputForm, OutputForm, SaveDialog, SlotsEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
+  AddStepSelect, ConnectionPanel, InputForm, OutputForm, PermissionsEditor, SaveDialog, SlotsEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
 } from "./RecipeEditor";
 import type { InstalledModel, RecipeDoc, RecipeInfo, RecipeSource, Run, StepRecord, ToolInfo } from "../types";
 
@@ -86,9 +86,37 @@ function GroupNode({ data, selected }: NodeProps<FlowNode>) {
   );
 }
 
+/** A path through the given points with rounded corners. */
+function roundedPath(pts: [number, number][], r = 8): string {
+  let d = `M ${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [px, py] = pts[i - 1];
+    const [cx, cy] = pts[i];
+    const [nx, ny] = pts[i + 1];
+    const d1 = Math.hypot(cx - px, cy - py);
+    const d2 = Math.hypot(nx - cx, ny - cy);
+    if (d1 === 0 || d2 === 0) continue;
+    const r1 = Math.min(r, d1 / 2);
+    const r2 = Math.min(r, d2 / 2);
+    d += ` L ${cx - ((cx - px) / d1) * r1} ${cy - ((cy - py) / d1) * r1} Q ${cx} ${cy} ${cx + ((nx - cx) / d2) * r2} ${cy + ((ny - cy) / d2) * r2}`;
+  }
+  const [lx, ly] = pts[pts.length - 1];
+  return `${d} L ${lx} ${ly}`;
+}
+
+/* A result line that leaves a step from the bottom, runs along a bus under the row, then turns
+   up or down into the result on the right. Keeps lines from crossing sibling steps. */
+function BusEdge({ id, sourceX, sourceY, targetX, targetY, data, markerEnd, style }: EdgeProps) {
+  const viaY = typeof data?.viaY === "number" ? data.viaY : sourceY + 24;
+  const bendX = targetX - 28;
+  const path = roundedPath([[sourceX, sourceY], [sourceX, viaY], [bendX, viaY], [bendX, targetY], [targetX, targetY]]);
+  return <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />;
+}
+
 const PAD = 16;
 
 const nodeTypes: NodeTypes = { step: StepNode, io: IoNode, group: GroupNode };
+const edgeTypes: EdgeTypes = { bus: BusEdge };
 
 export default function FlowView({ recipe, run, records, inProgress, models, pins, onPin, onSaved }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -96,7 +124,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
   const [edit, setEdit] = useState<EditState | null>(null);
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [wire, setWire] = useState<{ source: string; target: string } | null>(null);
-  const [panel, setPanel] = useState<"node" | "slots" | "save">("node");
+  const [panel, setPanel] = useState<"node" | "slots" | "permissions" | "save">("node");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -126,6 +154,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     }, 350);
     return () => clearTimeout(t);
   }, [edit?.doc, edit?.files]);
+
 
 
   async function startEditing() {
@@ -255,6 +284,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
           <button onClick={() => { const { name, spec } = newInput(edit.doc); change(mutate(edit.doc, (d) => { (d.inputs ??= {})[name] = spec; })); select(`in:${name}`); }}>Add input</button>
           <button onClick={() => { const { name, spec } = newOutput(edit.doc); change(mutate(edit.doc, (d) => { d.outputs[name] = spec; })); select(`out:${name}`); }}>Add result</button>
           <button onClick={() => { setPanel("slots"); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Model slots</button>
+          <button onClick={() => { setPanel("permissions"); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Permissions</button>
           <span className="flow-toolbar-gap" />
           <button className="primary" style={{ marginTop: 0 }} disabled={edit.problems.length > 0} title={edit.problems.length ? "Fix the problems first" : ""}
             onClick={() => { setPanel("save"); setSaveError(null); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Save…</button>
@@ -275,6 +305,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             viewport={viewport}
             onViewportChange={() => {}}
             minZoom={0.1}
@@ -316,6 +347,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
               <SaveDialog doc={edit.doc} source={edit.source} sourceId={edit.sourceId} busy={saving} error={saveError} onSave={save} onCancel={() => setPanel("node")} />
             )}
             {panel === "slots" && <SlotsEditor doc={edit.doc} onChange={change} onClose={() => setPanel("node")} />}
+            {panel === "permissions" && <PermissionsEditor doc={edit.doc} onChange={change} onClose={() => setPanel("node")} />}
             {panel === "node" && wire && (
               <WirePrompt doc={edit.doc} source={wire.source} target={wire.target}
                 onConnect={(key) => { change(connect(edit.doc, wire.source, wire.target, key)); setWire(null); }}

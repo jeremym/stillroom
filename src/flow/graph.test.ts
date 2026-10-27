@@ -79,6 +79,24 @@ describe("buildGraph", () => {
     expect(g.edges.filter((e) => e.target === "step:triage/draft")).toHaveLength(2);
   });
 
+  it("routes result lines from non-rightmost steps in a row under the row", () => {
+    const fan: RecipeInfo = {
+      ...recipe,
+      steps: [
+        step({ id: "a", kind: "tool" }),
+        step({ id: "b", kind: "model", dependsOn: ["a"] }),
+        step({ id: "c", kind: "model", dependsOn: ["a"] }),
+      ],
+      outputs: { bb: { from: "${steps.b.output}", type: "json" }, cc: { from: "${steps.c.output}", type: "json" } },
+    };
+    const g = buildGraph({ ...opts, recipe: fan });
+    const bEdge = g.edges.find((e) => e.id === "step:b->out:bb")!;
+    const cEdge = g.edges.find((e) => e.id === "step:c->out:cc")!;
+    expect(bEdge).toMatchObject({ type: "bus", sourceHandle: "b" });
+    expect((bEdge.data as { viaY: number }).viaY).toBeGreaterThan(g.nodes.find((n) => n.id === "step:b")!.position.y);
+    expect(cEdge).toMatchObject({ type: "smoothstep", sourceHandle: "r" });
+  });
+
   it("paints run state, aggregating per-item records for inner steps", () => {
     const records = [
       rec({ stepId: "list", reusedFrom: "old" }),

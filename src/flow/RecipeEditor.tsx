@@ -5,6 +5,7 @@ import {
   sourcesFor, stepPathOf, updateStep, STEP_KINDS, type Source, type StepKind,
 } from "./draft";
 import { KIND_EXPLAINED, KIND_LABEL } from "./graph";
+import { fsEntryLabel, netEntryLabel } from "../permissions";
 import type { Capability, InputSpec, ModelSlot, OutputSpec, RecipeDoc, RecipeSource, StepDoc, ToolInfo } from "../types";
 
 /* The forms behind Flow View's edit mode. Every change goes up as a whole new document (and,
@@ -455,6 +456,70 @@ export function SlotsEditor({ doc, onChange, onClose }: { doc: RecipeDoc; onChan
         <button onClick={onClose}>Done</button>
       </div>
     </>
+  );
+}
+
+/** What the recipe may read, write, and reach. Entries are the runtime's shorthands, inputs, or paths and hosts. */
+export function PermissionsEditor({ doc, onChange, onClose }: { doc: RecipeDoc; onChange: Change; onClose: () => void }) {
+  const inputs = doc.inputs ?? {};
+  const perms = doc.permissions ?? {};
+  const read = perms.filesystem?.read ?? ["input"];
+  const write = perms.filesystem?.write ?? [];
+  const net = perms.network ?? [];
+  const setFs = (key: "read" | "write", list: string[]) => onChange(mutate(doc, (d) => {
+    d.permissions ??= {};
+    d.permissions.filesystem ??= {};
+    d.permissions.filesystem[key] = list;
+  }));
+  const setNet = (list: string[]) => onChange(mutate(doc, (d) => {
+    d.permissions ??= {};
+    if (list.length) d.permissions.network = list; else delete d.permissions.network;
+  }));
+  const pathInputs = Object.entries(inputs).filter(([, s]) => ["file", "files", "directory"].includes(s.type)).map(([k]) => k);
+  const linkInputs = Object.entries(inputs).filter(([, s]) => ["url", "urls"].includes(s.type)).map(([k]) => k);
+  const fsChoices = (list: string[]) => [
+    ["input", "the files and folders you choose"], ["output", "the run's own folder"],
+    ...pathInputs.map((k) => [`\${inputs.${k}}`, inputs[k].label ?? k]),
+  ].filter(([v]) => !list.includes(v));
+  const netChoices = (list: string[]) => [
+    ["input", "the sites in the links you give it"],
+    ...linkInputs.map((k) => [`\${inputs.${k}}`, `the sites in “${inputs[k].label ?? k}”`]),
+  ].filter(([v]) => !list.includes(v));
+  return (
+    <>
+      <h3>Permissions <span className="muted">(what the recipe may touch)</span></h3>
+      <p className="muted">Every file and web tool checks these at run time. The run's own results folder is always writable. Models are governed by your provider settings, not here.</p>
+      <EntryList title="May read" entries={read} label={(e) => fsEntryLabel(e, inputs)} choices={fsChoices(read)} custom="a folder path" onChange={(l) => setFs("read", l)} />
+      <EntryList title="May write" entries={write} label={(e) => fsEntryLabel(e, inputs)} choices={fsChoices(write)} custom="a folder path" onChange={(l) => setFs("write", l)} />
+      <EntryList title="May reach" entries={net} label={(e) => netEntryLabel(e, inputs)} choices={netChoices(net)} custom="a host, like example.com or *.example.com" onChange={setNet} empty="no network" />
+      <button onClick={onClose}>Done</button>
+    </>
+  );
+}
+
+function EntryList({ title, entries, label, choices, custom, onChange, empty = "nothing" }: {
+  title: string; entries: string[]; label: (e: string) => string; choices: string[][]; custom: string; onChange: (l: string[]) => void; empty?: string;
+}) {
+  const [text, setText] = useState("");
+  return (
+    <div className="field">
+      <label><strong>{title}</strong></label>
+      {entries.length === 0 && <p className="muted">{empty}</p>}
+      <ul className="entries">
+        {entries.map((e) => (
+          <li key={e}>{label(e)} <span className="muted mono">{e !== label(e) ? e : ""}</span> <button className="link" onClick={() => onChange(entries.filter((x) => x !== e))}>remove</button></li>
+        ))}
+      </ul>
+      <div className="row" style={{ margin: "4px 0" }}>
+        <select value="" onChange={(e) => { if (e.target.value) onChange([...entries, e.target.value]); }}>
+          <option value="">add…</option>
+          {choices.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+        <input type="text" className="mono" placeholder={custom} value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) { onChange([...entries, text.trim()]); setText(""); } }} />
+        <button disabled={!text.trim()} onClick={() => { onChange([...entries, text.trim()]); setText(""); }}>Add</button>
+      </div>
+    </div>
   );
 }
 

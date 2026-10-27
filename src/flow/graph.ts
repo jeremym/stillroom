@@ -338,6 +338,8 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
   const hasOut = placed.some((p) => p.lane === "out");
   const centerX = hasIn ? IO_W + LANE_GAP : 0;
   const outX = centerX + centerW + LANE_GAP;
+  // Where each top-level step sits in its row, for routing result lines around siblings.
+  const rowOf = new Map<string, { bottom: number; index: number; count: number }>();
   let y = 0;
   for (let r = 1; r <= maxDepth; r++) {
     const ins = inRow("in", r);
@@ -345,10 +347,11 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
     const outs = inRow("out", r);
     const rowH = Math.max(stackH(ins), stackH(outs), ...mids.map((p) => p.h), mids.length ? 0 : IO_H);
     let x = centerX + (centerW - rowW(mids)) / 2;
-    for (const p of mids) {
+    mids.forEach((p, index) => {
       p.node.position = { x, y: y + (rowH - p.h) / 2 };
       x += p.w + COL_GAP;
-    }
+      rowOf.set(p.node.id, { bottom: y + (rowH + p.h) / 2, index, count: mids.length });
+    });
     let sy = y + (rowH - stackH(ins)) / 2;
     for (const p of ins) {
       p.node.position = { x: 0, y: sy };
@@ -360,6 +363,17 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
       sy += p.h + STACK_GAP;
     }
     y += rowH + ROW_GAP;
+  }
+
+  // A result line from a step that is not the rightmost in its row would cross its siblings;
+  // route it down from the step, along a bus under the row, then across to the result.
+  for (const e of edges) {
+    const row = rowOf.get(e.source);
+    if (e.target.startsWith("out:") && row && row.count > 1 && row.index < row.count - 1) {
+      e.type = "bus";
+      e.sourceHandle = "b";
+      e.data = { viaY: row.bottom + 18 + 10 * row.index };
+    }
   }
 
   const nodes: FlowNode[] = [];

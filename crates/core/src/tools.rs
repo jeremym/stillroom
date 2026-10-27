@@ -39,6 +39,38 @@ pub struct ToolContext {
     /// Directory this run may write artifact files into. Created on demand.
     pub artifact_dir: PathBuf,
     pub fs: FsPolicy,
+    pub net: NetPolicy,
+}
+
+/// Which hosts a recipe may reach over the network. Built from `permissions.network`.
+#[derive(Debug, Clone, Default)]
+pub struct NetPolicy {
+    /// Exact hosts, or `*.example.com` for a domain and everything under it.
+    pub allow: Vec<String>,
+}
+
+impl NetPolicy {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn open() -> Self {
+        Self { allow: vec!["*".into()] }
+    }
+
+    pub fn allows(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        self.allow.iter().any(|p| {
+            let p = p.to_ascii_lowercase();
+            if p == "*" {
+                return true;
+            }
+            match p.strip_prefix("*.") {
+                Some(domain) => host == domain || host.ends_with(&format!(".{domain}")),
+                None => host == p,
+            }
+        })
+    }
 }
 
 /// Resolve a path for permission checks: absolute, `~` expanded, `..` collapsed, and the
@@ -107,6 +139,20 @@ impl ToolContext {
         }
     }
 
+    /// The parsed URL if the recipe may reach its host over http or https.
+    pub fn check_url(&self, raw: &str) -> Result<url::Url, ToolError> {
+        let u = url::Url::parse(raw).map_err(|e| ToolError::InvalidInput(format!("{raw}: {e}")))?;
+        if !matches!(u.scheme(), "http" | "https") {
+            return Err(ToolError::InvalidInput(format!("{raw}: only http and https links can be fetched")));
+        }
+        let host = u.host_str().ok_or_else(|| ToolError::InvalidInput(format!("{raw}: no host")))?;
+        if self.net.allows(host) {
+            Ok(u)
+        } else {
+            Err(ToolError::Denied(format!("reaching {host} is outside what this recipe may reach")))
+        }
+    }
+
     /// The normalized path if the recipe may write it.
     pub fn check_write(&self, raw: &str) -> Result<PathBuf, ToolError> {
         let p = normalize_path(raw);
@@ -163,6 +209,7 @@ impl ToolRegistry {
         r.register(Arc::new(EmailWriteDraft));
         r.register(Arc::new(ListFilter));
         r.register(Arc::new(ListTable));
+        r.register(Arc::new(HttpFetch::default()));
         r
     }
 
@@ -801,6 +848,202 @@ impl Tool for ListTable {
     }
 }
 
+/// `http.fetch`: GET one web page as readable text. Output `{ url, finalUrl, ok, status, contentType,
+/// title, text, chars, error }`. HTTP and connection failures are reported in the output rather than
+/// failing the step, so a bad link does not sink a whole research run; a host outside the recipe's
+/// network permission is refused.
+pub struct HttpFetch {
+    pub max_bytes: u64,
+    pub timeout: std::time::Duration,
+}
+
+impl Default for HttpFetch {
+    fn default() -> Self {
+        Self { max_bytes: 4 * 1024 * 1024, timeout: std::time::Duration::from_secs(25) }
+    }
+}
+
+/// HTML to plain text: scripts and styles dropped, block ends become line breaks, tags removed,
+/// common entities decoded, whitespace tidied. Also returns the `<title>`.
+pub fn html_to_text(html: &str) -> (Option<String>, String) {
+    let lower = html.to_ascii_lowercase();
+    let title = lower.find("<title").and_then(|start| {
+        let open_end = lower[start..].find('>')? + start + 1;
+        let close = lower[open_end..].find("</title")? + open_end;
+        Some(decode_entities(&strip_html(&html[open_end..close])))
+    });
+    // Drop <script>, <style>, <title>, and <noscript> bodies.
+    let mut kept = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < html.len() {
+        let rest = &lower[i..];
+        let next = ["<script", "<style", "<title", "<noscript"].iter().filter_map(|t| rest.find(t).map(|p| (p, *t))).min();
+        match next {
+            Some((p, tag)) => {
+                kept.push_str(&html[i..i + p]);
+                let close = format!("</{}", &tag[1..]);
+                let end = lower[i + p..].find(&close).map(|e| i + p + e).and_then(|e| lower[e..].find('>').map(|g| e + g + 1)).unwrap_or(html.len());
+                i = end;
+            }
+            None => {
+                kept.push_str(&html[i..]);
+                break;
+            }
+        }
+    }
+    // Block ends become line breaks so headings and paragraphs stay apart.
+    let mut with_breaks = String::with_capacity(kept.len());
+    let kl = kept.to_ascii_lowercase();
+    let mut j = 0;
+    while j < kept.len() {
+        if kl[j..].starts_with('<') {
+            let end = kl[j..].find('>').map(|e| j + e + 1).unwrap_or(kept.len());
+            let tag = &kl[j..end];
+            let block = ["</p", "<br", "</h1", "</h2", "</h3", "</h4", "</h5", "</h6", "</li", "</div", "</tr", "</blockquote", "</pre", "</section", "</article"];
+            if block.iter().any(|b| tag.starts_with(b)) {
+                with_breaks.push('\n');
+            } else {
+                with_breaks.push(' ');
+            }
+            j = end;
+        } else {
+            let ch = kept[j..].chars().next().unwrap();
+            with_breaks.push(ch);
+            j += ch.len_utf8();
+        }
+    }
+    let text = decode_entities(&with_breaks);
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let l = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if l.is_empty() {
+            if lines.last().map(|x| !x.is_empty()).unwrap_or(false) {
+                lines.push(String::new());
+            }
+        } else {
+            lines.push(l);
+        }
+    }
+    while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+        lines.pop();
+    }
+    (title.filter(|t| !t.is_empty()), lines.join("\n"))
+}
+
+fn decode_entities(s: &str) -> String {
+    s.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&rsquo;", "’")
+        .replace("&lsquo;", "‘")
+        .replace("&rdquo;", "”")
+        .replace("&ldquo;", "“")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+        .replace("&hellip;", "…")
+        .replace("&amp;", "&")
+}
+
+#[async_trait::async_trait]
+impl Tool for HttpFetch {
+    fn id(&self) -> &str {
+        "http.fetch"
+    }
+
+    fn cacheable(&self) -> bool {
+        false
+    }
+
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Fetch one web page (http or https) and return its readable text. Only hosts the recipe may reach.".into(),
+            parameters: json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": {
+                    "url": { "type": "string", "description": "The page address." },
+                    "maxChars": { "type": "integer", "description": "Keep at most this much text (default 20000)." }
+                }
+            }),
+        })
+    }
+
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let raw = inputs.get("url").and_then(Value::as_str).ok_or(ToolError::InvalidInput("url is required".into()))?.trim().to_string();
+        let max_chars = inputs.get("maxChars").and_then(Value::as_u64).unwrap_or(20_000) as usize;
+        let mut url = ctx.check_url(&raw)?;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(self.timeout)
+            .user_agent("Stillroom/0.1 (local research assistant)")
+            .build()
+            .map_err(|e| ToolError::Failed(e.to_string()))?;
+        fn soft(raw: &str, final_url: &str, status: Option<u16>, error: String) -> Value {
+            json!({ "url": raw, "finalUrl": final_url, "ok": false, "status": status, "contentType": Value::Null, "title": Value::Null, "text": "", "chars": 0, "error": error })
+        }
+        let mut hops = 0;
+        let resp = loop {
+            let resp = match client.get(url.clone()).send().await {
+                Ok(r) => r,
+                Err(e) => return Ok(soft(&raw, url.as_str(), None, format!("could not reach {}: {e}", url.host_str().unwrap_or("?")))),
+            };
+            if resp.status().is_redirection() {
+                hops += 1;
+                if hops > 5 {
+                    return Ok(soft(&raw, url.as_str(), Some(resp.status().as_u16()), "too many redirects".into()));
+                }
+                let Some(loc) = resp.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok()) else {
+                    return Ok(soft(&raw, url.as_str(), Some(resp.status().as_u16()), "redirect without a location".into()));
+                };
+                let next = url.join(loc).map_err(|e| ToolError::Failed(format!("bad redirect {loc}: {e}")))?;
+                // Every hop must be a host the recipe may reach.
+                url = ctx.check_url(next.as_str())?;
+                continue;
+            }
+            break resp;
+        };
+        let status = resp.status().as_u16();
+        let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(|s| s.split(';').next().unwrap_or("").trim().to_string());
+        if let Some(len) = resp.content_length() {
+            if len > self.max_bytes {
+                return Ok(soft(&raw, url.as_str(), Some(status), format!("page is too large ({len} bytes)")));
+            }
+        }
+        let body = match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => return Ok(soft(&raw, url.as_str(), Some(status), format!("could not read the page: {e}"))),
+        };
+        if body.len() as u64 > self.max_bytes {
+            return Ok(soft(&raw, url.as_str(), Some(status), format!("page is too large ({} bytes)", body.len())));
+        }
+        let raw_text = String::from_utf8_lossy(&body);
+        let is_html = content_type.as_deref().map(|c| c.contains("html")).unwrap_or(false) || raw_text.trim_start().starts_with('<');
+        let (title, text) = if is_html {
+            html_to_text(&raw_text)
+        } else if content_type.as_deref().map(|c| c.starts_with("text/") || c.contains("json") || c.contains("xml")).unwrap_or(true) {
+            (None, raw_text.to_string())
+        } else {
+            (None, String::new())
+        };
+        let text: String = text.chars().take(max_chars).collect();
+        let ok = (200..300).contains(&status);
+        Ok(json!({
+            "url": raw,
+            "finalUrl": url.as_str(),
+            "ok": ok,
+            "status": status,
+            "contentType": content_type,
+            "title": title,
+            "text": text,
+            "chars": text.chars().count(),
+            "error": if ok { Value::Null } else { Value::String(format!("the server answered {status}")) },
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -810,7 +1053,38 @@ mod tests {
             run_id: "test".into(),
             artifact_dir: std::env::temp_dir().join(format!("stillroom-tools-{}", uuid::Uuid::now_v7())),
             fs: FsPolicy::open(),
+            net: NetPolicy::none(),
         }
+    }
+
+    #[test]
+    fn net_policy_matches_hosts_and_domains() {
+        let p = NetPolicy { allow: vec!["example.com".into(), "*.wikipedia.org".into()] };
+        assert!(p.allows("example.com"));
+        assert!(!p.allows("www.example.com"));
+        assert!(p.allows("en.wikipedia.org"));
+        assert!(p.allows("wikipedia.org"));
+        assert!(!p.allows("evil-wikipedia.org"));
+        assert!(NetPolicy::open().allows("anything.test"));
+        let c = ctx();
+        assert!(matches!(c.check_url("https://example.com/x"), Err(ToolError::Denied(_))));
+        assert!(matches!(c.check_url("ftp://example.com/x"), Err(ToolError::InvalidInput(_))));
+        let c = ToolContext { net: p, ..ctx() };
+        assert_eq!(c.check_url("https://en.wikipedia.org/wiki/A").unwrap().host_str(), Some("en.wikipedia.org"));
+    }
+
+    #[test]
+    fn html_becomes_readable_text() {
+        let html = "<html><head><title>A &amp; B</title><style>p{}</style></head><body><script>x()</script><h1>Hello</h1><p>One &lt;two&gt;</p><p>Three</p></body></html>";
+        let (title, text) = html_to_text(html);
+        assert_eq!(title.as_deref(), Some("A & B"));
+        assert_eq!(text, "Hello\nOne <two>\nThree");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_refuses_hosts_outside_the_policy() {
+        let err = HttpFetch::default().call(&ctx(), json!({ "url": "https://example.com/" })).await.unwrap_err();
+        assert!(matches!(err, ToolError::Denied(_)), "{err}");
     }
 
     const SAMPLE_EML: &str = "From: Ana Ruiz <ana@example.com>

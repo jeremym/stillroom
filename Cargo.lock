@@ -3837,6 +3837,7 @@ dependencies = [
  "indexmap 2.14.2",
  "jsonschema",
  "mailparse",
+ "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",
@@ -3845,6 +3846,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

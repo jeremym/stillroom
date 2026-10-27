@@ -243,3 +243,7 @@ button.danger { border-color: var(--bad); color: var(--bad); }
 .flow-edge.selected .react-flow__edge-path { stroke: var(--fg); stroke-width: 3; }
 .flow-panel.editing .react-flow__handle { width: 12px; height: 12px; background: var(--accent); cursor: crosshair; }
 .flow-panel.editing .react-flow__edge { cursor: pointer; }
+.flow-details .entries { list-style: none; padding: 0; margin: 4px 0; }
+.flow-details .entries li { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.flow-details .row select { width: auto; margin: 0; }
+.flow-details .row input[type="text"] { flex: 1; min-width: 90px; margin: 0; }

@@ -1,4 +1,5 @@
-//! Slot resolution: pinned > recommended > capability resolve. Decided before the run.
+//! Slot resolution: pinned > your default for the capability > recommended > capability resolve.
+//! Decided before the run, never by a model.
 
 use crate::model::InstalledModel;
 use crate::recipe::{Capability, ModelSlot, Preference, Recipe};
@@ -9,8 +10,19 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "snake_case")]
 pub enum ResolvedVia {
     Pinned,
+    /// The user's default model for the slot's capability, from Settings.
+    Default,
     Recommended,
     Capability,
+}
+
+/// What the user set in Settings › Models: a preference when a slot states none, and a default
+/// model per capability. A default is used only if it is installed and satisfies the whole slot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ResolveDefaults {
+    pub preference: Option<Preference>,
+    pub by_capability: BTreeMap<Capability, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +65,16 @@ pub fn resolve_slots(
     installed: &[InstalledModel],
     pins: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, Resolution>, ResolveError> {
+    resolve_slots_with(recipe, installed, pins, &ResolveDefaults::default())
+}
+
+/// Resolve with the user's defaults from Settings as well as their pins.
+pub fn resolve_slots_with(
+    recipe: &Recipe,
+    installed: &[InstalledModel],
+    pins: &BTreeMap<String, String>,
+    defaults: &ResolveDefaults,
+) -> Result<BTreeMap<String, Resolution>, ResolveError> {
     let mut out = BTreeMap::new();
     for (name, slot) in &recipe.model_slots {
         // 1. Pinned
@@ -67,7 +89,14 @@ pub fn resolve_slots(
             out.insert(name.clone(), Resolution { slot: name.clone(), model_id: m.id.clone(), via: ResolvedVia::Pinned });
             continue;
         }
-        // 2. Recommended, if installed and suitable
+        // 2. The user's default for one of the slot's capabilities, if installed and suitable
+        if let Some(m) = slot.requires.iter().find_map(|c| defaults.by_capability.get(c)).and_then(|id| {
+            installed.iter().find(|m| &m.id == id || &m.name == id).filter(|m| satisfies(m, slot).is_ok() && fits_context(m, slot))
+        }) {
+            out.insert(name.clone(), Resolution { slot: name.clone(), model_id: m.id.clone(), via: ResolvedVia::Default });
+            continue;
+        }
+        // 3. Recommended, if installed and suitable
         if let Some(rec) = &slot.recommended {
             if let Some(m) = installed.iter().find(|m| &m.id == rec || &m.name == rec) {
                 if satisfies(m, slot).is_ok() && fits_context(m, slot) {
@@ -76,7 +105,7 @@ pub fn resolve_slots(
                 }
             }
         }
-        // 3. Capability resolve
+        // 4. Capability resolve
         let mut candidates: Vec<&InstalledModel> = installed
             .iter()
             .filter(|m| satisfies(m, slot).is_ok() && fits_context(m, slot))
@@ -85,7 +114,7 @@ pub fn resolve_slots(
             return Err(ResolveError::NoCandidate { slot: name.clone(), requires: slot.requires.clone() });
         }
         let size = |m: &InstalledModel| m.parameter_billions().unwrap_or(0.0);
-        match slot.preference.unwrap_or_default() {
+        match slot.preference.or(defaults.preference).unwrap_or_default() {
             Preference::Accuracy | Preference::Quality => {
                 candidates.sort_by(|a, b| size(b).partial_cmp(&size(a)).unwrap_or(std::cmp::Ordering::Equal))
             }
@@ -102,6 +131,30 @@ pub fn resolve_slots(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_default_beats_recommended_but_not_a_pin() {
+        let installed = vec![
+            model("big", "27B", &[Capability::Text]),
+            model("small", "4B", &[Capability::Text]),
+            model("rec", "8B", &[Capability::Text]),
+        ];
+        let r = recipe("accuracy", Some("rec"));
+        let mut defaults = ResolveDefaults::default();
+        defaults.by_capability.insert(Capability::Text, "ollama:small".into());
+        let res = resolve_slots_with(&r, &installed, &BTreeMap::new(), &defaults).unwrap();
+        let slot = res.values().next().unwrap();
+        assert_eq!(slot.model_id, "ollama:small");
+        assert_eq!(slot.via, ResolvedVia::Default);
+        let mut pins = BTreeMap::new();
+        pins.insert(slot.slot.clone(), "ollama:big".to_string());
+        let res = resolve_slots_with(&r, &installed, &pins, &defaults).unwrap();
+        assert_eq!(res.values().next().unwrap().via, ResolvedVia::Pinned);
+        // A default that is not installed falls through to the recommendation.
+        defaults.by_capability.insert(Capability::Text, "ollama:gone".into());
+        let res = resolve_slots_with(&r, &installed, &BTreeMap::new(), &defaults).unwrap();
+        assert_eq!(res.values().next().unwrap().via, ResolvedVia::Recommended);
+    }
 
     fn model(name: &str, size: &str, caps: &[Capability]) -> InstalledModel {
         InstalledModel {

@@ -26,7 +26,7 @@ pub use library::RecipeLibrary;
 pub use propagate::{dependents, edits_for_rerun, pins_from_run, validate_edit, EditError, StepEdit};
 pub use model::{ChatMessage, ChatRequest, ChatResponse, InstalledModel, ModelClient, ModelError};
 pub use recipe::{Recipe, RecipeError, Step, RECIPE_SCHEMA};
-pub use resolve::{resolve_slots, ResolveError, Resolution, ResolvedVia};
+pub use resolve::{resolve_slots, resolve_slots_with, ResolveDefaults, ResolveError, Resolution, ResolvedVia};
 pub use store::Store;
 pub use trace::{Run, RunStatus, RunTrigger, StepRecord, StepStatus};
 pub use watch::{FolderWatcher, Watch, WatchError};

@@ -1,9 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Draft, DraftResponse, ModelsResponse, ModelUsage, RecipesResponse, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, ToolInfo, WatchView } from "./types";
+import type { Draft, DraftResponse, ModelsResponse, ModelUsage, RecipesResponse, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
   listModels: () => invoke<ModelsResponse>("list_models"),
+  getSettings: () => invoke<Settings>("get_settings"),
+  /** Merge top-level keys; a key set to null is removed. Every window hears `settings:changed`. */
+  setSettings: (patch: Partial<Settings> | Record<string, unknown>) => invoke<Settings>("set_settings", { patch }),
+  /** Download a model through Ollama; progress arrives as `model:pull` events. */
+  pullModel: (name: string) => invoke<void>("pull_model", { name }),
+  openSettings: () => invoke<void>("open_settings"),
   listRecipes: () => invoke<RecipesResponse>("list_recipes"),
   runRecipe: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>, reuse = true) =>
     invoke<Run>("run_recipe", { args: { recipeId, inputs, pins, reuse } }),

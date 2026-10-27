@@ -11,7 +11,7 @@ use stillroom_core::store::{ModelUsage, RunEstimate};
 use stillroom_core::tools::{ToolInfo, ToolRegistry};
 use stillroom_core::trace::RunSummary;
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots, validate_edit, Draft, Executor, RecipeInfo, RecipeLibrary, RecipeSource, Run,
+    edits_for_rerun, pins_from_run, resolve_slots_with, validate_edit, Draft, Executor, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run,
     RunTrigger, StepEdit, StepRecord, Store, Watch,
 };
 use stillroom_models::ollama::Ollama;
@@ -21,13 +21,45 @@ use watches::{WatchRuntime, WatchView};
 
 pub(crate) struct AppState {
     store: Arc<Mutex<Store>>,
-    router: Arc<ModelRouter>,
     tools: Arc<ToolRegistry>,
     library: RecipeLibrary,
     db_path: String,
     artifacts_dir: PathBuf,
     /// One run at a time: a watch firing while the user runs something waits its turn.
     run_gate: tokio::sync::Mutex<()>,
+}
+
+impl AppState {
+    /// Every setting as one object; missing keys mean defaults.
+    fn settings(&self) -> CmdResult<serde_json::Map<String, Value>> {
+        self.store.lock().map_err(err)?.settings().map_err(err)
+    }
+
+    fn ollama_url(&self) -> String {
+        self.settings()
+            .ok()
+            .and_then(|s| s.get("ollama").and_then(|o| o.get("baseUrl")).and_then(Value::as_str).map(String::from))
+            .filter(|u| !u.trim().is_empty())
+            .unwrap_or_else(|| "http://localhost:11434".to_string())
+    }
+
+    fn ollama(&self) -> Ollama {
+        Ollama::new(self.ollama_url())
+    }
+
+    /// The providers as configured right now. Cheap to build; a run keeps the one it started with.
+    fn router(&self) -> Arc<ModelRouter> {
+        Arc::new(ModelRouter::new(vec![Arc::new(self.ollama())]))
+    }
+
+    /// The user's model defaults from Settings › Models.
+    fn resolve_defaults(&self) -> ResolveDefaults {
+        self.settings()
+            .ok()
+            .and_then(|s| s.get("models").cloned())
+            .and_then(|m| serde_json::from_value(m).ok())
+            .unwrap_or_default()
+    }
 }
 
 /// Everything a run needs, from the user's Run button, an approval or edit, or a watch.
@@ -47,9 +79,9 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
         .library
         .find(&args.recipe_id)
         .ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
-    let router = state.router.clone();
+    let router = state.router();
     let installed = router.list_all().await;
-    let resolutions = resolve_slots(&bundle.recipe, &installed, &args.pins).map_err(err)?;
+    let resolutions = resolve_slots_with(&bundle.recipe, &installed, &args.pins, &state.resolve_defaults()).map_err(err)?;
 
     let _turn = state.run_gate.lock().await;
     let observer = {
@@ -113,8 +145,86 @@ struct ModelsResponse {
 
 #[tauri::command]
 async fn list_models(state: State<'_, AppState>) -> CmdResult<ModelsResponse> {
-    let router = state.router.clone();
+    let router = state.router();
     Ok(ModelsResponse { providers: router.statuses().await, models: router.list_all().await })
+}
+
+/// Every setting as one JSON object. Keys: look, ollama, models, pins, firstRun.
+#[tauri::command]
+fn get_settings(state: State<'_, AppState>) -> CmdResult<Value> {
+    Ok(Value::Object(state.settings()?))
+}
+
+/// Merge a patch of top-level settings (a key set to null is removed), then tell every window.
+#[tauri::command]
+fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: Value) -> CmdResult<Value> {
+    let patch = patch.as_object().ok_or("settings patch must be an object")?;
+    {
+        let store = state.store.lock().map_err(err)?;
+        for (k, v) in patch {
+            store.set_setting(k, v).map_err(err)?;
+        }
+    }
+    let all = Value::Object(state.settings()?);
+    let _ = app.emit("settings:changed", all.clone());
+    Ok(all)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PullEvent {
+    name: String,
+    status: String,
+    total: Option<u64>,
+    completed: Option<u64>,
+    done: bool,
+    error: Option<String>,
+}
+
+/// Download a model through Ollama. Progress arrives as `model:pull` events; the command returns when it is done.
+#[tauri::command]
+async fn pull_model(app: AppHandle, state: State<'_, AppState>, name: String) -> CmdResult<()> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("name a model to pull, like qwen3:8b".into());
+    }
+    let ollama = state.ollama();
+    let emitter = app.clone();
+    let n = name.clone();
+    let result = ollama
+        .pull(&name, move |p| {
+            let _ = emitter.emit("model:pull", PullEvent { name: n.clone(), status: p.status.clone(), total: p.total, completed: p.completed, done: p.status == "success", error: None });
+        })
+        .await;
+    match result {
+        Ok(()) => {
+            let _ = app.emit("model:pull", PullEvent { name, status: "success".into(), total: None, completed: None, done: true, error: None });
+            Ok(())
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = app.emit("model:pull", PullEvent { name, status: "error".into(), total: None, completed: None, done: true, error: Some(msg.clone()) });
+            Err(msg)
+        }
+    }
+}
+
+/// Open the Settings window, or bring it forward if it is already open.
+#[tauri::command]
+fn open_settings(app: AppHandle) -> CmdResult<()> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html?window=settings".into()))
+        .title("Stillroom Settings")
+        .inner_size(960.0, 760.0)
+        .min_inner_size(760.0, 560.0)
+        .build()
+        .map_err(err)?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -537,14 +647,12 @@ pub fn run() {
             std::fs::create_dir_all(&artifacts_dir)?;
             let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
-            let router = Arc::new(ModelRouter::new(vec![Arc::new(Ollama::default_local())]));
             let library = RecipeLibrary::new(vec![
                 (builtin_recipes_dir(app.handle()), RecipeSource::Builtin),
                 (user_recipes, RecipeSource::User),
             ]);
             app.manage(AppState {
                 store: Arc::new(Mutex::new(store)),
-                router,
                 tools: Arc::new(ToolRegistry::builtin()),
                 library,
                 db_path: db_path.to_string_lossy().into_owned(),
@@ -559,6 +667,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             list_models,
+            get_settings,
+            set_settings,
+            pull_model,
+            open_settings,
             list_recipes,
             run_recipe,
             rerun_with_edit,

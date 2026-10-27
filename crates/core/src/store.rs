@@ -95,6 +95,10 @@ impl Store {
                 created_at TEXT NOT NULL,
                 json       TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )?;
         Ok(())
@@ -236,6 +240,37 @@ impl Store {
             next = older.continues.clone();
         }
         Ok(Some(base))
+    }
+
+    /// Every setting, as one JSON object keyed by setting name.
+    pub fn settings(&self) -> Result<serde_json::Map<String, serde_json::Value>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = serde_json::Map::new();
+        for row in rows {
+            let (k, v) = row?;
+            out.insert(k, serde_json::from_str(&v)?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError> {
+        let json: Option<String> =
+            self.conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0)).optional()?;
+        Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+    }
+
+    /// Set one setting; `null` removes it.
+    pub fn set_setting(&self, key: &str, value: &serde_json::Value) -> Result<(), StoreError> {
+        if value.is_null() {
+            self.conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        } else {
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, serde_json::to_string(value)?],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn list_watches(&self) -> Result<Vec<Watch>, StoreError> {

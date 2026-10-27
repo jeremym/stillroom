@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
-import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, StepRecord, WatchRunEvent, WatchView } from "./types";
+import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
 import { ArtifactsPanel } from "./components/ArtifactsPanel";
@@ -11,7 +11,6 @@ import { WatchPanel } from "./components/WatchPanel";
 import { UsagePanel } from "./components/UsagePanel";
 import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
-import { SettingsPanel } from "./components/SettingsPanel";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
 import {
   Dial, Empty, Glyph, Logo, Pill, Rail, Zone, applyLook, fmtElapsed, inputGlyph, isGlyphName, loadLook, useElapsed,
@@ -25,25 +24,14 @@ const FlowView = lazy(() => import("./flow/FlowView"));
 /* Places. Library is home. Opening a recipe puts the Dial on screen with that recipe's five places;
    the Dial turns by itself when a run starts, finishes, or needs you. Settings and New recipe sit
    outside the Dial, reached from the Rail or the menu. */
-type Place = "library" | "settings" | "new" | "recipe" | "setup" | "running" | "results" | "door";
-type RecipePlace = Exclude<Place, "library" | "settings" | "new">;
+type Place = "library" | "new" | "recipe" | "setup" | "running" | "results" | "door";
+type RecipePlace = Exclude<Place, "library" | "new">;
 const PLACE_LABEL: Record<Place, string> = {
-  library: "Library", settings: "Settings", new: "New recipe",
+  library: "Library", new: "New recipe",
   recipe: "Recipe", setup: "Set up", running: "Running", results: "Results", door: "Open the door",
 };
 const RECIPE_PLACES: RecipePlace[] = ["recipe", "setup", "running", "results", "door"];
 const isRecipePlace = (p: Place): p is RecipePlace => (RECIPE_PLACES as Place[]).includes(p);
-
-function pinKey(id: string) {
-  return `stillroom.pins.${id}`;
-}
-function loadPins(id: string): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(pinKey(id)) ?? "{}");
-  } catch {
-    return {};
-  }
-}
 
 const STATUS_WORD: Record<string, string> = { succeeded: "done", failed: "failed", needs_review: "needs you", running: "running" };
 const SIZES = ["normal", "larger", "largest"] as const;
@@ -70,10 +58,9 @@ function App() {
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [usage, setUsage] = useState<ModelUsage[]>([]);
   const [recipeId, setRecipeId] = useState<string>("");
-  const [pins, setPins] = useState<Record<string, string>>({});
+  const [settings, setSettingsState] = useState<Settings>({});
   const [watches, setWatches] = useState<WatchView[]>([]);
   const [place, setPlace] = useState<Place>("library");
-  const [look, setLook] = useState<Look>(() => loadLook());
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [freshId, setFreshId] = useState<string | null>(null);
@@ -83,28 +70,36 @@ function App() {
   placeRef.current = place;
 
   const recipe = recipes?.recipes.find((r) => r.id === recipeId) ?? null;
-  useEffect(() => {
-    if (recipe) setPins(loadPins(recipe.id));
-  }, [recipe?.id]);
+  // Pins live in Settings (the Rust store) per recipe, so watches and the Settings window see the same ones.
+  const pins = useMemo(() => settings.pins?.[recipeId] ?? {}, [settings.pins, recipeId]);
+  const settingsRef = useRef<Settings>({});
+  settingsRef.current = settings;
+  // The look (theme, text size) is a setting too; local storage only keeps the first paint right.
+  const look = useMemo<Look>(() => {
+    const base = loadLook();
+    return { theme: settings.look?.theme ?? base.theme, size: settings.look?.size ?? base.size, scanlines: settings.look?.scanlines ?? base.scanlines };
+  }, [settings.look]);
   useEffect(() => applyLook(look), [look]);
+  const saveSettings = useCallback((patch: Record<string, unknown>) => {
+    api.setSettings(patch).then(setSettingsState).catch((e) => setError(String(e)));
+  }, []);
+  const setLook = useCallback((update: Look | ((l: Look) => Look)) => {
+    const cur = (() => { const b = loadLook(); const l = settingsRef.current.look; return { theme: l?.theme ?? b.theme, size: l?.size ?? b.size, scanlines: l?.scanlines ?? b.scanlines }; })();
+    saveSettings({ look: typeof update === "function" ? update(cur) : update });
+  }, [saveSettings]);
 
   // A recipe place with no recipe open falls back to the Library.
   useEffect(() => {
     if (isRecipePlace(place) && recipes && !recipe) setPlace("library");
   }, [place, recipe, recipes]);
 
-  // Pins are per recipe and remembered on this machine; both the flow and the recipe form change them here.
+  // Both the flow and the recipe form change pins here; they go to the store.
   const updatePins = useCallback((update: (pins: Record<string, string>) => Record<string, string>) => {
-    setPins((p) => {
-      const next = update(p);
-      if (recipe) {
-        try {
-          localStorage.setItem(pinKey(recipe.id), JSON.stringify(next));
-        } catch { /* per-viewer convenience only */ }
-      }
-      return next;
-    });
-  }, [recipe?.id]);
+    if (!recipeId) return;
+    const all = settingsRef.current.pins ?? {};
+    const next = update(all[recipeId] ?? {});
+    saveSettings({ pins: { ...all, [recipeId]: next } });
+  }, [recipeId, saveSettings]);
 
   const refreshModels = useCallback(() => {
     api.listModels().then(setModels).catch((e) => setError(String(e)));
@@ -141,6 +136,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    api.getSettings().then(setSettingsState).catch((e) => setError(String(e)));
     api.runtimeStatus().then(setStatus).catch((e) => setError(String(e)));
     refreshModels();
     refreshRuns();
@@ -177,10 +173,17 @@ function App() {
       refreshWatches();
     });
     const unlistenWatches = listen("watch:changed", () => refreshWatches());
+    // Settings change in the Settings window too; the model list changes when Ollama's address does.
+    const unlistenSettings = listen<Settings>("settings:changed", (ev) => {
+      const before = settingsRef.current.ollama?.baseUrl;
+      setSettingsState(ev.payload);
+      if (ev.payload.ollama?.baseUrl !== before) refreshModels();
+    });
     return () => {
       unlisten.then((f) => f());
       unlistenWatchRun.then((f) => f());
       unlistenWatches.then((f) => f());
+      unlistenSettings.then((f) => f());
     };
   }, [refreshModels, refreshRuns, refreshWatches, refreshRecipes, openRun]);
 
@@ -188,7 +191,7 @@ function App() {
   const onMenu = useCallback((id: string) => {
     const goRecipe = (p: RecipePlace) => { if (recipesRef.current?.recipes.length) setPlace((cur) => (isRecipePlace(cur) || recipeId ? p : cur)); };
     switch (id) {
-      case "about": case "settings": setPlace("settings"); break;
+      case "about": case "settings": api.openSettings().catch((e) => setError(String(e))); break;
       case "new-recipe": setCreateError(null); setPlace("new"); break;
       case "reveal-recipes": api.revealRecipesFolder().catch((e) => setError(String(e))); break;
       case "place-library": setPlace("library"); break;
@@ -209,7 +212,7 @@ function App() {
       case "watch-folder": goRecipe("setup"); break;
       case "help": case "shortcuts": setHelpOpen(true); break;
     }
-  }, [recipeId]);
+  }, [recipeId, setLook]);
   useEffect(() => {
     const un = listen<string>("menu", (ev) => onMenu(ev.payload));
     return () => { un.then((f) => f()); };
@@ -421,7 +424,7 @@ function App() {
           <nav className="crumbs" aria-label="Where you are">
             <button className="home" onClick={() => setPlace("library")} title="Library: every recipe"><Logo size={28} /></button>
             {place === "library" && <><span className="sep">›</span><span className="here">Library</span></>}
-            {(place === "settings" || place === "new") && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
+            {place === "new" && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
             {isRecipePlace(place) && recipe && (
               <>
                 <span className="sep">›</span>
@@ -436,12 +439,12 @@ function App() {
         right={
           <>
             {models && models.providers.map((p) => (
-              <Pill key={p.id} ok={p.available} onClick={() => setPlace("settings")} title="Models and providers (Settings)">
+              <Pill key={p.id} ok={p.available} onClick={() => api.openSettings().catch((e) => setError(String(e)))} title="Models and providers (Settings)">
                 {p.label} · {p.available ? `${models.models.length} models` : "not running"}
               </Pill>
             ))}
             <button className="icon" onClick={() => { setCreateError(null); setPlace("new"); }} title="New recipe (⌘N)"><Glyph name="plus" /> New recipe</button>
-            <button className="icon" onClick={() => setPlace("settings")} title="Settings (⌘,)" aria-label="Settings"><Glyph name="settings" /></button>
+            <button className="icon" onClick={() => api.openSettings().catch((e) => setError(String(e)))} title="Settings (⌘,)" aria-label="Settings"><Glyph name="settings" /></button>
             <button className="icon" onClick={() => setHelpOpen((o) => !o)} title="Help and shortcuts (⌘/)" aria-label="Help" aria-pressed={helpOpen}><Glyph name="help" /></button>
           </>
         }
@@ -497,11 +500,6 @@ function App() {
               <HistoryPanel history={history} onOpen={openRun} />
               <UsagePanel usage={usage} />
             </>
-          )}
-
-          {place === "settings" && (
-            <SettingsPanel look={look} onLook={setLook} models={models} onRefreshModels={refreshModels} status={status}
-              onRevealRecipes={() => api.revealRecipesFolder().catch((e) => setError(String(e)))} />
           )}
 
           {place === "new" && recipes && (

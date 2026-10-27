@@ -305,3 +305,22 @@ export interface RecipeDoc {
   outputs: Record<string, OutputSpec>;
   [extra: string]: unknown;
 }
+
+/** Settings, as the Rust store holds them. Every key is optional; missing means the default. */
+export interface Settings {
+  look?: { theme?: "green" | "amber" | "paper"; size?: "normal" | "larger" | "largest"; scanlines?: boolean };
+  ollama?: { baseUrl?: string };
+  models?: { preference?: "accuracy" | "speed"; byCapability?: Record<string, string> };
+  /** Model pins per recipe: recipe id → slot → model id. */
+  pins?: Record<string, Record<string, string>>;
+  firstRun?: boolean;
+}
+
+export interface PullEvent {
+  name: string;
+  status: string;
+  total: number | null;
+  completed: number | null;
+  done: boolean;
+  error: string | null;
+}

@@ -376,10 +376,12 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
     }
   }
 
+  // Every node carries its size, so React Flow draws it at once instead of waiting to
+  // measure it (a measurement the webview sometimes never delivers).
   const nodes: FlowNode[] = [];
   for (const p of placed) {
-    nodes.push(p.node);
-    if (p.children) nodes.push(...p.children);
+    nodes.push({ ...p.node, width: p.w, height: p.h });
+    if (p.children) nodes.push(...p.children.map((c) => ({ ...c, width: NODE_W, height: NODE_H })));
   }
   return { nodes, edges: dedupe(edges), width: hasOut ? outX + IO_W : centerX + centerW, height: Math.max(0, y - ROW_GAP) };
 }

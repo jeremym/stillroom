@@ -23,9 +23,19 @@ function findStep(steps: StepInfo[], id: string): StepInfo | undefined {
 
 export function ReviewPanel({ run, steps, busy, onDecide }: Props) {
   const pending = run.steps.find((s) => s.kind === "review" && s.status === "skipped" && s.skipReason);
-  const items = ((pending?.output as { items?: unknown[] } | undefined)?.items ?? []) as unknown[];
+  const out = (pending?.output ?? {}) as { items?: unknown[]; approved?: unknown[]; rejected?: unknown[] };
+  const items = out.items ?? [];
+  // When a run continues an earlier one, decisions already made on the same items come back
+  // with it; those start as they were decided, and only the new ones need a look.
+  const before = (it: unknown): "approved" | "rejected" | null => {
+    const key = JSON.stringify(it);
+    if (out.approved?.some((x) => JSON.stringify(x) === key)) return "approved";
+    if (out.rejected?.some((x) => JSON.stringify(x) === key)) return "rejected";
+    return null;
+  };
   const [checked, setChecked] = useState<boolean[]>([]);
-  useEffect(() => setChecked(items.map(() => true)), [run.id, items.length]);
+  useEffect(() => setChecked(items.map((it) => before(it) !== "rejected")), [run.id, items.length]);
+  const newCount = items.filter((it) => before(it) === null).length;
   if (!pending) return null;
   const info = findStep(steps, pending.stepId);
   const show = info?.show?.length ? info.show : [];
@@ -44,6 +54,8 @@ export function ReviewPanel({ run, steps, busy, onDecide }: Props) {
       <h2>{title} <span className="muted">(review step · the run is paused here)</span></h2>
       {items.length === 0 ? (
         <p className="muted">Nothing to review. Continue to finish the run.</p>
+      ) : newCount < items.length ? (
+        <p className="muted">{newCount === 1 ? "One item is new" : `${newCount} items are new`}; the rest keep the decision you made before. Untick anything you do not want. Nothing is written until you approve.</p>
       ) : (
         <p className="muted">Untick anything you do not want. Nothing is written until you approve.</p>
       )}
@@ -58,6 +70,9 @@ export function ReviewPanel({ run, steps, busy, onDecide }: Props) {
                   onChange={(e) => setChecked((c) => c.map((x, k) => (k === i ? e.target.checked : x)))} />
                 <div style={{ flex: 1 }}>
                   <strong>{headline || `Item ${i + 1}`}</strong>
+                  {before(it) === "approved" && <span className="muted"> · approved before</span>}
+                  {before(it) === "rejected" && <span className="muted"> · rejected before</span>}
+                  {before(it) === null && newCount < items.length && <span className="tag">new</span>}
                   {rest.map((p) => {
                     const v = asText(dig(it, p));
                     if (!v) return null;

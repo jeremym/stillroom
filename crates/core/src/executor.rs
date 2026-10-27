@@ -11,7 +11,7 @@ use crate::recipe::{AgentStep, MapStep, Recipe, Step};
 use crate::refs::{self, Context};
 use crate::resolve::Resolution;
 use crate::tools::{NetPolicy, normalize_path, FsPolicy, ToolContext, ToolRegistry};
-use crate::trace::{Run, RunStatus, StepRecord, StepStatus, ToolCallRecord};
+use crate::trace::{Run, RunStatus, RunTrigger, StepRecord, StepStatus, ToolCallRecord};
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -68,6 +68,8 @@ pub struct RunRequest {
     /// with the same inputs is reused from its trace, even steps that are not cacheable, so
     /// continuing never repeats a side effect such as filing an email.
     pub resume_from: Option<Box<Run>>,
+    /// What started this run, when it was not the user. Recorded on the trace.
+    pub trigger: Option<RunTrigger>,
 }
 
 /// Called after each step record changes, so a UI can show live progress.
@@ -228,6 +230,20 @@ impl Executor {
         Some(fingerprint(&[&req.recipe.id, step.id(), &def, &inputs, &model, &prompt]))
     }
 
+    /// Whether a continued run may take this step's result from the run it continues.
+    fn resumable(&self, step: &Step) -> bool {
+        let tool = |id: &str| self.tools.get(id);
+        match step {
+            Step::Review(_) => false,
+            Step::Tool(t) => tool(&t.tool).is_none_or(|x| x.cacheable() || x.has_side_effects()),
+            Step::Agent(a) => {
+                a.allowed_tools.iter().any(|t| tool(t).is_some_and(|x| x.has_side_effects()))
+                    || a.allowed_tools.iter().all(|t| tool(t).is_none_or(|x| x.cacheable()))
+            }
+            _ => true,
+        }
+    }
+
     fn reusable(&self, req: &RunRequest, step: &Step) -> bool {
         if !req.reuse || self.cache.is_none() || !step.checkpoint() {
             return false;
@@ -292,6 +308,8 @@ impl Executor {
             outputs: IndexMap::new(),
             error: None,
             edits: req.edits.clone(),
+            trigger: req.trigger.clone(),
+            continues: req.resume_from.as_ref().map(|r| r.id.clone()),
         };
 
         let order = match Self::order(&req.recipe) {
@@ -435,10 +453,28 @@ impl Executor {
                 let inputs = refs::resolve_value(&raw, &ctx).map_err(|source| ExecError::Ref { step: record_id.clone(), source })?;
                 rec.inputs = inputs.clone();
 
-                // Continuing a run: anything it already did with these inputs is done.
+                // Continuing a run: anything it already did with these inputs is done, except
+                // steps that only look at the world (a folder listing): those look again.
+                // Review steps carry their decisions forward below instead.
                 if let Some(prior) = req.resume_from.as_deref() {
-                    if !req.edits.contains_key(&record_id) {
+                    if !req.edits.contains_key(&record_id) && self.resumable(step) {
                         if let Some(done) = prior_result(prior, &record_id, step, &ctx, &inputs) {
+                            // A reused map keeps its inner records in this trace too, so the next
+                            // continuation can still find what each item had done.
+                            if matches!(step, Step::Map(_)) {
+                                let prefix = format!("{record_id}[");
+                                for inner in prior.steps.iter().filter(|r| r.step_id.starts_with(&prefix)) {
+                                    let mut carried = inner.clone();
+                                    carried.run_id = state.run_id.clone();
+                                    carried.position = state.position;
+                                    carried.reused_from = Some(prior.id.clone());
+                                    state.position += 1;
+                                    if let Some(o) = &state.observe {
+                                        o(&carried);
+                                    }
+                                    state.records.push(carried);
+                                }
+                            }
                             rec.reused_from = Some(prior.id.clone());
                             rec.model = done.model.clone();
                             rec.prompt_path = done.prompt_path.clone();
@@ -465,13 +501,36 @@ impl Executor {
                                 Ok(edit.output.clone())
                             }
                             None => {
+                                // Continuing a run: decisions already made on these very items stand, so a
+                                // folder watch only asks about what is new.
+                                let prior = req.resume_from.as_deref();
+                                let decided_before = prior.and_then(|p| {
+                                    p.steps.iter().find(|r| r.step_id == record_id && r.output.as_ref().is_some_and(|o| o["decided"] == Value::Bool(true))).and_then(|r| r.output.clone())
+                                });
+                                let (mut approved, mut rejected, mut undecided) = (Vec::new(), Vec::new(), 0usize);
+                                for item in items.as_array().cloned().unwrap_or_default() {
+                                    match &decided_before {
+                                        Some(d) if contains(&d["approved"], &item) => approved.push(item),
+                                        Some(d) if contains(&d["rejected"], &item) => rejected.push(item),
+                                        _ => undecided += 1,
+                                    }
+                                }
+                                if undecided == 0 && decided_before.is_some() {
+                                    rec.reused_from = prior.map(|p| p.id.clone());
+                                    return Ok(serde_json::json!({ "decided": true, "approved": approved, "rejected": rejected }));
+                                }
                                 state.needs_review = true;
                                 if scope.parent.is_none() {
                                     state.held.extend(dependents(&req.recipe, step.id()));
                                 }
-                                let n = items.as_array().map(Vec::len).unwrap_or(0);
-                                rec.skip_reason = Some(format!("{n} item{} waiting for your decision", if n == 1 { "" } else { "s" }));
-                                Ok(serde_json::json!({ "decided": false, "items": items, "approved": [], "rejected": [] }))
+                                let before = approved.len() + rejected.len();
+                                let plural = |n: usize| if n == 1 { "" } else { "s" };
+                                rec.skip_reason = Some(if before > 0 {
+                                    format!("{undecided} new item{} waiting for your decision ({before} decided before)", plural(undecided))
+                                } else {
+                                    format!("{undecided} item{} waiting for your decision", plural(undecided))
+                                });
+                                Ok(serde_json::json!({ "decided": false, "items": items, "approved": approved, "rejected": rejected }))
                             }
                         };
                     }
@@ -778,7 +837,6 @@ impl Executor {
 /// The prior run's record for this step, if it succeeded on the same inputs. Map steps are
 /// matched on the resolved array they iterate.
 fn prior_result<'p>(prior: &'p Run, record_id: &str, step: &Step, ctx: &Context<'_>, inputs: &Value) -> Option<&'p StepRecord> {
-    let done = prior.steps.iter().find(|r| r.step_id == record_id && r.status == StepStatus::Succeeded && r.output.is_some())?;
     let current = match step {
         Step::Map(m) => {
             let over = refs::resolve_value(&Value::String(m.over.clone()), ctx).ok()?;
@@ -786,7 +844,37 @@ fn prior_result<'p>(prior: &'p Run, record_id: &str, step: &Step, ctx: &Context<
         }
         _ => inputs.clone(),
     };
-    (inputs_fingerprint(&done.inputs) == inputs_fingerprint(&current)).then_some(done)
+    let want = inputs_fingerprint(&current);
+    // Steps inside a map are matched by what they did, not by their position: the list they
+    // ran over may have grown or been reordered since (a folder watch sees this every time).
+    prior
+        .steps
+        .iter()
+        .find(|r| same_step(&r.step_id, record_id) && r.status == StepStatus::Succeeded && r.output.is_some() && inputs_fingerprint(&r.inputs) == want)
+}
+
+/// `each[3].parse` and `each[0].parse` are the same step at different positions.
+fn same_step(a: &str, b: &str) -> bool {
+    a == b || strip_indices(a) == strip_indices(b)
+}
+
+fn strip_indices(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    let mut in_index = false;
+    for c in id.chars() {
+        match c {
+            '[' => { in_index = true; out.push(c); }
+            ']' => { in_index = false; out.push(c); }
+            _ if in_index && c.is_ascii_digit() => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether a JSON array holds an element equal to `item`.
+fn contains(list: &Value, item: &Value) -> bool {
+    list.as_array().is_some_and(|a| a.iter().any(|x| x == item))
 }
 
 /// Appended to every agent step's prompt. The step envelope in the Prompt Stack.
@@ -903,6 +991,7 @@ mod tests {
             reuse: true,
             edits: BTreeMap::new(),
             resume_from: None,
+            trigger: None,
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
         let run = exec.run(req, None).await;
@@ -936,6 +1025,7 @@ mod tests {
             reuse: true,
             edits: BTreeMap::new(),
             resume_from: None,
+            trigger: None,
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel)).with_cache(Arc::new(MemoryCache::default()));
         let first = exec.run(make(), None).await;
@@ -1004,6 +1094,7 @@ outputs:
             reuse: true,
             edits: BTreeMap::new(),
             resume_from: None,
+            trigger: None,
         }
     }
 
@@ -1187,6 +1278,7 @@ outputs:
             reuse: true,
             edits: BTreeMap::new(),
             resume_from: None,
+            trigger: None,
         }
     }
 
@@ -1232,13 +1324,82 @@ outputs:
         assert_eq!(second.status, RunStatus::Succeeded, "{:?}", second.error);
         assert!(by_id(&second, "review").edited);
         assert_eq!(by_id(&second, "each").reused_from.as_deref(), Some(first.id.as_str()), "the whole map is resumed, not re-run");
-        assert!(second.steps.iter().all(|s| !s.step_id.starts_with("each[")), "no inner steps re-executed");
-        assert_eq!(by_id(&second, "list").reused_from.as_deref(), Some(first.id.as_str()), "non-cacheable tool resumed too");
+        let inner: Vec<&StepRecord> = second.steps.iter().filter(|s| s.step_id.starts_with("each[")).collect();
+        assert!(!inner.is_empty() && inner.iter().all(|s| s.reused_from.as_deref() == Some(first.id.as_str())), "inner steps carried over, none re-executed");
+        assert!(by_id(&second, "list").reused_from.is_none(), "the folder is listed again: it may have changed");
         let sent = &second.outputs["sent"];
         assert_eq!(sent.as_array().unwrap().len(), 1, "{sent}");
         let written = std::path::PathBuf::from(sent[0]["write"]["path"].as_str().unwrap());
         assert!(written.starts_with(dir.join("outbox").canonicalize().unwrap()), "{written:?}");
         assert!(std::fs::read_to_string(&written).unwrap().contains("Thanks for asking. Yes."));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A folder watch runs the same recipe over a folder again and again. Each run continues the
+    /// last: steps that handled a file before are reused wherever the file now sits in the list,
+    /// and the review only asks about items it has not decided.
+    #[tokio::test]
+    async fn continuing_over_a_grown_folder_reuses_by_content_and_asks_only_about_new_items() {
+        use crate::cache::MemoryCache;
+        let dir = std::env::temp_dir().join(format!("stillroom-watchrun-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::create_dir_all(dir.join("outbox")).unwrap();
+        std::fs::write(dir.join("inbox/a.eml"), eml("ana@example.com", "Is invoice 42 paid?", "Hi")).unwrap();
+        std::fs::write(dir.join("inbox/b.eml"), eml("news@example.com", "October newsletter", "Read all about it")).unwrap();
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(TriageModel)).with_cache(Arc::new(MemoryCache::default()));
+        let by_id = |run: &Run, id: &str| run.steps.iter().find(|s| s.step_id == id).cloned().unwrap_or_else(|| panic!("no step {id}"));
+
+        let first = exec.run(triage_request(&dir), None).await;
+        assert_eq!(first.status, RunStatus::NeedsReview);
+        let item_a = by_id(&first, "review").output.as_ref().unwrap()["items"][0].clone();
+        let mut req = triage_request(&dir);
+        req.edits = crate::propagate::edits_for_rerun(&first, "review", serde_json::json!({ "decided": true, "approved": [item_a.clone()], "rejected": [] })).unwrap();
+        req.resume_from = Some(Box::new(first.clone()));
+        let second = exec.run(req, None).await;
+        assert_eq!(second.status, RunStatus::Succeeded, "{:?}", second.error);
+        assert_eq!(std::fs::read_dir(dir.join("outbox")).unwrap().count(), 1);
+
+        // A new email lands, and it sorts first, so every earlier item moves down one slot.
+        std::fs::write(dir.join("inbox/0c.eml"), eml("cat@example.com", "Can we meet?", "Soon?")).unwrap();
+        let mut req = triage_request(&dir);
+        req.resume_from = Some(Box::new(second.clone()));
+        let third = exec.run(req, None).await;
+        assert_eq!(third.status, RunStatus::NeedsReview, "{:?}", third.error);
+        let entries = by_id(&third, "list").output.as_ref().unwrap()["entries"].clone();
+        assert!(entries[0]["path"].as_str().unwrap().ends_with("0c.eml"), "{entries}");
+        assert!(by_id(&third, "each[0].parse").reused_from.is_none(), "the new email is parsed");
+        assert!(by_id(&third, "each[1].parse").reused_from.is_none(), "a.eml is read again (it may have changed)");
+        assert_eq!(by_id(&third, "each[1].classify").reused_from.as_deref(), Some(second.id.as_str()), "a.eml's sorting reused from its new position");
+        assert_eq!(by_id(&third, "each[2].classify").reused_from.as_deref(), Some(second.id.as_str()), "b.eml too");
+        let review = by_id(&third, "review");
+        assert_eq!(review.skip_reason.as_deref(), Some("1 new item waiting for your decision (1 decided before)"));
+        let out = review.output.as_ref().unwrap();
+        assert_eq!(out["approved"].as_array().unwrap(), &vec![item_a.clone()], "the earlier decision stands");
+        assert_eq!(out["items"].as_array().unwrap().len(), 2);
+
+        // Approve the new one too: only its draft is written, a's draft is not written twice.
+        let item_c = out["items"].as_array().unwrap().iter().find(|i| **i != item_a).unwrap().clone();
+        let mut req = triage_request(&dir);
+        req.edits = crate::propagate::edits_for_rerun(&third, "review", serde_json::json!({ "decided": true, "approved": [item_a.clone(), item_c], "rejected": [] })).unwrap();
+        // The paused run held `send` back, so its records come from the run before it.
+        assert_eq!(third.continues.as_deref(), Some(second.id.as_str()));
+        let mut base = third.clone();
+        base.absorb(&second);
+        req.resume_from = Some(Box::new(base));
+        let fourth = exec.run(req, None).await;
+        assert_eq!(fourth.status, RunStatus::Succeeded, "{:?}", fourth.error);
+        assert_eq!(by_id(&fourth, "send[0].write").reused_from.as_deref(), Some(third.id.as_str()), "a's draft reused through the chain");
+        assert_eq!(by_id(&fourth, "send[0].write").inputs["subject"], "Is invoice 42 paid?");
+        assert!(by_id(&fourth, "send[1].write").reused_from.is_none());
+        assert_eq!(std::fs::read_dir(dir.join("outbox")).unwrap().count(), 2);
+
+        // Nothing new: the review carries every decision forward and the run finishes on its own.
+        let mut req = triage_request(&dir);
+        req.resume_from = Some(Box::new(fourth.clone()));
+        let fifth = exec.run(req, None).await;
+        assert_eq!(fifth.status, RunStatus::Succeeded, "{:?}", fifth.error);
+        assert_eq!(by_id(&fifth, "review").reused_from.as_deref(), Some(fourth.id.as_str()));
+        assert_eq!(std::fs::read_dir(dir.join("outbox")).unwrap().count(), 2);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1279,6 +1440,7 @@ outputs:
             reuse: false,
             edits: BTreeMap::new(),
             resume_from: None,
+            trigger: None,
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(TriageModel));
         let run = exec.run(req, None).await;

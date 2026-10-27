@@ -16,6 +16,7 @@ pub mod resolve;
 pub mod store;
 pub mod tools;
 pub mod trace;
+pub mod watch;
 
 pub use bundle::{RecipeBundle, RecipeInfo, RecipeSource};
 pub use cache::{CachedStep, MemoryCache, StepCache};
@@ -27,4 +28,5 @@ pub use model::{ChatMessage, ChatRequest, ChatResponse, InstalledModel, ModelCli
 pub use recipe::{Recipe, RecipeError, Step, RECIPE_SCHEMA};
 pub use resolve::{resolve_slots, ResolveError, Resolution, ResolvedVia};
 pub use store::Store;
-pub use trace::{Run, RunStatus, StepRecord, StepStatus};
+pub use trace::{Run, RunStatus, RunTrigger, StepRecord, StepStatus};
+pub use watch::{FolderWatcher, Watch, WatchError};

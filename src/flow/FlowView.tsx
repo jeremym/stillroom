@@ -135,9 +135,19 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(([e]) => setCanvasW(e.contentRect.width));
+    // A width of 0 means the canvas is hidden for the moment, not that it is that narrow.
+    const measure = () => {
+      const w = el.getBoundingClientRect().width;
+      if (w > 0) setCanvasW(w);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
   }, []);
 
   // Leaving the recipe leaves the editor too.

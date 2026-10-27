@@ -215,6 +215,7 @@ impl RecipeBundle {
             reuse: true,
             edits: BTreeMap::new(),
             resume_from: None,
+            trigger: None,
         }
     }
 }

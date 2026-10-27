@@ -1,13 +1,14 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
-import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, StepRecord } from "./types";
+import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, StepRecord, WatchRunEvent, WatchView } from "./types";
 import { ModelsPanel } from "./components/ModelsPanel";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
 import { ArtifactsPanel } from "./components/ArtifactsPanel";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { WatchPanel } from "./components/WatchPanel";
 import { UsagePanel } from "./components/UsagePanel";
 import "./App.css";
 
@@ -38,6 +39,7 @@ function App() {
   const [usage, setUsage] = useState<ModelUsage[]>([]);
   const [recipeId, setRecipeId] = useState<string>("");
   const [pins, setPins] = useState<Record<string, string>>({});
+  const [watches, setWatches] = useState<WatchView[]>([]);
   const recipesRef = useRef<RecipesResponse | null>(null);
 
   const recipe = recipes?.recipes.find((r) => r.id === recipeId) ?? recipes?.recipes[0] ?? null;
@@ -74,6 +76,9 @@ function App() {
     api.usage().then(setUsage).catch(() => {});
     api.runtimeStatus().then(setStatus).catch(() => {});
   }, []);
+  const refreshWatches = useCallback(() => {
+    api.listWatches().then(setWatches).catch(() => {});
+  }, []);
 
   useEffect(() => {
     api.runtimeStatus().then(setStatus).catch((e) => setError(String(e)));
@@ -89,6 +94,7 @@ function App() {
       })
       .then((latest) => latest[0] && openRun(latest[0].id))
       .catch((e) => setError(String(e)));
+    refreshWatches();
     const unlisten = listen<StepRecord>("run:step", (ev) => {
       setLiveSteps((prev) => {
         const next = prev.filter((s) => s.stepId !== ev.payload.stepId);
@@ -96,10 +102,31 @@ function App() {
         return next.sort((a, b) => a.position - b.position);
       });
     });
+    // A watch's run shows the same way a run from the Run button does.
+    const unlistenWatchRun = listen<WatchRunEvent>("watch:run", (ev) => {
+      const w = ev.payload;
+      if (w.phase === "started") {
+        setRunning(true);
+        setError(null);
+        setRun(null);
+        setLiveSteps([]);
+        setRunRecipe(recipesRef.current?.recipes.find((r) => r.id === w.recipeId) ?? null);
+        setRecipeId(w.recipeId);
+      } else {
+        setRunning(false);
+        if (w.error && !w.runId) setError(w.error);
+        if (w.runId) openRun(w.runId).catch((e) => setError(String(e)));
+        refreshRuns();
+      }
+      refreshWatches();
+    });
+    const unlistenWatches = listen("watch:changed", () => refreshWatches());
     return () => {
       unlisten.then((f) => f());
+      unlistenWatchRun.then((f) => f());
+      unlistenWatches.then((f) => f());
     };
-  }, [refreshModels, refreshRuns, openRun]);
+  }, [refreshModels, refreshRuns, refreshWatches, openRun]);
 
   async function startRun(recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, reuse: boolean) {
     setRunning(true);
@@ -114,6 +141,16 @@ function App() {
       setError(String(e));
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function watchFolder(recipe: RecipeInfo, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) {
+    setError(null);
+    try {
+      await api.addWatch(recipe.id, input, inputs, pins);
+      refreshWatches();
+    } catch (e) {
+      setError(String(e));
     }
   }
 
@@ -175,6 +212,7 @@ function App() {
         <p className="muted">
           {run.status === "needs_review" ? "Waiting for you" : "Latest result"} · {run.recipeName} · {new Date(run.startedAt).toLocaleString()}
           {editedNames.length > 0 && <> · includes your {run.steps.some((s) => s.edited && s.kind === "review") ? "decision on" : "edit to"} <strong>{editedNames.join(", ")}</strong></>}
+          {run.trigger && <> · started by the folder watch{run.trigger.changed.length > 0 ? <> after <strong>{run.trigger.changed.slice(0, 3).join(", ")}{run.trigger.changed.length > 3 ? ` and ${run.trigger.changed.length - 3} more` : ""}</strong> landed</> : " (Run now)"}</>}
           <span className="muted"> · the recipe panel below starts a new run</span>
         </p>
       )}
@@ -188,8 +226,9 @@ function App() {
 
       {recipes && recipe && (
         <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={setRecipeId} pins={pins} onPins={updatePins}
-          models={models?.models ?? []} running={running} onRun={startRun} />
+          models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} />
       )}
+      <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={openRun} onError={(m) => setError(m)} />
       {recipes?.errors.map((e) => (
         <pre key={e.path} className="error">{e.path}: {e.error}</pre>
       ))}

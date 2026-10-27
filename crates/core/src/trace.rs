@@ -94,6 +94,26 @@ pub struct Run {
     /// marked `edited` was set aside because the step's inputs had changed.
     #[serde(default)]
     pub edits: std::collections::BTreeMap<String, crate::propagate::StepEdit>,
+    /// What started the run when it was not the user pressing Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<RunTrigger>,
+    /// The run this one continued (an approval, an edit, or a watch running again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<String>,
+}
+
+/// A run started by something other than the user: so far, a folder watch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTrigger {
+    /// `watch` for now.
+    pub kind: String,
+    pub watch_id: String,
+    /// The watched folder.
+    pub folder: String,
+    /// File names whose change set the run off. Empty when the user pressed Run now.
+    #[serde(default)]
+    pub changed: Vec<String>,
 }
 
 /// Lightweight row for run lists.
@@ -109,9 +129,27 @@ pub struct RunSummary {
     pub step_count: usize,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<RunTrigger>,
 }
 
 impl Run {
+    /// Take in the records of an older run this one continues, so a continuation can still
+    /// find what was done before a pause held some steps back. This run's own records stay
+    /// first, so the newest result for a step wins.
+    pub fn absorb(&mut self, older: &Run) {
+        use crate::propagate::inputs_fingerprint;
+        for r in &older.steps {
+            if r.status != StepStatus::Succeeded || r.output.is_none() {
+                continue;
+            }
+            let fp = inputs_fingerprint(&r.inputs);
+            if !self.steps.iter().any(|m| m.step_id == r.step_id && inputs_fingerprint(&m.inputs) == fp) {
+                self.steps.push(r.clone());
+            }
+        }
+    }
+
     pub fn summary(&self) -> RunSummary {
         RunSummary {
             id: self.id.clone(),
@@ -123,6 +161,7 @@ impl Run {
             step_count: self.steps.len(),
             prompt_tokens: self.steps.iter().filter_map(|s| s.prompt_tokens).sum(),
             completion_tokens: self.steps.iter().filter_map(|s| s.completion_tokens).sum(),
+            trigger: self.trigger.clone(),
         }
     }
 }

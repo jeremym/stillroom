@@ -1,10 +1,11 @@
-//! SQLite persistence for runs. One file, no server.
+//! SQLite persistence for runs and folder watches. One file, no server.
 //!
 //! Runs are stored as a JSON document plus a few indexed columns for listing.
 //! Proper per-step and per-artifact tables arrive with Flow Studio.
 
 use crate::cache::{CachedStep, StepCache};
 use crate::trace::{Run, RunStatus, RunSummary};
+use crate::watch::Watch;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
@@ -87,6 +88,12 @@ impl Store {
                 model      TEXT,
                 output     TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS watches (
+                id         TEXT PRIMARY KEY,
+                recipe_id  TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                json       TEXT NOT NULL
             );
             "#,
         )?;
@@ -211,6 +218,65 @@ impl Store {
         Ok(self.conn.execute("DELETE FROM step_cache", [])?)
     }
 
+    /// The newest run of a recipe that was given exactly these inputs, so a new watch can
+    /// continue from work already done.
+    pub fn latest_run_with_inputs(&self, recipe_id: &str, inputs: &indexmap::IndexMap<String, serde_json::Value>) -> Result<Option<Run>, StoreError> {
+        Ok(self.all_runs()?.into_iter().find(|r| r.recipe_id == recipe_id && r.inputs == *inputs))
+    }
+
+    /// The run plus the records of the runs it continues, up to twenty back: what a new
+    /// continuation should resume from, so nothing done before a pause is done twice.
+    pub fn continuation_base(&self, run_id: &str) -> Result<Option<Run>, StoreError> {
+        let Some(mut base) = self.get_run(run_id)? else { return Ok(None) };
+        let mut next = base.continues.clone();
+        for _ in 0..20 {
+            let Some(id) = next.take() else { break };
+            let Some(older) = self.get_run(&id)? else { break };
+            base.absorb(&older);
+            next = older.continues.clone();
+        }
+        Ok(Some(base))
+    }
+
+    pub fn list_watches(&self) -> Result<Vec<Watch>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT json FROM watches ORDER BY created_at ASC")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
+    pub fn get_watch(&self, id: &str) -> Result<Option<Watch>, StoreError> {
+        let json: Option<String> =
+            self.conn.query_row("SELECT json FROM watches WHERE id = ?1", params![id], |r| r.get(0)).optional()?;
+        Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+    }
+
+    pub fn save_watch(&self, w: &Watch) -> Result<(), StoreError> {
+        self.conn.execute(
+            r#"INSERT INTO watches (id, recipe_id, created_at, json) VALUES (?1, ?2, ?3, ?4)
+               ON CONFLICT(id) DO UPDATE SET json = excluded.json"#,
+            params![w.id, w.recipe_id, w.created_at.to_rfc3339(), serde_json::to_string(w)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_watch(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(self.conn.execute("DELETE FROM watches WHERE id = ?1", params![id])? > 0)
+    }
+
+    /// When a run is continued (an approval, an edit), watches that would continue from the
+    /// old run continue from the new one instead.
+    pub fn relink_watches(&self, old_run_id: &str, new_run_id: &str) -> Result<usize, StoreError> {
+        let mut n = 0;
+        for mut w in self.list_watches()? {
+            if w.last_run_id.as_deref() == Some(old_run_id) {
+                w.last_run_id = Some(new_run_id.to_string());
+                self.save_watch(&w)?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
     pub fn count_by_status(&self, status: RunStatus) -> Result<i64, StoreError> {
         let s = serde_json::to_value(status)?.as_str().unwrap_or("").to_string();
         Ok(self.conn.query_row("SELECT COUNT(*) FROM runs WHERE status = ?1", params![s], |r| r.get(0))?)
@@ -240,10 +306,42 @@ mod tests {
             outputs: IndexMap::new(),
             error: None,
             edits: Default::default(),
+            trigger: None,
+            continues: None,
         };
         store.save_run(&run).unwrap();
         assert_eq!(store.get_run("r1").unwrap().unwrap().recipe_name, "X");
         assert_eq!(store.list_runs(10).unwrap().len(), 1);
         assert_eq!(store.count_by_status(RunStatus::Succeeded).unwrap(), 1);
+        assert_eq!(store.latest_run_with_inputs("x", &IndexMap::new()).unwrap().map(|r| r.id), Some("r1".into()));
+        assert!(store.latest_run_with_inputs("y", &IndexMap::new()).unwrap().is_none());
+    }
+
+    #[test]
+    fn round_trips_and_relinks_watches() {
+        let store = Store::open_in_memory().unwrap();
+        let mut w = Watch {
+            id: "w1".into(),
+            recipe_id: "x".into(),
+            recipe_name: "X".into(),
+            input: "inbox".into(),
+            folder: "/tmp/in".into(),
+            inputs: IndexMap::from([("inbox".to_string(), serde_json::Value::String("/tmp/in".into()))]),
+            pins: Default::default(),
+            enabled: true,
+            settle_ms: 2000,
+            created_at: Utc::now(),
+            last_fired_at: None,
+            last_run_id: Some("r1".into()),
+        };
+        store.save_watch(&w).unwrap();
+        assert_eq!(store.list_watches().unwrap(), vec![w.clone()]);
+        assert_eq!(store.relink_watches("r1", "r2").unwrap(), 1);
+        assert_eq!(store.get_watch("w1").unwrap().unwrap().last_run_id.as_deref(), Some("r2"));
+        w.enabled = false;
+        store.save_watch(&w).unwrap();
+        assert!(!store.get_watch("w1").unwrap().unwrap().enabled);
+        assert!(store.delete_watch("w1").unwrap());
+        assert!(store.list_watches().unwrap().is_empty());
     }
 }

@@ -81,6 +81,12 @@ pre.artifact { font-family: inherit; font-size: 1rem; line-height: 1.6; }
 pre.error { color: var(--bad); }
 
 .history { list-style: none; padding: 0; margin: 0; }
+.watches { list-style: none; padding: 0; margin: 0; }
+.watches li { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.watches .row { margin: 6px 0 0; }
+.tag { display: inline-block; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; padding: 1px 7px; border-radius: 999px; margin-left: 8px; border: 1px solid var(--line); color: var(--muted); vertical-align: middle; }
+.tag.live { color: var(--accent); border-color: var(--accent); }
+.tag.bad { color: var(--bad); border-color: var(--bad); }
 footer { margin-top: 24px; font-size: 0.75rem; }
 
 h3 { font-size: 0.95rem; font-weight: 600; margin: 18px 0 6px; }

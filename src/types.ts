@@ -83,6 +83,51 @@ export interface Run {
   error: string | null;
   /** Edits this run was asked to apply, by step id. */
   edits?: Record<string, { output: unknown; inputsFingerprint: string }>;
+  /** What started the run, when it was not the Run button. */
+  trigger?: RunTrigger | null;
+  /** The run this one continued (an approval, an edit, a watch running again). */
+  continues?: string | null;
+}
+
+export interface RunTrigger {
+  kind: "watch" | string;
+  watchId: string;
+  folder: string;
+  /** File names whose change set the run off; empty for "Run now". */
+  changed: string[];
+}
+
+/** A folder watch: a recipe that runs by itself when something lands in a folder. */
+export interface Watch {
+  id: string;
+  recipeId: string;
+  recipeName: string;
+  /** The recipe's folder input the watched folder fills. */
+  input: string;
+  folder: string;
+  inputs: Record<string, unknown>;
+  pins: Record<string, string>;
+  enabled: boolean;
+  settleMs: number;
+  createdAt: string;
+  lastFiredAt: string | null;
+  lastRunId: string | null;
+}
+
+export type WatchPhase = "watching" | "running" | "queued" | "paused" | "failed";
+
+export interface WatchView extends Watch {
+  phase: WatchPhase;
+  note: string | null;
+}
+
+export interface WatchRunEvent {
+  watchId: string;
+  recipeId: string;
+  phase: "started" | "finished" | "failed";
+  runId: string | null;
+  status: RunStatus | null;
+  error: string | null;
 }
 
 export interface RunSummary {
@@ -95,6 +140,7 @@ export interface RunSummary {
   stepCount: number;
   promptTokens: number;
   completionTokens: number;
+  trigger?: RunTrigger | null;
 }
 
 export interface RuntimeStatus {

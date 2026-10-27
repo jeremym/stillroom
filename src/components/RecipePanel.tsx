@@ -22,6 +22,8 @@ interface Props {
   models: InstalledModel[];
   running: boolean;
   onRun: (recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, reuse: boolean) => void;
+  /** Watch one of the recipe's folder inputs: the recipe runs by itself when something lands there. */
+  onWatch: (recipe: RecipeInfo, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) => void;
 }
 
 function InputField({
@@ -67,13 +69,16 @@ function InputField({
   );
 }
 
-export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun }: Props) {
+export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch }: Props) {
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [reuse, setReuse] = useState(true);
+  const folderInputs = Object.entries(recipe.inputs).filter(([, spec]) => spec.type === "directory").map(([k]) => k);
+  const [watchInput, setWatchInput] = useState<string>("");
 
   useEffect(() => {
     setInputs({});
+    setWatchInput(folderInputs[0] ?? "");
     api.estimate(recipe.id).then(setEstimate).catch(() => setEstimate(null));
   }, [recipe.id]);
 
@@ -149,9 +154,29 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
         onClick={() => onRun(recipe, inputs, pins, reuse)}>
         {running ? "Running…" : "Run"}
       </button>
+      {folderInputs.length > 0 && (
+        <>
+          {" "}
+          <button disabled={running || missing.length > 0 || unfillable.length > 0 || !watchInput}
+            onClick={() => onWatch(recipe, watchInput, inputs, pins)}>
+            Watch {folderInputs.length === 1 ? (recipe.inputs[watchInput]?.label ?? watchInput) : "folder"}…
+          </button>
+          {folderInputs.length > 1 && (
+            <select value={watchInput} onChange={(e) => setWatchInput(e.target.value)} style={{ marginLeft: 6 }}>
+              {folderInputs.map((k) => <option key={k} value={k}>{recipe.inputs[k].label ?? k}</option>)}
+            </select>
+          )}
+        </>
+      )}
       {missing.length > 0 && <span className="muted"> needs: {missing.join(", ")}</span>}
       {unfillable.length > 0 && (
         <span className="muted"> no installed model can fill: {unfillable.map(([s]) => s).join(", ")}</span>
+      )}
+      {folderInputs.length > 0 && missing.length === 0 && (
+        <p className="muted">
+          Watch <span className="mono">{recipe.inputs[watchInput]?.label ?? watchInput}</span> (a folder watch): the recipe runs with these
+          inputs whenever something lands in that folder, while Stillroom is open. Each run continues the last, so files handled before are not handled again.
+        </p>
       )}
     </section>
   );

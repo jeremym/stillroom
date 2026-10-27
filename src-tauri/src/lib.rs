@@ -1,5 +1,7 @@
 //! Stillroom desktop shell: wires the recipe library, executor, model router, and store to the webview.
 
+mod watches;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -10,19 +12,64 @@ use stillroom_core::tools::{ToolInfo, ToolRegistry};
 use stillroom_core::trace::RunSummary;
 use stillroom_core::{
     edits_for_rerun, pins_from_run, resolve_slots, validate_edit, Draft, Executor, RecipeInfo, RecipeLibrary, RecipeSource, Run,
-    StepRecord, Store,
+    RunTrigger, StepEdit, StepRecord, Store, Watch,
 };
 use stillroom_models::ollama::Ollama;
 use stillroom_models::{InstalledModel, ModelRouter, ProviderStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
+use watches::{WatchRuntime, WatchView};
 
-struct AppState {
+pub(crate) struct AppState {
     store: Arc<Mutex<Store>>,
     router: Arc<ModelRouter>,
     tools: Arc<ToolRegistry>,
     library: RecipeLibrary,
     db_path: String,
     artifacts_dir: PathBuf,
+    /// One run at a time: a watch firing while the user runs something waits its turn.
+    run_gate: tokio::sync::Mutex<()>,
+}
+
+/// Everything a run needs, from the user's Run button, an approval or edit, or a watch.
+pub(crate) struct ExecArgs {
+    pub recipe_id: String,
+    pub inputs: indexmap::IndexMap<String, Value>,
+    pub pins: BTreeMap<String, String>,
+    pub reuse: bool,
+    pub edits: BTreeMap<String, StepEdit>,
+    pub resume_from: Option<Run>,
+    pub trigger: Option<RunTrigger>,
+}
+
+/// Resolve models, run the recipe with live step events, save the run, announce it.
+pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -> CmdResult<Run> {
+    let bundle = state
+        .library
+        .find(&args.recipe_id)
+        .ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    let router = state.router.clone();
+    let installed = router.list_all().await;
+    let resolutions = resolve_slots(&bundle.recipe, &installed, &args.pins).map_err(err)?;
+
+    let _turn = state.run_gate.lock().await;
+    let observer = {
+        let app = app.clone();
+        Arc::new(move |rec: &StepRecord| {
+            let _ = app.emit("run:step", rec.clone());
+        })
+    };
+    let executor = Executor::new(state.tools.clone(), router).with_cache(state.store.clone());
+    let mut request = bundle.request(args.inputs, resolutions);
+    request.artifact_base = Some(state.artifacts_dir.clone());
+    request.reuse = args.reuse;
+    request.edits = args.edits;
+    request.resume_from = args.resume_from.map(Box::new);
+    request.trigger = args.trigger;
+    let run = executor.run(request, Some(observer)).await;
+
+    state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
+    let _ = app.emit("run:finished", run.summary());
+    Ok(run)
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -115,29 +162,20 @@ fn default_true() -> bool {
 
 #[tauri::command]
 async fn run_recipe(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -> CmdResult<Run> {
-    let bundle = state
-        .library
-        .find(&args.recipe_id)
-        .ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
-    let router = state.router.clone();
-    let installed = router.list_all().await;
-    let resolutions = resolve_slots(&bundle.recipe, &installed, &args.pins).map_err(err)?;
-
-    let observer = {
-        let app = app.clone();
-        Arc::new(move |rec: &StepRecord| {
-            let _ = app.emit("run:step", rec.clone());
-        })
-    };
-    let executor = Executor::new(state.tools.clone(), router).with_cache(state.store.clone());
-    let mut request = bundle.request(args.inputs, resolutions);
-    request.artifact_base = Some(state.artifacts_dir.clone());
-    request.reuse = args.reuse;
-    let run = executor.run(request, Some(observer)).await;
-
-    state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
-    let _ = app.emit("run:finished", run.summary());
-    Ok(run)
+    execute(
+        &app,
+        &state,
+        ExecArgs {
+            recipe_id: args.recipe_id,
+            inputs: args.inputs,
+            pins: args.pins,
+            reuse: args.reuse,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+        },
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -158,40 +196,40 @@ struct EditArgs {
 /// else is reused. Earlier edits on that run are carried forward while their inputs still hold.
 #[tauri::command]
 async fn rerun_with_edit(app: AppHandle, state: State<'_, AppState>, args: EditArgs) -> CmdResult<Run> {
-    let prior = state
-        .store
-        .lock()
-        .map_err(err)?
-        .get_run(&args.run_id)
-        .map_err(err)?
-        .ok_or_else(|| format!("run {} not found", args.run_id))?;
+    let (prior, base) = {
+        let store = state.store.lock().map_err(err)?;
+        let prior = store.get_run(&args.run_id).map_err(err)?.ok_or_else(|| format!("run {} not found", args.run_id))?;
+        // Resume from the whole chain of runs this one continues, so a step a pause held back
+        // is still found done.
+        let base = store.continuation_base(&args.run_id).map_err(err)?.unwrap_or_else(|| prior.clone());
+        (prior, base)
+    };
     let bundle = state
         .library
         .find(&prior.recipe_id)
         .ok_or_else(|| format!("recipe {} not found", prior.recipe_id))?;
     validate_edit(&bundle.recipe, &args.step_id, &args.output).map_err(err)?;
     let edits = edits_for_rerun(&prior, &args.step_id, args.output).map_err(err)?;
-
-    let router = state.router.clone();
-    let installed = router.list_all().await;
-    let resolutions = resolve_slots(&bundle.recipe, &installed, &pins_from_run(&prior)).map_err(err)?;
-
-    let observer = {
-        let app = app.clone();
-        Arc::new(move |rec: &StepRecord| {
-            let _ = app.emit("run:step", rec.clone());
-        })
-    };
-    let executor = Executor::new(state.tools.clone(), router).with_cache(state.store.clone());
-    let mut request = bundle.request(prior.inputs.clone(), resolutions);
-    request.artifact_base = Some(state.artifacts_dir.clone());
-    request.reuse = args.reuse;
-    request.edits = edits;
-    request.resume_from = Some(Box::new(prior));
-    let run = executor.run(request, Some(observer)).await;
-
-    state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
-    let _ = app.emit("run:finished", run.summary());
+    let run = execute(
+        &app,
+        &state,
+        ExecArgs {
+            recipe_id: prior.recipe_id.clone(),
+            inputs: prior.inputs.clone(),
+            pins: pins_from_run(&prior),
+            reuse: args.reuse,
+            edits,
+            resume_from: Some(base),
+            trigger: None,
+        },
+    )
+    .await?;
+    // A watch that would have continued from the old run continues from this one.
+    if let Ok(store) = state.store.lock() {
+        if store.relink_watches(&prior.id, &run.id).map_err(err)? > 0 {
+            let _ = app.emit("watch:changed", ());
+        }
+    }
     Ok(run)
 }
 
@@ -276,6 +314,77 @@ fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Save
 }
 
 #[tauri::command]
+fn list_watches(state: State<'_, AppState>, rt: State<'_, WatchRuntime>) -> CmdResult<Vec<WatchView>> {
+    let watches = state.store.lock().map_err(err)?.list_watches().map_err(err)?;
+    Ok(watches.into_iter().map(|w| rt.view(w)).collect())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddWatchArgs {
+    recipe_id: String,
+    /// The folder input to watch.
+    input: String,
+    inputs: indexmap::IndexMap<String, Value>,
+    #[serde(default)]
+    pins: BTreeMap<String, String>,
+}
+
+/// Save a watch, start watching, and run once to catch up with what is already there.
+#[tauri::command]
+fn add_watch(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, args: AddWatchArgs) -> CmdResult<WatchView> {
+    let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    let folder = args.inputs.get(&args.input).and_then(Value::as_str).ok_or_else(|| format!("choose a folder for {}", args.input))?;
+    let mut watch = Watch::new(&bundle.recipe, &args.input, folder, args.inputs.clone(), args.pins).map_err(err)?;
+    {
+        let store = state.store.lock().map_err(err)?;
+        // Continue from a run already done on these very inputs, so nothing is done twice.
+        watch.last_run_id = store.latest_run_with_inputs(&watch.recipe_id, &watch.inputs).map_err(err)?.map(|r| r.id);
+        store.save_watch(&watch).map_err(err)?;
+    }
+    rt.start(&app, &watch);
+    watches::fire(&app, &watch.id, Vec::new());
+    let _ = app.emit("watch:changed", ());
+    Ok(rt.view(watch))
+}
+
+#[tauri::command]
+fn set_watch_enabled(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, id: String, enabled: bool) -> CmdResult<WatchView> {
+    let mut watch = state.store.lock().map_err(err)?.get_watch(&id).map_err(err)?.ok_or("that watch is gone")?;
+    watch.enabled = enabled;
+    state.store.lock().map_err(err)?.save_watch(&watch).map_err(err)?;
+    if enabled {
+        rt.start(&app, &watch);
+    } else {
+        rt.stop(&id);
+    }
+    let _ = app.emit("watch:changed", ());
+    Ok(rt.view(watch))
+}
+
+#[tauri::command]
+fn remove_watch(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, id: String) -> CmdResult<()> {
+    rt.stop(&id);
+    state.store.lock().map_err(err)?.delete_watch(&id).map_err(err)?;
+    let _ = app.emit("watch:changed", ());
+    Ok(())
+}
+
+/// Run a watch's recipe now, without waiting for a change.
+#[tauri::command]
+fn fire_watch(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, id: String) -> CmdResult<()> {
+    let watch = state.store.lock().map_err(err)?.get_watch(&id).map_err(err)?.ok_or("that watch is gone")?;
+    if !watch.enabled {
+        return Err("the watch is paused; resume it first".into());
+    }
+    if rt.view(watch.clone()).phase == watches::Phase::Failed {
+        rt.start(&app, &watch);
+    }
+    watches::fire(&app, &id, Vec::new());
+    Ok(())
+}
+
+#[tauri::command]
 fn write_text_file(path: String, content: String) -> CmdResult<()> {
     std::fs::write(&path, content).map_err(|e| format!("{path}: {e}"))
 }
@@ -334,7 +443,11 @@ pub fn run() {
                 library,
                 db_path: db_path.to_string_lossy().into_owned(),
                 artifacts_dir,
+                run_gate: tokio::sync::Mutex::new(()),
             });
+            app.manage(WatchRuntime::default());
+            let rt = app.state::<WatchRuntime>();
+            rt.start_all(app.handle(), &app.state::<AppState>());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -351,6 +464,11 @@ pub fn run() {
             read_recipe_draft,
             check_recipe_draft,
             save_recipe_draft,
+            list_watches,
+            add_watch,
+            set_watch_enabled,
+            remove_watch,
+            fire_watch,
             write_text_file,
             write_binary_file,
             copy_file,

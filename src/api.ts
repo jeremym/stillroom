@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Draft, DraftResponse, ModelsResponse, ModelUsage, RecipesResponse, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, ToolInfo } from "./types";
+import type { Draft, DraftResponse, ModelsResponse, ModelUsage, RecipesResponse, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -15,6 +15,13 @@ export const api = {
   readRecipeDraft: (recipeId: string) => invoke<DraftResponse>("read_recipe_draft", { recipeId }),
   checkRecipeDraft: (draft: Draft) => invoke<string[]>("check_recipe_draft", { draft }),
   saveRecipeDraft: (draft: Draft) => invoke<SaveResponse>("save_recipe_draft", { draft }),
+  listWatches: () => invoke<WatchView[]>("list_watches"),
+  /** Watch `input`'s folder: the recipe runs with these inputs whenever something lands there. */
+  addWatch: (recipeId: string, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) =>
+    invoke<WatchView>("add_watch", { args: { recipeId, input, inputs, pins } }),
+  setWatchEnabled: (id: string, enabled: boolean) => invoke<WatchView>("set_watch_enabled", { id, enabled }),
+  removeWatch: (id: string) => invoke<void>("remove_watch", { id }),
+  fireWatch: (id: string) => invoke<void>("fire_watch", { id }),
   listRuns: (limit = 20) => invoke<RunSummary[]>("list_runs", { limit }),
   getRun: (id: string) => invoke<Run | null>("get_run", { id }),
   usage: () => invoke<ModelUsage[]>("usage"),

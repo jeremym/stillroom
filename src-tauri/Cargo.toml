@@ -27,6 +27,7 @@ tokio.workspace = true
 indexmap.workspace = true
 base64 = "0.22"
 uuid.workspace = true
+chrono.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

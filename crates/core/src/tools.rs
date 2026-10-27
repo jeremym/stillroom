@@ -180,6 +180,12 @@ pub trait Tool: Send + Sync {
     fn cacheable(&self) -> bool {
         true
     }
+    /// Whether a call changes something outside the run (writes a file, saves a draft).
+    /// When a run is continued, such a step is never repeated; a step that only looks at the
+    /// world (lists a folder) runs again so it sees the world as it is now.
+    fn has_side_effects(&self) -> bool {
+        false
+    }
     /// Description and parameter schema, for agents. Tools without one cannot be given to agents.
     fn describe(&self) -> Option<ToolDescription> {
         None
@@ -565,6 +571,10 @@ impl Tool for FsWrite {
         false
     }
 
+    fn has_side_effects(&self) -> bool {
+        true
+    }
+
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
             description: "Write a text file. Give either a full path, or a directory plus a file name. Parent folders are created.".into(),
@@ -719,6 +729,10 @@ impl Tool for EmailWriteDraft {
 
     fn cacheable(&self) -> bool {
         false
+    }
+
+    fn has_side_effects(&self) -> bool {
+        true
     }
 
     async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {

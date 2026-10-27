@@ -12,6 +12,7 @@ import { WatchPanel } from "./components/WatchPanel";
 import { UsagePanel } from "./components/UsagePanel";
 import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
+import { Welcome } from "./components/Welcome";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
 import {
   Dial, Empty, Glyph, Logo, Pill, Rail, Zone, applyLook, fmtElapsed, inputGlyph, isGlyphName, loadLook, useElapsed,
@@ -25,10 +26,10 @@ const FlowView = lazy(() => import("./flow/FlowView"));
 /* Places. Library is home. Opening a recipe puts the Dial on screen with that recipe's five places;
    the Dial turns by itself when a run starts, finishes, or needs you. Settings and New recipe sit
    outside the Dial, reached from the Rail or the menu. */
-type Place = "library" | "new" | "recipe" | "setup" | "running" | "results" | "door";
-type RecipePlace = Exclude<Place, "library" | "new">;
+type Place = "welcome" | "library" | "new" | "recipe" | "setup" | "running" | "results" | "door";
+type RecipePlace = Exclude<Place, "welcome" | "library" | "new">;
 const PLACE_LABEL: Record<Place, string> = {
-  library: "Library", new: "New recipe",
+  welcome: "Welcome", library: "Library", new: "New recipe",
   recipe: "Recipe", setup: "Set up", running: "Running", results: "Results", door: "Recipe card",
 };
 const RECIPE_PLACES: RecipePlace[] = ["recipe", "setup", "running", "results", "door"];
@@ -67,6 +68,8 @@ function App() {
   const [freshId, setFreshId] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
+  // The welcome shows until it has been finished or skipped once (firstRun absent means never shown).
+  const [firstRunHint, setFirstRunHint] = useState(false);
   const [stopping, setStopping] = useState(false);
   const recipesRef = useRef<RecipesResponse | null>(null);
   const placeRef = useRef<Place>("library");
@@ -132,6 +135,18 @@ function App() {
     api.listWatches().then(setWatches).catch(() => {});
   }, []);
 
+  const finishWelcome = useCallback((recipeId?: string) => {
+    saveSettings({ firstRun: false });
+    if (recipeId) {
+      setFirstRunHint(true);
+      setRecipeId(recipeId);
+      setFreshId(null);
+      setPlace("setup");
+    } else {
+      setPlace("library");
+    }
+  }, [saveSettings]);
+
   const openRecipe = useCallback((id: string, where: RecipePlace = "recipe") => {
     setRecipeId(id);
     setFreshId(null);
@@ -139,7 +154,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    api.getSettings().then(setSettingsState).catch((e) => setError(String(e)));
+    api.getSettings().then((s) => {
+      setSettingsState(s);
+      if (s.firstRun !== false) setPlace("welcome");
+    }).catch((e) => setError(String(e)));
     api.runtimeStatus().then(setStatus).catch((e) => setError(String(e)));
     refreshModels();
     refreshRuns();
@@ -244,6 +262,7 @@ function App() {
       setRun(await api.runRecipe(recipe.id, inputs, pins, reuse));
       refreshRuns();
       setPlace("results");
+      if (firstRunHint) setTimeout(() => setFirstRunHint(false), 60_000);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -427,7 +446,7 @@ function App() {
           <nav className="crumbs" aria-label="Where you are">
             <button className="home" onClick={() => setPlace("library")} title="Library: every recipe"><Logo size={28} /></button>
             {place === "library" && <><span className="sep">›</span><span className="here">Library</span></>}
-            {place === "new" && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
+            {(place === "new" || place === "welcome") && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
             {isRecipePlace(place) && recipe && (
               <>
                 <span className="sep">›</span>
@@ -468,6 +487,12 @@ function App() {
                 <span className="label">Keys</span><span className="mono">⌘0 Library · ⌘1…⌘5 the Dial · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ this help</span>
               </div>
             </Zone>
+          )}
+
+          {place === "welcome" && (
+            <Welcome models={models} settings={settings} recipes={recipes?.recipes ?? []} onSave={saveSettings}
+              onOpenSettings={() => api.openSettings().catch((e) => setError(String(e)))} onRefreshModels={refreshModels}
+              onPickRecipe={(id) => finishWelcome(id)} onSkip={() => finishWelcome()} />
           )}
 
           {place === "library" && (
@@ -518,6 +543,9 @@ function App() {
               onWatchesChanged={refreshWatches} onError={(m) => setError(m)} />
           )}
 
+          {place === "setup" && recipes && recipe && firstRunHint && (
+            <p className="result-line hint-line"><Glyph name="sparkles" /> Step 3 of 3: choose what the recipe reads, then press <strong>Run</strong>. The Dial above follows the run to Results on its own.</p>
+          )}
           {place === "setup" && recipes && recipe && (
             <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
               models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} />
@@ -598,6 +626,9 @@ function App() {
                   <ReviewPanel run={run} steps={runRecipe?.steps ?? []} busy={running} onDecide={editAndRerun} />
                 )}
                 <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} steps={runRecipe?.steps ?? []} busy={running} onEdit={editAndRerun} />
+                {firstRunHint && (
+                  <p className="result-line hint-line"><Glyph name="sparkles" /> That was your first run. The <button className="link" onClick={() => setPlace("door")}>Recipe card</button> shows how it was made and lets you change it; <strong>Set up</strong> runs it again on something else.</p>
+                )}
                 <p className="result-line">
                   How this was made: <button className="link" onClick={() => setPlace("running")}>the trace (every step, model, and timing)</button>
                   {" · "}

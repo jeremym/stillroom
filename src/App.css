@@ -208,3 +208,11 @@ button.stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); 
 .trace-table { margin-top: 10px; }
 .trace-table summary { cursor: pointer; font-size: var(--size-small); }
 .trace-table .panel { margin-top: 10px; }
+
+/* Power on */
+.boot { min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 18px; padding: 40px 20px; animation: p1-boot 900ms ease-out both; }
+.boot-line { font-family: var(--display); font-size: calc(var(--size-display) * 1.4); letter-spacing: 0.12em; text-transform: uppercase; margin: 0; }
+.boot-sub { max-width: 640px; margin: 0; }
+@keyframes p1-boot { from { opacity: 0; filter: brightness(2); } to { opacity: 1; filter: none; } }
+@media (prefers-reduced-motion: reduce) { .boot { animation: none; } }
+.hint-line { color: var(--phos); border-left: 2px solid var(--phos); padding-left: 12px; }

@@ -3,8 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { WatchPanel } from "../components/WatchPanel";
 import { Glyph, Logo, Zone, applyLook, loadLook, type GlyphName, type Look } from "../kit";
-import { pullBar } from "./pull";
-import type { ModelsResponse, PullEvent, RecipesResponse, RuntimeStatus, Settings, WatchView } from "../types";
+import { PullModel } from "../components/PullModel";
+import type { ModelsResponse, RecipesResponse, RuntimeStatus, Settings, WatchView } from "../types";
 
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
@@ -42,9 +42,6 @@ export default function SettingsApp() {
   const [error, setError] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [checking, setChecking] = useState(false);
-  const [pullName, setPullName] = useState("");
-  const [pull, setPull] = useState<PullEvent | null>(null);
-  const [pulling, setPulling] = useState(false);
   const urlRef = useRef("");
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try { const v = localStorage.getItem("p1.settingsNav"); if (v) return v === "collapsed"; } catch { /* per-viewer */ }
@@ -73,9 +70,8 @@ export default function SettingsApp() {
     refreshWatches();
     refreshKey();
     const a = listen<Settings>("settings:changed", (ev) => setSettings(ev.payload));
-    const b = listen<PullEvent>("model:pull", (ev) => setPull(ev.payload));
     const c = listen("watch:changed", () => refreshWatches());
-    return () => { a.then((f) => f()); b.then((f) => f()); c.then((f) => f()); };
+    return () => { a.then((f) => f()); c.then((f) => f()); };
   }, [refreshModels, refreshWatches, refreshKey]);
 
   async function saveKey(value: string) {
@@ -125,27 +121,11 @@ export default function SettingsApp() {
     refreshModels();
   }
 
-  async function startPull() {
-    const name = pullName.trim();
-    if (!name) return;
-    setPulling(true);
-    setPull({ name, status: "starting", total: null, completed: null, done: false, error: null });
-    try {
-      await api.pullModel(name);
-      refreshModels();
-    } catch (e) {
-      setPull({ name, status: "error", total: null, completed: null, done: true, error: String(e) });
-    } finally {
-      setPulling(false);
-    }
-  }
-
   const installed = models?.models ?? [];
   const withCap = (cap: string) => installed.filter((m) => m.capabilities.includes(cap as never));
   const pins = settings.pins ?? {};
   const pinnedRecipes = Object.entries(pins).filter(([, slots]) => Object.keys(slots ?? {}).length > 0);
   const provider = models?.providers[0];
-  const bar = pull ? pullBar(pull.completed, pull.total) : null;
 
   return (
     <div className={`settings-shell ${collapsed ? "collapsed" : ""}`}>
@@ -221,21 +201,7 @@ export default function SettingsApp() {
             </Zone>
 
             <Zone title="Pull a model" sub="download through Ollama">
-              <div className="row field-row">
-                <div className="field">
-                  <label><strong>Model</strong> <span className="muted">· a name from ollama.com/library, like <span className="mono">qwen3:8b</span></span></label>
-                  <input type="text" className="mono" value={pullName} onChange={(e) => setPullName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") startPull(); }} placeholder="qwen3:8b" disabled={pulling} />
-                </div>
-                <button className="primary" style={{ marginTop: 0 }} onClick={startPull} disabled={pulling || !pullName.trim() || !provider?.available}>{pulling ? "Pulling…" : "Pull"}</button>
-              </div>
-              {pull && bar && (
-                <div className="pull">
-                  <div className="progress glow">{bar.bar} <span className="muted">{bar.pct != null ? `${bar.pct}%` : ""}</span></div>
-                  <p className={pull.error ? "red" : "muted"}>
-                    <span className="mono">{pull.name}</span> · {pull.error ?? pull.status}{bar.text ? ` · ${bar.text}` : ""}{pull.done && !pull.error ? " · ready to use" : ""}
-                  </p>
-                </div>
-              )}
+              <PullModel enabled={Boolean(provider?.available)} onDone={refreshModels} />
               <p className="muted">A small model (4 to 8 billion parameters) answers in seconds on most Macs; a large one is slower and sharper. Recipes pick by capability, so any model with the right abilities works.</p>
             </Zone>
 

@@ -10,6 +10,8 @@ export const api = {
   /** Download a model through Ollama; progress arrives as `model:pull` events. */
   pullModel: (name: string) => invoke<void>("pull_model", { name }),
   openSettings: () => invoke<void>("open_settings"),
+  /** Stop the run in flight. True if there was one. */
+  stopRun: () => invoke<boolean>("stop_run"),
   /** Secrets live in the OS keychain. An empty value clears. The value never comes back. */
   setSecret: (name: string, value: string) => invoke<void>("set_secret", { name, value }),
   hasSecret: (name: string) => invoke<boolean>("has_secret", { name }),

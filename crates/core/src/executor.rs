@@ -5,7 +5,7 @@
 use indexmap::IndexMap;
 
 use crate::cache::{fingerprint, CachedStep, StepCache};
-use crate::model::{ChatMessage, ChatRequest, ModelClient, ToolSpec};
+use crate::model::{ChatMessage, ChatRequest, ChatResponse, ModelClient, ToolSpec};
 use crate::propagate::{dependencies, dependents, inputs_fingerprint, StepEdit};
 use crate::recipe::{AgentStep, MapStep, Recipe, Step};
 use crate::refs::{self, Context};
@@ -17,6 +17,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +50,49 @@ pub enum ExecError {
     AgentTurns { step: String, turns: u32 },
     #[error("step {step}: tool {tool} cannot be given to an agent (it has no description)")]
     ToolNotDescribable { step: String, tool: String },
+    #[error("stopped by you")]
+    Cancelled,
+    #[error("step {step}: the model did not answer within {secs} s")]
+    Timeout { step: String, secs: u64 },
+}
+
+/// A handle to stop a run from outside. Between steps it stops at once; during a model call the
+/// call is abandoned and the step records "stopped by you".
+#[derive(Clone, Default, Debug)]
+pub struct Cancel {
+    flag: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+    /// Resolves when cancelled, now or later.
+    pub async fn cancelled(&self) {
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+/// What a model step gets when its recipe says nothing: the user's defaults from Settings.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ModelDefaults {
+    pub context_length: Option<u32>,
+    pub think: Option<Value>,
 }
 
 pub struct RunRequest {
@@ -70,6 +114,12 @@ pub struct RunRequest {
     pub resume_from: Option<Box<Run>>,
     /// What started this run, when it was not the user. Recorded on the trace.
     pub trigger: Option<RunTrigger>,
+    /// Stop handle; a run without one cannot be stopped from outside.
+    pub cancel: Option<Cancel>,
+    /// How long one model call may take before the step fails. None means wait forever.
+    pub model_timeout: Option<std::time::Duration>,
+    /// Context length and thinking for steps whose recipe leaves them unset.
+    pub model_defaults: ModelDefaults,
 }
 
 /// Called after each step record changes, so a UI can show live progress.
@@ -400,6 +450,9 @@ impl Executor {
     ) -> Pin<Box<dyn Future<Output = Result<Value, ExecError>> + Send + 's>> {
         Box::pin(async move {
             let req = state.req;
+            if req.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(ExecError::Cancelled);
+            }
             let mut rec = StepRecord {
                 run_id: state.run_id.clone(),
                 step_id: record_id.clone(),
@@ -653,6 +706,27 @@ impl Executor {
         Ok(Value::Array(results))
     }
 
+    /// One model call with the run's timeout and stop handle applied.
+    async fn chat_call(&self, req: &RunRequest, record_id: &str, model_id: &str, chat: ChatRequest) -> Result<ChatResponse, ExecError> {
+        let timed = async {
+            let r = match req.model_timeout {
+                Some(d) => match tokio::time::timeout(d, self.models.chat(model_id, chat)).await {
+                    Ok(r) => r,
+                    Err(_) => return Err(ExecError::Timeout { step: record_id.into(), secs: d.as_secs() }),
+                },
+                None => self.models.chat(model_id, chat).await,
+            };
+            r.map_err(|e| ExecError::Model { step: record_id.into(), message: e.to_string() })
+        };
+        match &req.cancel {
+            Some(c) => tokio::select! {
+                r = timed => r,
+                _ = c.cancelled() => Err(ExecError::Cancelled),
+            },
+            None => timed.await,
+        }
+    }
+
     async fn run_step(
         &self,
         step: &Step,
@@ -691,14 +765,10 @@ impl Executor {
                     json_schema: m.output_schema.clone(),
                     temperature: params.temperature,
                     max_tokens: params.max_tokens,
-                    context_length: params.context_length,
-                    think: params.think.clone(),
+                    context_length: params.context_length.or(req.model_defaults.context_length),
+                    think: params.think.clone().or_else(|| req.model_defaults.think.clone()),
                 };
-                let resp = self
-                    .models
-                    .chat(&res.model_id, chat)
-                    .await
-                    .map_err(|e| ExecError::Model { step: record_id.into(), message: e.to_string() })?;
+                let resp = self.chat_call(req, record_id, &res.model_id, chat).await?;
                 rec.prompt_tokens = resp.prompt_tokens;
                 rec.completion_tokens = resp.completion_tokens;
                 structured(record_id, m.output_schema.as_ref(), resp.content)
@@ -753,14 +823,10 @@ impl Executor {
                 json_schema: None,
                 temperature: params.temperature,
                 max_tokens: params.max_tokens,
-                context_length: params.context_length,
-                think: params.think.clone(),
+                context_length: params.context_length.or(req.model_defaults.context_length),
+                think: params.think.clone().or_else(|| req.model_defaults.think.clone()),
             };
-            let resp = self
-                .models
-                .chat(&res.model_id, chat)
-                .await
-                .map_err(|e| ExecError::Model { step: record_id.into(), message: e.to_string() })?;
+            let resp = self.chat_call(req, record_id, &res.model_id, chat).await?;
             prompt_tokens += resp.prompt_tokens.unwrap_or(0);
             completion_tokens += resp.completion_tokens.unwrap_or(0);
             rec.prompt_tokens = Some(prompt_tokens);
@@ -784,14 +850,10 @@ impl Executor {
                     json_schema: Some(schema.clone()),
                     temperature: params.temperature,
                     max_tokens: params.max_tokens,
-                    context_length: params.context_length,
+                    context_length: params.context_length.or(req.model_defaults.context_length),
                     think: Some(Value::Bool(false)),
                 };
-                let resp = self
-                    .models
-                    .chat(&res.model_id, chat)
-                    .await
-                    .map_err(|e| ExecError::Model { step: record_id.into(), message: e.to_string() })?;
+                let resp = self.chat_call(req, record_id, &res.model_id, chat).await?;
                 rec.prompt_tokens = Some(prompt_tokens + resp.prompt_tokens.unwrap_or(0));
                 rec.completion_tokens = Some(completion_tokens + resp.completion_tokens.unwrap_or(0));
                 return structured(record_id, Some(schema), resp.content);
@@ -938,6 +1000,10 @@ fn finish(mut run: Run, result: Result<(), ExecError>) -> Run {
     run.finished_at = Some(Utc::now());
     match result {
         Ok(()) => run.status = RunStatus::Succeeded,
+        Err(ExecError::Cancelled) => {
+            run.status = RunStatus::Cancelled;
+            run.error = Some(ExecError::Cancelled.to_string());
+        }
         Err(e) => {
             run.status = RunStatus::Failed;
             run.error = Some(e.to_string());
@@ -949,6 +1015,59 @@ fn finish(mut run: Run, result: Result<(), ExecError>) -> Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_cancelled_run_stops_before_its_next_step() {
+        let recipe = Recipe::from_yaml(
+            r#"
+schemaVersion: "0"
+id: two
+name: Two steps
+inputs: {}
+steps:
+  - id: a
+    kind: tool
+    tool: list.filter
+    inputs: { items: [{ x: 1 }], path: x }
+  - id: b
+    kind: tool
+    tool: list.filter
+    inputs: { items: "${steps.a.output.items}", path: x }
+outputs:
+  out: { from: "${steps.b.output}", type: json }
+"#,
+        )
+        .unwrap();
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let req = RunRequest {
+            recipe,
+            prompts: HashMap::new(),
+            inputs: IndexMap::new(),
+            resolutions: BTreeMap::new(),
+            artifact_base: None,
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+            cancel: Some(cancel),
+            model_timeout: None,
+            model_defaults: Default::default(),
+        };
+        let exec = Executor::new(Arc::new(crate::tools::ToolRegistry::builtin()), Arc::new(NoModels));
+        let run = exec.run(req, None).await;
+        assert_eq!(run.status, RunStatus::Cancelled);
+        assert!(run.steps.is_empty(), "no step should have started: {:?}", run.steps);
+        assert_eq!(run.error.as_deref(), Some("stopped by you"));
+    }
+
+    struct NoModels;
+    #[async_trait::async_trait]
+    impl ModelClient for NoModels {
+        async fn chat(&self, _model_id: &str, _req: ChatRequest) -> Result<crate::model::ChatResponse, crate::model::ModelError> {
+            Err(crate::model::ModelError::Remote("no models in this test".into()))
+        }
+    }
     use crate::model::{ChatResponse, ModelError};
     use crate::resolve::ResolvedVia;
     use serde_json::json;
@@ -992,6 +1111,9 @@ mod tests {
             edits: BTreeMap::new(),
             resume_from: None,
             trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
         let run = exec.run(req, None).await;
@@ -1026,6 +1148,9 @@ mod tests {
             edits: BTreeMap::new(),
             resume_from: None,
             trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel)).with_cache(Arc::new(MemoryCache::default()));
         let first = exec.run(make(), None).await;
@@ -1095,6 +1220,9 @@ outputs:
             edits: BTreeMap::new(),
             resume_from: None,
             trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
         }
     }
 
@@ -1279,6 +1407,9 @@ outputs:
             edits: BTreeMap::new(),
             resume_from: None,
             trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
         }
     }
 
@@ -1441,6 +1572,9 @@ outputs:
             edits: BTreeMap::new(),
             resume_from: None,
             trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(TriageModel));
         let run = exec.run(req, None).await;

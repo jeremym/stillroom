@@ -33,7 +33,7 @@ const PLACE_LABEL: Record<Place, string> = {
 const RECIPE_PLACES: RecipePlace[] = ["recipe", "setup", "running", "results", "door"];
 const isRecipePlace = (p: Place): p is RecipePlace => (RECIPE_PLACES as Place[]).includes(p);
 
-const STATUS_WORD: Record<string, string> = { succeeded: "done", failed: "failed", needs_review: "needs you", running: "running" };
+const STATUS_WORD: Record<string, string> = { succeeded: "done", failed: "failed", cancelled: "stopped", needs_review: "needs you", running: "running" };
 const SIZES = ["normal", "larger", "largest"] as const;
 
 /** A value as one short line: a path by its last part, a list by its length, text trimmed. */
@@ -65,6 +65,8 @@ function App() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [freshId, setFreshId] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const recipesRef = useRef<RecipesResponse | null>(null);
   const placeRef = useRef<Place>("library");
   placeRef.current = place;
@@ -523,6 +525,14 @@ function App() {
           {place === "running" && (
             runningHere || runIsHere ? (
               <>
+                {runningHere && (
+                  <div className="row stop-row">
+                    {confirmStop
+                      ? <><button className="danger" disabled={stopping} onClick={() => { setStopping(true); api.stopRun().catch((e) => setError(String(e))).finally(() => { setStopping(false); setConfirmStop(false); }); }}>{stopping ? "Stopping…" : "Really stop"}</button><button onClick={() => setConfirmStop(false)}>Keep running</button></>
+                      : <button className="stop" onClick={() => setConfirmStop(true)}><Glyph name="stop" /> Stop</button>}
+                    <span className="muted">Stopping ends the run after the step in progress is abandoned. Nothing already written is undone.</span>
+                  </div>
+                )}
                 {flowFor(runRecipe ?? recipe, false)}
                 <TracePanel run={runIsHere ? run : null} steps={runIsHere || runningHere ? steps : []} />
               </>
@@ -594,9 +604,9 @@ function App() {
                   <button onClick={() => setPlace("running")}>Watch it run</button>
                 </Empty>
               </Zone>
-            ) : runIsHere && run && run.status === "failed" ? (
+            ) : runIsHere && run && (run.status === "failed" || run.status === "cancelled") ? (
               <>
-                <Zone title="This run failed" className="accent">
+                <Zone title={run.status === "cancelled" ? "You stopped this run" : "This run failed"} className="accent">
                   <pre className="error">{run.error ?? run.steps.find((s) => s.error)?.error ?? "no reason recorded"}</pre>
                   <button onClick={() => setPlace("setup")}>Back to Set up</button>
                 </Zone>

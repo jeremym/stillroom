@@ -11,7 +11,8 @@ use stillroom_core::store::{ModelUsage, RunEstimate};
 use stillroom_core::tools::{ToolInfo, ToolRegistry};
 use stillroom_core::trace::RunSummary;
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots_with, validate_edit, Draft, Executor, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run,
+    edits_for_rerun, pins_from_run, resolve_slots_with, validate_edit, Cancel, Draft, Executor, ModelDefaults, RecipeInfo, RecipeLibrary, RecipeSource,
+    ResolveDefaults, Run,
     RunTrigger, StepEdit, StepRecord, Store, Watch,
 };
 use stillroom_models::ollama::Ollama;
@@ -23,6 +24,8 @@ pub(crate) struct AppState {
     store: Arc<Mutex<Store>>,
     /// Secrets read from the keychain once per process, so a run does not knock on it every time.
     secrets: Mutex<BTreeMap<String, Option<String>>>,
+    /// The stop handle of the run in flight, if any. One run at a time.
+    current_cancel: Mutex<Option<Cancel>>,
     tools: Arc<ToolRegistry>,
     library: RecipeLibrary,
     db_path: String,
@@ -66,6 +69,25 @@ impl AppState {
     /// The providers as configured right now. Cheap to build; a run keeps the one it started with.
     fn router(&self) -> Arc<ModelRouter> {
         Arc::new(ModelRouter::new(vec![Arc::new(self.ollama())]))
+    }
+
+    /// Seconds one model call may take; `models.timeoutSecs`, default 600, 0 means no limit.
+    fn model_timeout(&self) -> Option<std::time::Duration> {
+        let secs = self
+            .settings()
+            .ok()
+            .and_then(|s| s.get("models").and_then(|m| m.get("timeoutSecs")).and_then(Value::as_u64))
+            .unwrap_or(600);
+        (secs > 0).then(|| std::time::Duration::from_secs(secs))
+    }
+
+    /// Context length and thinking for steps whose recipe leaves them unset (`models.contextLength`, `models.think`).
+    fn model_defaults(&self) -> ModelDefaults {
+        self.settings()
+            .ok()
+            .and_then(|s| s.get("models").cloned())
+            .and_then(|m| serde_json::from_value(m).ok())
+            .unwrap_or_default()
     }
 
     /// The user's model defaults from Settings › Models.
@@ -149,7 +171,13 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
     request.edits = args.edits;
     request.resume_from = args.resume_from.map(Box::new);
     request.trigger = args.trigger;
+    let cancel = Cancel::new();
+    *state.current_cancel.lock().map_err(err)? = Some(cancel.clone());
+    request.cancel = Some(cancel);
+    request.model_timeout = state.model_timeout();
+    request.model_defaults = state.model_defaults();
     let run = executor.run(request, Some(observer)).await;
+    *state.current_cancel.lock().map_err(err)? = None;
 
     state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
     let _ = app.emit("run:finished", run.summary());
@@ -199,6 +227,19 @@ struct ModelsResponse {
 async fn list_models(state: State<'_, AppState>) -> CmdResult<ModelsResponse> {
     let router = state.router();
     Ok(ModelsResponse { providers: router.statuses().await, models: router.list_all().await })
+}
+
+/// Stop the run in flight. Returns whether there was one.
+#[tauri::command]
+fn stop_run(state: State<'_, AppState>) -> CmdResult<bool> {
+    let guard = state.current_cancel.lock().map_err(err)?;
+    match guard.as_ref() {
+        Some(c) => {
+            c.cancel();
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 /// Every setting as one JSON object. Keys: look, ollama, models, pins, firstRun.
@@ -706,6 +747,7 @@ pub fn run() {
             app.manage(AppState {
                 store: Arc::new(Mutex::new(store)),
                 secrets: Mutex::new(BTreeMap::new()),
+                current_cancel: Mutex::new(None),
                 tools: Arc::new(ToolRegistry::builtin()),
                 library,
                 db_path: db_path.to_string_lossy().into_owned(),
@@ -720,6 +762,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             list_models,
+            stop_run,
             get_settings,
             set_settings,
             pull_model,

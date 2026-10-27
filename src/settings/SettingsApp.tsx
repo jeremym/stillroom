@@ -246,6 +246,30 @@ export default function SettingsApp() {
                 <span className="segmented" role="group" aria-label="Preference">
                   {(["accuracy", "speed"] as const).map((p) => <button key={p} aria-pressed={(settings.models?.preference ?? "accuracy") === p} onClick={() => saveModels({ preference: p })}>{p}</button>)}
                 </span>
+                <span className="label" title="How long one model call may take">Time limit</span>
+                <span className="row" style={{ margin: 0 }}>
+                  <input type="number" min={0} step={30} style={{ width: 120 }} value={settings.models?.timeoutSecs ?? 600}
+                    onChange={(e) => saveModels({ timeoutSecs: Math.max(0, Number(e.target.value) || 0) })} aria-label="Seconds per model call" />
+                  <span className="muted">seconds per model call · 0 means wait forever · a stuck call fails the step instead of hanging the run</span>
+                </span>
+                <span className="label" title="num_ctx when a recipe does not set one">Context length</span>
+                <span className="row" style={{ margin: 0 }}>
+                  <select value={settings.models?.contextLength ?? ""} style={{ width: 200 }} onChange={(e) => saveModels({ contextLength: e.target.value ? Number(e.target.value) : undefined })} aria-label="Default context length">
+                    <option value="">Model's own default</option>
+                    {[4096, 8192, 16384, 32768, 65536, 131072].map((n) => <option key={n} value={n}>{n >= 1024 ? `${n / 1024}k` : n} tokens</option>)}
+                  </select>
+                  <span className="muted">how much text a step can hold at once, when the recipe does not say · bigger is slower and uses more memory</span>
+                </span>
+                <span className="label" title="think when a recipe does not set it">Thinking</span>
+                <span className="row" style={{ margin: 0 }}>
+                  <span className="segmented" role="group" aria-label="Thinking">
+                    {([["", "Model's default"], ["off", "Off"], ["on", "On"]] as const).map(([v, label]) => (
+                      <button key={v} aria-pressed={(settings.models?.think == null ? "" : settings.models.think ? "on" : "off") === v}
+                        onClick={() => saveModels({ think: v === "" ? null : v === "on" })}>{label}</button>
+                    ))}
+                  </span>
+                  <span className="muted">reasoning before answering, for models that can · off is faster; writers rarely need it</span>
+                </span>
                 {CAPABILITIES.map((c) => (
                   <span key={c.id} style={{ display: "contents" }}>
                     <span className="label" title={c.what}>{c.label}</span>

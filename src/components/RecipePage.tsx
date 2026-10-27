@@ -22,7 +22,7 @@ interface Props {
   onError: (message: string) => void;
 }
 
-const RUN_WORD: Record<string, string> = { succeeded: "done", failed: "failed", needs_review: "needs you", running: "running" };
+const RUN_WORD: Record<string, string> = { succeeded: "done", failed: "failed", cancelled: "stopped", needs_review: "needs you", running: "running" };
 
 export function RecipePage({ recipe, models, history, watches, map, onSetup, onDoor, onOpenRun, onDuplicate, onRename, onDelete, onWatchesChanged, onError }: Props) {
   const [renaming, setRenaming] = useState(false);

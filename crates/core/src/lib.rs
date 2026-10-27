@@ -21,7 +21,7 @@ pub mod watch;
 pub use bundle::{RecipeBundle, RecipeInfo, RecipeSource};
 pub use cache::{CachedStep, MemoryCache, StepCache};
 pub use draft::{Draft, DraftError};
-pub use executor::{Executor, RunRequest};
+pub use executor::{Cancel, Executor, ModelDefaults, RunRequest};
 pub use library::RecipeLibrary;
 pub use propagate::{dependents, edits_for_rerun, pins_from_run, validate_edit, EditError, StepEdit};
 pub use model::{ChatMessage, ChatRequest, ChatResponse, InstalledModel, ModelClient, ModelError};

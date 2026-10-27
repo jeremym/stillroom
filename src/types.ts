@@ -310,7 +310,16 @@ export interface RecipeDoc {
 export interface Settings {
   look?: { theme?: "green" | "amber" | "paper"; size?: "normal" | "larger" | "largest"; scanlines?: boolean };
   ollama?: { baseUrl?: string };
-  models?: { preference?: "accuracy" | "speed"; byCapability?: Record<string, string> };
+  models?: {
+    preference?: "accuracy" | "speed";
+    byCapability?: Record<string, string>;
+    /** Seconds one model call may take; 0 means no limit. Default 600. */
+    timeoutSecs?: number;
+    /** Context length for steps whose recipe says nothing. */
+    contextLength?: number;
+    /** Thinking for steps whose recipe says nothing: true, false, or unset (the model's own default). */
+    think?: boolean | null;
+  };
   /** Model pins per recipe: recipe id → slot → model id. */
   pins?: Record<string, Record<string, string>>;
   firstRun?: boolean;

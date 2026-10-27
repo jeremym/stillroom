@@ -218,6 +218,9 @@ impl RecipeBundle {
             edits: BTreeMap::new(),
             resume_from: None,
             trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
         }
     }
 }

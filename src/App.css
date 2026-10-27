@@ -195,3 +195,6 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .flow-details .entries li { padding: 4px 0; border-bottom: 1px solid var(--bezel); }
 .flow-details .row select { width: auto; margin: 0; }
 .flow-details .row input[type="text"] { flex: 1; min-width: 90px; margin: 0; }
+
+.stop-row { margin: 0 0 var(--gap); }
+button.stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); box-shadow: 0 0 10px var(--red-halo); }

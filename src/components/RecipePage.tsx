@@ -71,7 +71,7 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
         </div>
         <div className="row" style={{ marginTop: 18 }}>
           <button className="primary" style={{ marginTop: 0 }} onClick={onSetup}><Glyph name="power" /> Set up a run</button>
-          <button onClick={onDoor}><Glyph name="door" /> Open the door</button>
+          <button onClick={onDoor}><Glyph name="door" /> Recipe card</button>
           <button onClick={onDuplicate}><Glyph name="copy" /> Duplicate</button>
           {yours && !renaming && <button onClick={() => { setNewName(recipe.name); setRenaming(true); }}><Glyph name="edit" /> Rename</button>}
           {yours && (confirmDelete
@@ -108,7 +108,7 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
 
       {mine.length > 0 && <WatchPanel watches={mine} onChanged={onWatchesChanged} onOpenRun={onOpenRun} onError={onError} title="Watches on this recipe" />}
 
-      <Zone title="How it works" sub="the recipe as a map" aside={<button className="quiet" onClick={onDoor}>Open the door to edit</button>}>
+      <Zone title="How it works" sub="the recipe as a map" aside={<button className="quiet" onClick={onDoor}>Open the recipe card to edit</button>}>
         {map}
       </Zone>
     </>

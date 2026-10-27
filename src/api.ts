@@ -10,6 +10,9 @@ export const api = {
   /** Download a model through Ollama; progress arrives as `model:pull` events. */
   pullModel: (name: string) => invoke<void>("pull_model", { name }),
   openSettings: () => invoke<void>("open_settings"),
+  /** Secrets live in the OS keychain. An empty value clears. The value never comes back. */
+  setSecret: (name: string, value: string) => invoke<void>("set_secret", { name, value }),
+  hasSecret: (name: string) => invoke<boolean>("has_secret", { name }),
   listRecipes: () => invoke<RecipesResponse>("list_recipes"),
   runRecipe: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>, reuse = true) =>
     invoke<Run>("run_recipe", { args: { recipeId, inputs, pins, reuse } }),

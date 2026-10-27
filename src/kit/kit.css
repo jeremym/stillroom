@@ -245,7 +245,13 @@ button.pill:hover:not(:disabled) { color: var(--phos); border-color: var(--phos-
 .settings-nav button { text-align: left; border: 1px solid transparent; color: var(--phos-dim); padding: 8px 12px; display: flex; gap: 10px; align-items: center; }
 .settings-nav button[aria-current="true"] { color: var(--phos); border-color: var(--bezel); background: var(--ground-2); text-shadow: 0 0 0 currentColor, 0 0 10px var(--halo); }
 .settings-nav button:hover:not(:disabled) { color: var(--phos); box-shadow: none; }
-.settings-nav .glyph { width: 1.1em; height: 1.1em; }
+.settings-nav .glyph { width: 1.1em; height: 1.1em; flex: none; }
+.settings-nav .nav-toggle { margin-top: 10px; color: var(--phos-faint); border-color: transparent; }
+.settings-nav .nav-toggle:hover:not(:disabled) { color: var(--phos); }
+.settings-shell.collapsed { grid-template-columns: 56px 1fr; gap: 16px; }
+.settings-shell.collapsed .settings-nav button { justify-content: center; padding: 9px 0; }
+.settings-shell.collapsed .settings-nav .glyph { width: 1.35em; height: 1.35em; }
+.settings-shell.collapsed .settings-head { justify-content: center; }
 .settings-head { margin: 0 0 10px; display: flex; align-items: center; gap: 12px; }
 .settings-head h1 { font-family: var(--display); font-size: var(--size-display); letter-spacing: 0.14em; text-transform: uppercase; }
 .caps { display: inline-flex; gap: 4px; flex-wrap: wrap; }

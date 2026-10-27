@@ -21,6 +21,8 @@ use watches::{WatchRuntime, WatchView};
 
 pub(crate) struct AppState {
     store: Arc<Mutex<Store>>,
+    /// Secrets read from the keychain once per process, so a run does not knock on it every time.
+    secrets: Mutex<BTreeMap<String, Option<String>>>,
     tools: Arc<ToolRegistry>,
     library: RecipeLibrary,
     db_path: String,
@@ -44,7 +46,21 @@ impl AppState {
     }
 
     fn ollama(&self) -> Ollama {
-        Ollama::new(self.ollama_url())
+        Ollama::with_key(self.ollama_url(), self.secret(OLLAMA_KEY))
+    }
+
+    /// A secret from the keychain, cached after the first read. `None` when unset or unreadable.
+    fn secret(&self, name: &str) -> Option<String> {
+        if let Ok(cache) = self.secrets.lock() {
+            if let Some(v) = cache.get(name) {
+                return v.clone();
+            }
+        }
+        let v = keyring::Entry::new(KEYCHAIN_SERVICE, name).ok().and_then(|e| e.get_password().ok()).filter(|k| !k.is_empty());
+        if let Ok(mut cache) = self.secrets.lock() {
+            cache.insert(name.to_string(), v.clone());
+        }
+        v
     }
 
     /// The providers as configured right now. Cheap to build; a run keeps the one it started with.
@@ -61,6 +77,42 @@ impl AppState {
             .unwrap_or_default()
     }
 }
+
+const KEYCHAIN_SERVICE: &str = "com.jeremym.stillroom";
+/// The keychain item for a remote Ollama's access key (sent as a bearer token).
+const OLLAMA_KEY: &str = "ollama.apiKey";
+const KNOWN_SECRETS: &[&str] = &[OLLAMA_KEY];
+
+fn known_secret(name: &str) -> CmdResult<&'static str> {
+    KNOWN_SECRETS.iter().copied().find(|k| *k == name).ok_or_else(|| format!("unknown secret {name}"))
+}
+
+/// Store a secret in the OS keychain. Never in the settings store, never in a file.
+#[tauri::command]
+fn set_secret(app: AppHandle, state: State<'_, AppState>, name: String, value: String) -> CmdResult<()> {
+    let name = known_secret(&name)?;
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, name).map_err(err)?;
+    if value.trim().is_empty() {
+        let _ = entry.delete_credential();
+    } else {
+        entry.set_password(value.trim()).map_err(err)?;
+    }
+    if let Ok(mut cache) = state.secrets.lock() {
+        cache.remove(name);
+    }
+    let _ = app.emit("secrets:changed", name);
+    Ok(())
+}
+
+/// Whether a secret is set. The value itself never goes back to the webview.
+#[tauri::command]
+fn has_secret(state: State<'_, AppState>, name: String) -> CmdResult<bool> {
+    let name = known_secret(&name)?;
+    Ok(state.secret(name).is_some())
+}
+
+
+
 
 /// Everything a run needs, from the user's Run button, an approval or edit, or a watch.
 pub(crate) struct ExecArgs {
@@ -598,7 +650,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .item(&item("place-setup", "Set Up", Some("CmdOrCtrl+2"))?)
         .item(&item("place-running", "Running", Some("CmdOrCtrl+3"))?)
         .item(&item("place-results", "Results", Some("CmdOrCtrl+4"))?)
-        .item(&item("place-door", "Open the Door", Some("CmdOrCtrl+5"))?)
+        .item(&item("place-door", "Recipe Card", Some("CmdOrCtrl+5"))?)
         .separator()
         .item(&item("theme-green", "Green Theme", None)?)
         .item(&item("theme-amber", "Amber Theme", None)?)
@@ -653,6 +705,7 @@ pub fn run() {
             ]);
             app.manage(AppState {
                 store: Arc::new(Mutex::new(store)),
+                secrets: Mutex::new(BTreeMap::new()),
                 tools: Arc::new(ToolRegistry::builtin()),
                 library,
                 db_path: db_path.to_string_lossy().into_owned(),
@@ -671,6 +724,8 @@ pub fn run() {
             set_settings,
             pull_model,
             open_settings,
+            set_secret,
+            has_secret,
             list_recipes,
             run_recipe,
             rerun_with_edit,

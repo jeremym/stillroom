@@ -66,7 +66,7 @@ export function NewRecipe({ recipes, busy, error, onCreate, onCancel }: Props) {
       {error && <pre className="error">{error}</pre>}
       <div className="row">
         <button className="primary" style={{ marginTop: 0 }} disabled={!ready || busy} onClick={() => onCreate({ mode, sourceId, id, name: name.trim(), icon })}>
-          {busy ? "Creating…" : "Create and open the door"}
+          {busy ? "Creating…" : "Create and open its card"}
         </button>
         <button disabled={busy} onClick={onCancel}>Cancel</button>
       </div>

@@ -284,7 +284,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     <section className={`panel flow-panel ${edit ? "editing" : ""}`}>
       <div className="row space" style={{ margin: "0 0 8px" }}>
         <h2 style={{ margin: 0 }}>
-          Flow <span className="muted">{edit ? "(editing a draft of the recipe)" : "(the recipe as a map: inputs → steps → results)"}</span>
+          Recipe card <span className="muted">{edit ? "(editing a draft of the recipe)" : "(the recipe written out as a map: inputs → steps → results)"}</span>
         </h2>
         {edit ? (
           <span className="muted">{edit.dirty ? "unsaved changes" : "no changes yet"}</span>

@@ -28,7 +28,7 @@ type Place = "library" | "new" | "recipe" | "setup" | "running" | "results" | "d
 type RecipePlace = Exclude<Place, "library" | "new">;
 const PLACE_LABEL: Record<Place, string> = {
   library: "Library", new: "New recipe",
-  recipe: "Recipe", setup: "Set up", running: "Running", results: "Results", door: "Open the door",
+  recipe: "Recipe", setup: "Set up", running: "Running", results: "Results", door: "Recipe card",
 };
 const RECIPE_PLACES: RecipePlace[] = ["recipe", "setup", "running", "results", "door"];
 const isRecipePlace = (p: Place): p is RecipePlace => (RECIPE_PLACES as Place[]).includes(p);
@@ -385,7 +385,7 @@ function App() {
       case "results":
         return runIsHere && run ? <><b>{run.recipeName}</b> · {new Date(run.startedAt).toLocaleString()} · {STATUS_WORD[run.status] ?? run.status}</> : <>no result yet</>;
       case "door":
-        return <><b>{recipe.name}</b> · the recipe as a map</>;
+        return <><b>{recipe.name}</b> · the recipe written out, editable</>;
       default:
         return null;
     }
@@ -460,7 +460,7 @@ function App() {
             <Zone title="Help" sub="how Stillroom is laid out" aside={<button className="quiet" onClick={() => setHelpOpen(false)}>Close</button>}>
               <div className="facts">
                 <span className="label">Library</span><span>Every recipe, every run, your watches. The logo at the top left always brings you back.</span>
-                <span className="label">Recipe</span><span>Pick one and the Dial appears: <b>Recipe</b> (what it does, its runs) · <b>Set up</b> (inputs, models, Run) · <b>Running</b> (each step as it happens) · <b>Results</b> (what it made) · <b>Open the door</b> (the recipe as a map you can edit).</span>
+                <span className="label">Recipe</span><span>Pick one and the Dial appears: <b>Recipe</b> (what it does, its runs) · <b>Set up</b> (inputs, models, Run) · <b>Running</b> (each step as it happens) · <b>Results</b> (what it made) · <b>Recipe card</b> (the recipe written out as a map you can edit).</span>
                 <span className="label">Colours</span><span>Green is the machine. Paper is what it made for you. Amber means it needs you, or something would leave this Mac. Red is a failure.</span>
                 <span className="label">Keys</span><span className="mono">⌘0 Library · ⌘1…⌘5 the Dial · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ this help</span>
               </div>
@@ -584,7 +584,7 @@ function App() {
                 <p className="result-line">
                   How this was made: <button className="link" onClick={() => setPlace("running")}>the trace (every step, model, and timing)</button>
                   {" · "}
-                  <button className="link" onClick={() => setPlace("door")}>the map (open the door)</button>
+                  <button className="link" onClick={() => setPlace("door")}>the recipe card (the map, editable)</button>
                 </p>
               </>
             ) : runningHere ? (

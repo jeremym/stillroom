@@ -4,6 +4,8 @@ Written 2026-10-27. Companion to `PLAN.md` (the product design). This document i
 
 Status and decisions live in the vault at `Stillroom/projects/ui-redesign.md`.
 
+**Renamed 2026-10-27:** the place called "Open the door" below is now **Recipe card** everywhere in the app (the Dial, the menu ⌘5, buttons, hints). The tagline keeps "Open the door" as the product's promise. Earlier sections keep the old name as written.
+
 **Approved by Jeremy on 2026-10-27** ("I like everything that you've done here. Let's go for it!"), with one addition: sections need to read as separate zones, so each zone sits on its own ground and consecutive zones alternate between two near-identical greens, and long lists and tables alternate row tint. **Phase 1 shipped the same day**; see section 8.
 
 ---
@@ -340,3 +342,4 @@ Jeremy's feedback after seeing phase 1, and what it changes. The reading copy wi
 - **Resolver order is now** pin › your default for the slot's capability › the recipe's recommendation › best installed by preference (`resolve_slots_with`, `ResolveDefaults`, `ResolvedVia::Default`; `Capability` is `Ord`). A run reads the defaults from the store at the moment it starts. The router is built per call from the configured address, so a new address takes effect without a restart.
 - **Folders** (paths, Show my recipes folder), **Watches** (all watches, Pause all, Resume all), **Privacy** (the rule in plain words, which recipes declare network access), **About** (shortcuts, "Show the welcome on next launch" sets `firstRun`).
 - Verified: `cargo test --workspace` (51, one new for the default order), `pnpm test` (23, one new for the progress bar), `tsc`, `pnpm build`. Not yet by eye: the Settings window, a pull, and a changed address need the screen.
+- **Round 3 additions (same day):** "Open the door" renamed **Recipe card** in the app; the Settings sidebar collapses to icons (a toggle, remembered, collapsed by default under 820 px); an optional **access key** for a remote Ollama behind a proxy, kept in the macOS keychain through the `keyring` crate (`set_secret`, `has_secret`; the value never returns to the webview) and sent as `Authorization: Bearer …` by the adapter; a configuration audit requested into the vault (`Stillroom/references/configuration-audit.md`).

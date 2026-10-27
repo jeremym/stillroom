@@ -346,7 +346,7 @@ mod tests {
             "name": "Weekly report",
             "version": "0.1.0",
             "icon": "notes",
-            "description": "A new recipe. Open the door to add steps.",
+            "description": "A new recipe. Open its recipe card to add steps.",
             "inputs": { "source": { "type": "file", "label": "Source file", "description": "The file this recipe starts from." } },
             "permissions": { "filesystem": { "read": ["input"] } },
             "steps": [ { "id": "read", "kind": "tool", "name": "Read the file", "tool": "file.read", "inputs": { "path": "${inputs.source}" } } ],

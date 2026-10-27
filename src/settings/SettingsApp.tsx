@@ -46,6 +46,15 @@ export default function SettingsApp() {
   const [pull, setPull] = useState<PullEvent | null>(null);
   const [pulling, setPulling] = useState(false);
   const urlRef = useRef("");
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try { const v = localStorage.getItem("p1.settingsNav"); if (v) return v === "collapsed"; } catch { /* per-viewer */ }
+    return window.innerWidth < 820;
+  });
+  useEffect(() => { try { localStorage.setItem("p1.settingsNav", collapsed ? "collapsed" : "open"); } catch { /* per-viewer */ } }, [collapsed]);
+  const [keySet, setKeySet] = useState<boolean | null>(null);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+  const refreshKey = useCallback(() => { api.hasSecret("ollama.apiKey").then(setKeySet).catch(() => setKeySet(null)); }, []);
 
   const look = useMemo(() => lookOf(settings), [settings]);
   useEffect(() => applyLook(look), [look]);
@@ -62,11 +71,27 @@ export default function SettingsApp() {
     api.listRecipes().then(setRecipes).catch(() => {});
     refreshModels();
     refreshWatches();
+    refreshKey();
     const a = listen<Settings>("settings:changed", (ev) => setSettings(ev.payload));
     const b = listen<PullEvent>("model:pull", (ev) => setPull(ev.payload));
     const c = listen("watch:changed", () => refreshWatches());
     return () => { a.then((f) => f()); b.then((f) => f()); c.then((f) => f()); };
-  }, [refreshModels, refreshWatches]);
+  }, [refreshModels, refreshWatches, refreshKey]);
+
+  async function saveKey(value: string) {
+    setKeyBusy(true);
+    setError(null);
+    try {
+      await api.setSecret("ollama.apiKey", value);
+      setKeyDraft("");
+      refreshKey();
+      refreshModels();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setKeyBusy(false);
+    }
+  }
 
   async function save(patch: Record<string, unknown>) {
     setError(null);
@@ -109,12 +134,15 @@ export default function SettingsApp() {
   const bar = pull ? pullBar(pull.completed, pull.total) : null;
 
   return (
-    <div className="settings-shell">
+    <div className={`settings-shell ${collapsed ? "collapsed" : ""}`}>
       <nav className="settings-nav" aria-label="Settings sections">
-        <div className="settings-head"><Logo size={26} word={false} /><h1>Settings</h1></div>
+        <div className="settings-head"><Logo size={26} word={false} />{!collapsed && <h1>Settings</h1>}</div>
         {SECTIONS.map((s) => (
-          <button key={s.id} aria-current={section === s.id} onClick={() => setSection(s.id)}><Glyph name={s.glyph} /> {s.label}</button>
+          <button key={s.id} aria-current={section === s.id} title={s.label} aria-label={s.label} onClick={() => setSection(s.id)}><Glyph name={s.glyph} />{!collapsed && <span>{s.label}</span>}</button>
         ))}
+        <button className="nav-toggle" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Show section names" : "Icons only"} aria-label={collapsed ? "Show section names" : "Icons only"} aria-pressed={collapsed}>
+          <Glyph name={collapsed ? "expand" : "collapse"} />{!collapsed && <span className="muted">Icons only</span>}
+        </button>
       </nav>
       <div>
         {section === "look" && (
@@ -151,6 +179,16 @@ export default function SettingsApp() {
                 <button onClick={applyUrl} disabled={checking}>{checking ? "Checking…" : "Save and check"}</button>
               </div>
               {provider && !provider.available && <p className="muted">Nothing answered at <span className="mono">{provider.baseUrl}</span>. Start Ollama, or install it from ollama.com, then check again.</p>}
+              <div className="row field-row">
+                <div className="field">
+                  <label><strong><Glyph name="key" /> Access key</strong> <span className="muted">· optional · for an Ollama behind a proxy that wants a bearer token · kept in the macOS keychain, never shown again</span></label>
+                  <input type="password" className="mono" value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && keyDraft.trim()) saveKey(keyDraft); }}
+                    placeholder={keySet ? "a key is set · type a new one to replace it" : "no key · leave empty for a local Ollama"} autoComplete="off" disabled={keyBusy} />
+                </div>
+                <button onClick={() => saveKey(keyDraft)} disabled={keyBusy || !keyDraft.trim()}>Save key</button>
+                {keySet && <button className="danger" onClick={() => saveKey("")} disabled={keyBusy}>Remove key</button>}
+              </div>
+              <p className="muted">Sent as <span className="mono">Authorization: Bearer …</span> on every call to the address above. A local Ollama needs none.</p>
               {installed.length > 0 ? (
                 <table>
                   <thead><tr><th>Model</th><th>Size</th><th>Context</th><th>Can</th></tr></thead>
@@ -289,7 +327,7 @@ export default function SettingsApp() {
           <Zone title="About" sub="Stillroom 0.1, pre-alpha">
             <p>Describe the goal. Get the result. Open the door.</p>
             <p className="muted">{status ? `${status.schemaTitle} v0 · ${status.runCount} runs · tools: ${status.tools.join(", ")}` : "…"}</p>
-            <p className="muted">Keyboard: ⌘0 Library · ⌘1 Recipe · ⌘2 Set up · ⌘3 Running · ⌘4 Results · ⌘5 Open the door · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ Help</p>
+            <p className="muted">Keyboard: ⌘0 Library · ⌘1 Recipe · ⌘2 Set up · ⌘3 Running · ⌘4 Results · ⌘5 Recipe card · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ Help</p>
             <button onClick={() => save({ firstRun: true })}>{settings.firstRun ? "The welcome will show on next launch" : "Show the welcome on next launch"}</button>
           </Zone>
         )}

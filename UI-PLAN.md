@@ -355,3 +355,13 @@ The first-run wizard plus the audit items Jeremy pulled forward (see the vault's
 5. **The teletype** in Running (the trace as a live typed log) as planned in 3.3.
 
 Left for later, by agreement: map concurrency and the schema-only permissions and budget (5), watch settle time and frozen inputs (7), movable folders and retention (8).
+
+### Phase 4: Power on · shipped 2026-10-27
+
+- **Stop.** A `Cancel` handle in the executor: between steps the run stops at once; during a model call the call is abandoned (`tokio::select!`) and the run ends `cancelled` with "stopped by you". `stop_run` command; a Stop button in Running with an inline "Really stop". Results shows "You stopped this run" with the trace.
+- **Model-call timeout** from Settings › Defaults (`models.timeoutSecs`, default 600, 0 means none): a step whose model does not answer in time fails with "did not answer within N s" instead of hanging the run. The reachability probe is 5 s instead of 2.
+- **Default context length and thinking** (`models.contextLength`, `models.think`) applied to any model step whose recipe leaves them unset.
+- **Set up shows the real Auto pick** per slot through `preview_resolution`: "Will use *model* · local · your pin / your default / the recipe's recommendation / the best installed for the slot's preference", or the reason the slot cannot be filled. The Auto option itself names the model.
+- **The teletype** in Running: the trace typed as each step starts and finishes (▶ ✓ ↻ ✗ ■), tool calls indented, the table folded beneath. Tests cover the line builder.
+- **The welcome (Power on)**: shown when `firstRun` is absent or true; boot screen with Begin or Skip; step 1 checks Ollama (address and key through Settings, in-app pull through the shared `PullModel`, preference, optional writing model); step 2 picks a recipe; step 3 is that recipe's Set up with a one-line hint, and the first Results carry a pointer to the Recipe card. Finishing or skipping writes `firstRun: false`; Settings › About brings it back.
+- Verified: `cargo test --workspace` (52, one new for Stop), `pnpm test` (26, three new for the teletype), `tsc`, `pnpm build`; by eye and live: boot, step 1, step 2, hand-off into Set up with the hint and the real Auto pick, a run on a fresh file with the teletype typing and the step timer, Stop pressed mid-step ending the run as "stopped by you" after 39 s and the Dial turning to Results (`docs/screenshots/phase4-*.png`).

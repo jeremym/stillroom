@@ -330,3 +330,13 @@ Jeremy's feedback after seeing phase 1, and what it changes. The reading copy wi
 - **Results** has a run selector when the recipe has more than one run. **Help** (⌘/ or the Rail) opens an inline sheet with the layout and the keys.
 - New Rust commands: `delete_recipe` (user recipes only; removes bound watches), `reveal_recipes_folder`.
 - Verified: `cargo test --workspace` (50, including a checker test for the blank recipe the New button makes), `pnpm test` (20), `tsc`, `pnpm build`, a live Summarize a File run started with ⌘R from Set up (the Dial turned to Results by itself, the run selector appeared), and screenshots of Library, Recipe, New recipe, Settings, Set up, Results, Open the door, and Help in `docs/screenshots/phase2-*.png`.
+
+### Phase 3: Settings and models · built 2026-10-27, visual check pending
+
+- **Settings store** in SQLite (`settings` table, key → JSON). Commands `get_settings` and `set_settings` (merge of top-level keys, null removes); every window hears `settings:changed`. Keys: `look`, `ollama.baseUrl`, `models.preference`, `models.byCapability`, `pins` (recipe → slot → model), `firstRun`.
+- **Settings is its own window** (⌘,, the Rail gear, the Ollama pill, the menu): the same bundle opened with `?window=settings`, a sidebar of six sections. `open_settings` creates it or brings it forward.
+- **Look** moved there (the Library lost its Look zone). Theme and text size are settings now; local storage only keeps the first paint right.
+- **Models:** Ollama address with Save and check; the installed models with what each can do; **Pull a model** with a block-character progress bar from `model:pull` events (`Ollama::pull` streams `/api/pull`); **Defaults**: prefer accuracy or speed, and a default model per capability; **Pins** listed per recipe with clear; Cloud providers still off and explained.
+- **Resolver order is now** pin › your default for the slot's capability › the recipe's recommendation › best installed by preference (`resolve_slots_with`, `ResolveDefaults`, `ResolvedVia::Default`; `Capability` is `Ord`). A run reads the defaults from the store at the moment it starts. The router is built per call from the configured address, so a new address takes effect without a restart.
+- **Folders** (paths, Show my recipes folder), **Watches** (all watches, Pause all, Resume all), **Privacy** (the rule in plain words, which recipes declare network access), **About** (shortcuts, "Show the welcome on next launch" sets `firstRun`).
+- Verified: `cargo test --workspace` (51, one new for the default order), `pnpm test` (23, one new for the progress bar), `tsc`, `pnpm build`. Not yet by eye: the Settings window, a pull, and a changed address need the screen.

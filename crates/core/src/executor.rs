@@ -5,6 +5,7 @@ use indexmap::IndexMap;
 
 use crate::cache::{fingerprint, CachedStep, StepCache};
 use crate::model::{ChatMessage, ChatRequest, ModelClient};
+use crate::propagate::{dependencies, inputs_fingerprint, StepEdit};
 use crate::recipe::{Recipe, Step};
 use crate::refs::{self, Context};
 use crate::resolve::Resolution;
@@ -37,6 +38,8 @@ pub enum ExecError {
     Unsupported { step: String, kind: &'static str },
     #[error("output {name}: {source}")]
     Output { name: String, source: refs::RefError },
+    #[error("step {step}: edited output does not match its schema: {message}")]
+    BadEdit { step: String, message: String },
 }
 
 pub struct RunRequest {
@@ -50,6 +53,8 @@ pub struct RunRequest {
     pub artifact_base: Option<std::path::PathBuf>,
     /// Reuse outputs of unchanged steps from earlier runs when a cache is attached.
     pub reuse: bool,
+    /// User edits to apply as step outputs, by step id (change propagation).
+    pub edits: BTreeMap<String, StepEdit>,
 }
 
 /// Called after each step record changes, so a UI can show live progress.
@@ -103,10 +108,7 @@ impl Executor {
         let index: HashMap<&str, usize> = recipe.steps.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
         let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
         for (i, step) in recipe.steps.iter().enumerate() {
-            let mut names = BTreeSet::new();
-            refs::step_refs(&Value::Object(step.inputs().clone().into_iter().collect()), &mut names);
-            names.extend(step.depends_on().iter().cloned());
-            for name in names {
+            for name in dependencies(step) {
                 if let Some(&j) = index.get(name.as_str()) {
                     deps[i].insert(j);
                 }
@@ -145,6 +147,7 @@ impl Executor {
             steps: Vec::new(),
             outputs: IndexMap::new(),
             error: None,
+            edits: req.edits.clone(),
         };
 
         let order = match Self::order(&req.recipe) {
@@ -189,6 +192,7 @@ impl Executor {
                 output: None,
                 error: None,
                 reused_from: None,
+                edited: false,
             };
             if let Some(o) = &observe {
                 o(&rec);
@@ -203,14 +207,34 @@ impl Executor {
                 Err(e) => Err(e),
                 Ok(inputs) => {
                     rec.inputs = inputs.clone();
+                    // A user edit stands in for the step while the inputs it was made against hold.
+                    let edit = req
+                        .edits
+                        .get(step.id())
+                        .filter(|e| e.inputs_fingerprint == inputs_fingerprint(&inputs));
                     let key = self.cache_key(req, step, &inputs);
-                    let hit = if self.reusable(req, step) {
+                    let hit = if edit.is_none() && self.reusable(req, step) {
                         key.as_deref().and_then(|k| self.cache.as_ref()?.get(k))
                     } else {
                         None
                     };
-                    match hit {
-                        Some(cached) => {
+                    match (edit, hit) {
+                        (Some(edit), _) => {
+                            rec.edited = true;
+                            if let Step::Model(m) = step {
+                                rec.prompt_path = Some(m.prompt.clone());
+                            }
+                            let schema = match step {
+                                Step::Model(m) => m.output_schema.as_ref(),
+                                Step::Tool(t) => t.output_schema.as_ref(),
+                                _ => None,
+                            };
+                            match schema.map(|s| validate_against(s, &edit.output)) {
+                                Some(Err(message)) => Err(ExecError::BadEdit { step: step.id().into(), message }),
+                                _ => Ok(edit.output.clone()),
+                            }
+                        }
+                        (None, Some(cached)) => {
                             rec.reused_from = Some(cached.run_id.clone());
                             rec.model = cached.model.clone();
                             if let Step::Model(m) = step {
@@ -218,7 +242,7 @@ impl Executor {
                             }
                             Ok(cached.output)
                         }
-                        None => {
+                        (None, None) => {
                             cache_key = key;
                             self.run_step(step, req, &tool_ctx, &mut rec, &inputs).await
                         }
@@ -363,7 +387,7 @@ fn user_message(inputs: &Value) -> String {
     out.trim_end().to_string()
 }
 
-fn validate_against(schema: &Value, value: &Value) -> Result<(), String> {
+pub(crate) fn validate_against(schema: &Value, value: &Value) -> Result<(), String> {
     let validator = jsonschema::validator_for(schema).map_err(|e| format!("bad output schema: {e}"))?;
     let errors: Vec<String> = validator.iter_errors(value).map(|e| format!("{} at {}", e, e.instance_path)).collect();
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
@@ -422,6 +446,7 @@ mod tests {
             )]),
             artifact_base: Some(dir.clone()),
             reuse: true,
+            edits: BTreeMap::new(),
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
         let run = exec.run(req, None).await;
@@ -453,6 +478,7 @@ mod tests {
             )]),
             artifact_base: Some(dir.clone()),
             reuse: true,
+            edits: BTreeMap::new(),
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel)).with_cache(Arc::new(MemoryCache::default()));
         let first = exec.run(make(), None).await;
@@ -467,6 +493,121 @@ mod tests {
         changed.prompts.insert("prompts/summarize.md".into(), "different prompt".into());
         let third = exec.run(changed, None).await;
         assert!(third.steps[1].reused_from.is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// read -> a -> b, and c reads `read` directly. Editing `a` must regenerate b only.
+    const FAN_YAML: &str = r#"
+schemaVersion: "0"
+id: fan
+name: Fan
+modelSlots:
+  writer: { requires: [text] }
+steps:
+  - id: read
+    kind: tool
+    tool: file.read
+    inputs: { path: "${inputs.file}" }
+  - id: a
+    kind: model
+    slot: writer
+    prompt: prompts/a.md
+    inputs: { text: "${steps.read.output.text}" }
+  - id: b
+    kind: model
+    slot: writer
+    prompt: prompts/b.md
+    inputs: { text: "${steps.a.output}" }
+  - id: c
+    kind: model
+    slot: writer
+    prompt: prompts/c.md
+    inputs: { text: "${steps.read.output.text}" }
+outputs:
+  b: { from: "${steps.b.output}", type: text }
+  c: { from: "${steps.c.output}", type: text }
+"#;
+
+    fn fan_request(file: &std::path::Path, dir: &std::path::Path) -> RunRequest {
+        RunRequest {
+            recipe: Recipe::from_yaml(FAN_YAML).unwrap(),
+            prompts: HashMap::from([
+                ("prompts/a.md".to_string(), "A".to_string()),
+                ("prompts/b.md".to_string(), "B".to_string()),
+                ("prompts/c.md".to_string(), "C".to_string()),
+            ]),
+            inputs: IndexMap::from([("file".to_string(), Value::String(file.to_string_lossy().into()))]),
+            resolutions: BTreeMap::from([(
+                "writer".to_string(),
+                Resolution { slot: "writer".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability },
+            )]),
+            artifact_base: Some(dir.to_path_buf()),
+            reuse: true,
+            edits: BTreeMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_edit_regenerates_only_its_dependents() {
+        use crate::cache::MemoryCache;
+        use crate::propagate::{edits_for_rerun, inputs_fingerprint};
+        let dir = std::env::temp_dir().join(format!("stillroom-edit-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("in.txt");
+        std::fs::write(&file, "v1").unwrap();
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel)).with_cache(Arc::new(MemoryCache::default()));
+
+        let first = exec.run(fan_request(&file, &dir), None).await;
+        assert_eq!(first.status, RunStatus::Succeeded, "{:?}", first.error);
+        assert_eq!(first.outputs["b"], Value::String("[test:echo] [test:echo] v1".into()));
+
+        // The user rewrites a's output.
+        let mut req = fan_request(&file, &dir);
+        req.edits = edits_for_rerun(&first, "a", Value::String("edited".into())).unwrap();
+        let second = exec.run(req, None).await;
+        assert_eq!(second.status, RunStatus::Succeeded, "{:?}", second.error);
+        let by_id = |run: &Run, id: &str| run.steps.iter().find(|s| s.step_id == id).cloned().unwrap();
+        assert!(by_id(&second, "a").edited);
+        assert!(by_id(&second, "a").reused_from.is_none());
+        assert!(by_id(&second, "b").reused_from.is_none(), "b depends on the edit, so it ran again");
+        assert_eq!(second.outputs["b"], Value::String("[test:echo] edited".into()));
+        assert_eq!(by_id(&second, "c").reused_from.as_deref(), Some(first.id.as_str()), "c did not change");
+        assert_eq!(second.edits.len(), 1);
+
+        // Rerunning without the edit gets the generated output back: edits are never cached.
+        let third = exec.run(fan_request(&file, &dir), None).await;
+        assert_eq!(third.outputs["b"], first.outputs["b"]);
+        assert_eq!(by_id(&third, "a").reused_from.as_deref(), Some(first.id.as_str()));
+
+        // The source changes under the edit: the edit no longer matches a's inputs and is set aside.
+        std::fs::write(&file, "v2").unwrap();
+        let mut req = fan_request(&file, &dir);
+        req.edits = edits_for_rerun(&second, "a", Value::String("edited".into())).unwrap();
+        assert_eq!(req.edits["a"].inputs_fingerprint, inputs_fingerprint(&by_id(&second, "a").inputs));
+        let fourth = exec.run(req, None).await;
+        assert_eq!(fourth.status, RunStatus::Succeeded, "{:?}", fourth.error);
+        assert!(!by_id(&fourth, "a").edited, "stale edit dropped");
+        assert_eq!(fourth.outputs["b"], Value::String("[test:echo] [test:echo] v2".into()));
+        assert!(fourth.edits.contains_key("a"), "the run still records the edit it was asked to apply");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_breaks_the_schema_fails_the_step() {
+        let dir = std::env::temp_dir().join(format!("stillroom-badedit-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("in.txt");
+        std::fs::write(&file, "v1").unwrap();
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        let mut req = fan_request(&file, &dir);
+        if let Step::Model(m) = &mut req.recipe.steps[1] {
+            m.output_schema = Some(serde_json::json!({ "type": "object" }));
+        }
+        let first = exec.run(fan_request(&file, &dir), None).await;
+        req.edits = crate::propagate::edits_for_rerun(&first, "a", Value::String("not an object".into())).unwrap();
+        let run = exec.run(req, None).await;
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(run.error.unwrap().contains("edited output does not match"));
         std::fs::remove_dir_all(dir).ok();
     }
 

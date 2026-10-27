@@ -5,7 +5,30 @@ import { api } from "../api";
 import { DiagramView, asDiagram } from "./DiagramView";
 import { SlidesView, isDeck, deckToHtml, deckToPptx } from "./SlidesView";
 import { AudioView, ScriptView, isAudio, isScript } from "./AudioView";
-import type { OutputSpec, Run } from "../types";
+import { ArtifactEditor } from "./ArtifactEditor";
+import type { OutputSpec, Run, StepInfo } from "../types";
+
+/** The step an output comes straight from, if `from` is `${steps.<id>.output}` with no deeper path. */
+function sourceStep(spec: OutputSpec | undefined): string | null {
+  const m = spec?.from.match(/^\$\{steps\.([A-Za-z0-9_-]+)\.output\}$/);
+  return m ? m[1] : null;
+}
+
+/** Every step downstream of `stepId`, transitively, in recipe order. */
+function dependentsOf(steps: StepInfo[], stepId: string): StepInfo[] {
+  const affected = new Set([stepId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const s of steps) {
+      if (!affected.has(s.id) && s.dependsOn.some((d) => affected.has(d))) {
+        affected.add(s.id);
+        grew = true;
+      }
+    }
+  }
+  return steps.filter((s) => s.id !== stepId && affected.has(s.id));
+}
 
 interface Concept { id: string; name: string; definition: string; prerequisites: string[]; related: string[]; evidence: string[] }
 interface Claim { id: string; text: string; concepts: string[]; evidence: string }
@@ -64,14 +87,27 @@ function Cards({ cards }: { cards: Card[] }) {
 
 interface ExportOption { label: string; ext: string; build: () => Promise<string | Uint8Array | { copyFrom: string }>; }
 
-function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | undefined; value: unknown }) {
+interface ArtifactProps {
+  name: string;
+  spec: OutputSpec | undefined;
+  value: unknown;
+  steps: StepInfo[];
+  busy: boolean;
+  onEdit?: (stepId: string, output: unknown) => void;
+}
+
+function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
   const label = spec?.label ?? name;
+  const stepId = sourceStep(spec);
+  const editable = Boolean(onEdit && stepId && kindIsEditable(spec?.type, value));
+  const [editing, setEditing] = useState(false);
+  const dependents = stepId ? dependentsOf(steps, stepId).map((s) => s.name ?? s.id) : [];
   const kind = spec?.type ?? (typeof value === "string" ? "text" : "json");
   const diagram = kind === "diagram" ? asDiagram(value) : null;
   const deck = kind === "slides" && isDeck(value) ? value : null;
   const audio = kind === "audio" && isAudio(value) ? value : null;
   const [svg, setSvg] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 
   const exports: ExportOption[] = deck
@@ -91,14 +127,14 @@ function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | unde
   async function exportWith(opt: ExportOption) {
     const path = await save({ defaultPath: `${name}.${opt.ext}`, filters: [{ name: opt.ext.toUpperCase(), extensions: [opt.ext] }] });
     if (!path) return;
-    setBusy(true);
+    setExporting(true);
     try {
       const body = await opt.build();
       if (typeof body === "string") await api.writeTextFile(path, body);
       else if (body instanceof Uint8Array) await api.writeBinaryFile(path, body);
       else await api.copyFile(body.copyFrom, path);
     } finally {
-      setBusy(false);
+      setExporting(false);
     }
   }
 
@@ -107,13 +143,23 @@ function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | unde
       <div className="row space">
         <h2 style={{ margin: 0 }}>{label} <span className="muted">(artifact · {kind})</span></h2>
         <span className="row">
+          {editable && !editing && <button disabled={busy} onClick={() => setEditing(true)}>Edit…</button>}
           {exports.map((opt) => (
-            <button key={opt.ext} disabled={busy} onClick={() => exportWith(opt)}>{opt.label}</button>
+            <button key={opt.ext} disabled={busy || exporting} onClick={() => exportWith(opt)}>{opt.label}</button>
           ))}
         </span>
       </div>
       {spec?.description && <p className="muted">{spec.description}</p>}
-      {deck ? (
+      {editing && stepId ? (
+        <ArtifactEditor
+          kind={kind}
+          value={value}
+          dependents={dependents}
+          busy={busy}
+          onCancel={() => setEditing(false)}
+          onSave={(output) => { setEditing(false); onEdit?.(stepId, output); }}
+        />
+      ) : deck ? (
         <SlidesView deck={deck} />
       ) : audio ? (
         <AudioView audio={audio} />
@@ -139,7 +185,21 @@ function Artifact({ name, spec, value }: { name: string; spec: OutputSpec | unde
   );
 }
 
-export function ArtifactsPanel({ run, outputs }: { run: Run; outputs: Record<string, OutputSpec> }) {
+/** Audio is produced by a tool from a file; edit the script instead. */
+function kindIsEditable(kind: string | undefined, value: unknown) {
+  if (kind === "audio" || kind === "image" || kind === "video" || kind === "file" || kind === "files") return false;
+  return typeof value === "string" || (typeof value === "object" && value !== null);
+}
+
+interface PanelProps {
+  run: Run;
+  outputs: Record<string, OutputSpec>;
+  steps: StepInfo[];
+  busy: boolean;
+  onEdit?: (stepId: string, output: unknown) => void;
+}
+
+export function ArtifactsPanel({ run, outputs, steps, busy, onEdit }: PanelProps) {
   const entries = Object.entries(run.outputs ?? {});
   const [active, setActive] = useState(0);
   useEffect(() => setActive(0), [run.id]);
@@ -157,7 +217,7 @@ export function ArtifactsPanel({ run, outputs }: { run: Run; outputs: Record<str
           ))}
         </nav>
       )}
-      <Artifact key={`${run.id}:${name}`} name={name} spec={outputs[name]} value={value} />
+      <Artifact key={`${run.id}:${name}`} name={name} spec={outputs[name]} value={value} steps={steps} busy={busy} onEdit={onEdit} />
     </>
   );
 }

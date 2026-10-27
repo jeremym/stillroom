@@ -7,6 +7,9 @@ export const api = {
   listRecipes: () => invoke<RecipesResponse>("list_recipes"),
   runRecipe: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>, reuse = true) =>
     invoke<Run>("run_recipe", { args: { recipeId, inputs, pins, reuse } }),
+  /** Change propagation: rerun `runId` with `stepId`'s output replaced by the user's edit. */
+  rerunWithEdit: (runId: string, stepId: string, output: unknown, reuse = true) =>
+    invoke<Run>("rerun_with_edit", { args: { runId, stepId, output, reuse } }),
   clearStepCache: () => invoke<number>("clear_step_cache"),
   listRuns: (limit = 20) => invoke<RunSummary[]>("list_runs", { limit }),
   getRun: (id: string) => invoke<Run | null>("get_run", { id }),

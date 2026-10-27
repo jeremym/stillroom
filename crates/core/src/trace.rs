@@ -48,6 +48,9 @@ pub struct StepRecord {
     /// Set when the output was reused from an earlier run instead of recomputed.
     #[serde(default)]
     pub reused_from: Option<String>,
+    /// Set when the output is one the user edited (change propagation) rather than generated.
+    #[serde(default)]
+    pub edited: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +69,10 @@ pub struct Run {
     pub steps: Vec<StepRecord>,
     pub outputs: IndexMap<String, Value>,
     pub error: Option<String>,
+    /// Edits this run was asked to apply, by step id. An edit whose step record is not
+    /// marked `edited` was set aside because the step's inputs had changed.
+    #[serde(default)]
+    pub edits: std::collections::BTreeMap<String, crate::propagate::StepEdit>,
 }
 
 /// Lightweight row for run lists.

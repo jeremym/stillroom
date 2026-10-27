@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex};
 use stillroom_core::store::{ModelUsage, RunEstimate};
 use stillroom_core::tools::ToolRegistry;
 use stillroom_core::trace::RunSummary;
-use stillroom_core::{resolve_slots, Executor, RecipeInfo, RecipeLibrary, RecipeSource, Run, StepRecord, Store};
+use stillroom_core::{
+    edits_for_rerun, pins_from_run, resolve_slots, validate_edit, Executor, RecipeInfo, RecipeLibrary, RecipeSource, Run, StepRecord,
+    Store,
+};
 use stillroom_models::ollama::Ollama;
 use stillroom_models::{InstalledModel, ModelRouter, ProviderStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -137,6 +140,60 @@ async fn run_recipe(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -
     Ok(run)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditArgs {
+    /// The run whose artifact was edited.
+    run_id: String,
+    /// The step that produced the edited artifact.
+    step_id: String,
+    /// The edited output, which replaces that step's output.
+    output: Value,
+    #[serde(default = "default_true")]
+    reuse: bool,
+}
+
+/// Change propagation: rerun a finished run with one step's output replaced by the user's
+/// edit. Same inputs, same models. Steps downstream of the edit are regenerated; everything
+/// else is reused. Earlier edits on that run are carried forward while their inputs still hold.
+#[tauri::command]
+async fn rerun_with_edit(app: AppHandle, state: State<'_, AppState>, args: EditArgs) -> CmdResult<Run> {
+    let prior = state
+        .store
+        .lock()
+        .map_err(err)?
+        .get_run(&args.run_id)
+        .map_err(err)?
+        .ok_or_else(|| format!("run {} not found", args.run_id))?;
+    let bundle = state
+        .library
+        .find(&prior.recipe_id)
+        .ok_or_else(|| format!("recipe {} not found", prior.recipe_id))?;
+    validate_edit(&bundle.recipe, &args.step_id, &args.output).map_err(err)?;
+    let edits = edits_for_rerun(&prior, &args.step_id, args.output).map_err(err)?;
+
+    let router = state.router.clone();
+    let installed = router.list_all().await;
+    let resolutions = resolve_slots(&bundle.recipe, &installed, &pins_from_run(&prior)).map_err(err)?;
+
+    let observer = {
+        let app = app.clone();
+        Arc::new(move |rec: &StepRecord| {
+            let _ = app.emit("run:step", rec.clone());
+        })
+    };
+    let executor = Executor::new(state.tools.clone(), router).with_cache(state.store.clone());
+    let mut request = bundle.request(prior.inputs.clone(), resolutions);
+    request.artifact_base = Some(state.artifacts_dir.clone());
+    request.reuse = args.reuse;
+    request.edits = edits;
+    let run = executor.run(request, Some(observer)).await;
+
+    state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
+    let _ = app.emit("run:finished", run.summary());
+    Ok(run)
+}
+
 #[tauri::command]
 fn list_runs(state: State<'_, AppState>, limit: Option<usize>) -> CmdResult<Vec<RunSummary>> {
     state.store.lock().map_err(err)?.list_runs(limit.unwrap_or(50)).map_err(err)
@@ -225,6 +282,7 @@ pub fn run() {
             list_models,
             list_recipes,
             run_recipe,
+            rerun_with_edit,
             list_runs,
             get_run,
             usage,

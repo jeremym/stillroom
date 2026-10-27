@@ -133,3 +133,11 @@ h4 { font-size: 0.9rem; font-weight: 600; margin: 14px 0 6px; }
 .chapter h4 { margin: 0 0 4px; }
 .chapter p { margin: 0; line-height: 1.6; }
 .audio audio { margin: 6px 0; }
+
+.editor textarea, .editor input[type="text"] {
+  width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--fg); margin: 4px 0;
+}
+.editor textarea.mono { font-family: var(--mono); font-size: 0.85rem; }
+.editor .row.space input[type="text"] { flex: 1; min-width: 160px; }
+.edit-block { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }

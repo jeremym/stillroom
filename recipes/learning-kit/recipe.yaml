@@ -156,7 +156,7 @@ outputs:
     from: ${steps.script.output}
     type: json
     label: Narration script
-    description: What the voice says, chapter by chapter. Edit this, then rerun narration, once selective rerun lands.
+    description: What the voice says, chapter by chapter. Edit a chapter and only the narration is re-recorded.
   slides:
     from: ${steps.slides.output}
     type: slides
@@ -180,4 +180,4 @@ outputs:
     from: ${steps.extract.output}
     type: json
     label: Knowledge Spine
-    description: Concepts, claims, and how they relate. Every other artifact is a view of this.
+    description: Concepts, claims, and how they relate. Every other artifact is a view of this. Edit a concept and everything downstream is regenerated.

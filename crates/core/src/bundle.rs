@@ -61,6 +61,8 @@ pub struct StepInfo {
     pub name: Option<String>,
     pub slot: Option<String>,
     pub tool: Option<String>,
+    /// Step ids this step reads from.
+    pub depends_on: Vec<String>,
 }
 
 /// Join a bundle-relative path, refusing anything absolute or containing `..`.
@@ -134,6 +136,7 @@ impl RecipeBundle {
                         Step::Tool(t) => Some(t.tool.clone()),
                         _ => None,
                     },
+                    depends_on: crate::propagate::dependencies(s).into_iter().collect(),
                 })
                 .collect(),
             outputs: self.recipe.outputs.clone(),
@@ -141,7 +144,15 @@ impl RecipeBundle {
     }
 
     pub fn request(&self, inputs: IndexMap<String, Value>, resolutions: BTreeMap<String, Resolution>) -> RunRequest {
-        RunRequest { recipe: self.recipe.clone(), prompts: self.prompts.clone(), inputs, resolutions, artifact_base: None, reuse: true }
+        RunRequest {
+            recipe: self.recipe.clone(),
+            prompts: self.prompts.clone(),
+            inputs,
+            resolutions,
+            artifact_base: None,
+            reuse: true,
+            edits: BTreeMap::new(),
+        }
     }
 }
 
@@ -160,6 +171,7 @@ mod tests {
         assert!(b.prompts.contains_key("prompts/summarize.md"));
         let info = b.info();
         assert_eq!(info.steps[1].slot.as_deref(), Some("writer"));
+        assert_eq!(info.steps[1].depends_on, vec!["read".to_string()]);
     }
 
     #[test]

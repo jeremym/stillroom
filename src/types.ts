@@ -51,6 +51,8 @@ export interface StepRecord {
   output: unknown;
   error: string | null;
   reusedFrom?: string | null;
+  /** The output is one the user edited, not generated. */
+  edited?: boolean;
 }
 
 export interface Run {
@@ -65,6 +67,8 @@ export interface Run {
   steps: StepRecord[];
   outputs: Record<string, unknown>;
   error: string | null;
+  /** Edits this run was asked to apply, by step id. */
+  edits?: Record<string, { output: unknown; inputsFingerprint: string }>;
 }
 
 export interface RunSummary {
@@ -104,6 +108,7 @@ export interface StepInfo {
   name: string | null;
   slot: string | null;
   tool: string | null;
+  dependsOn: string[];
 }
 
 export interface OutputSpec {

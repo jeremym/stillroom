@@ -239,6 +239,7 @@ mod tests {
             steps: vec![],
             outputs: IndexMap::new(),
             error: None,
+            edits: Default::default(),
         };
         store.save_run(&run).unwrap();
         assert_eq!(store.get_run("r1").unwrap().unwrap().recipe_name, "X");

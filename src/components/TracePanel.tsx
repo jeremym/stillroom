@@ -15,11 +15,19 @@ export function TracePanel({ run, steps }: { run: Run | null; steps: StepRecord[
           ))}
         </p>
       )}
-      {run && run.steps.some((s) => s.reusedFrom) && (
+      {run && (run.steps.some((s) => s.reusedFrom) || run.steps.some((s) => s.edited)) && (
         <p className="muted">
+          {run.steps.some((s) => s.edited) && (
+            <>You edited {run.steps.filter((s) => s.edited).map((s) => s.name ?? s.stepId).join(", ")}. {run.steps.filter((s) => !s.edited && !s.reusedFrom).length} steps were regenerated. </>
+          )}
           {run.steps.filter((s) => s.reusedFrom).length} of {run.steps.length} steps were reused from earlier runs because nothing they depend on changed.
         </p>
       )}
+      {run && Object.keys(run.edits ?? {}).filter((id) => !run.steps.find((s) => s.stepId === id)?.edited).map((id) => (
+        <p className="muted" key={id}>
+          Your earlier edit to <strong>{run.steps.find((s) => s.stepId === id)?.name ?? id}</strong> was set aside because what feeds it changed, so it was generated fresh.
+        </p>
+      ))}
       <table>
         <thead>
           <tr><th>#</th><th>Step</th><th>Kind</th><th>Status</th><th>Model</th><th>Tokens in → out</th><th>Time</th></tr>
@@ -30,7 +38,7 @@ export function TracePanel({ run, steps }: { run: Run | null; steps: StepRecord[
               <td>{s.position + 1}</td>
               <td>{s.name ?? s.stepId}</td>
               <td className="muted">{s.kind}</td>
-              <td>{s.reusedFrom ? <span title={`from run ${s.reusedFrom}`}>reused</span> : s.status}</td>
+              <td>{s.edited ? "edited by you" : s.reusedFrom ? <span title={`from run ${s.reusedFrom}`}>reused</span> : s.status}</td>
               <td className="mono">{s.model ?? ""}</td>
               <td>{s.promptTokens != null ? `${s.promptTokens} → ${s.completionTokens ?? 0}` : ""}</td>
               <td>{fmtMs(s.durationMs)}</td>

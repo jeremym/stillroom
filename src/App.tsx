@@ -82,7 +82,27 @@ function App() {
     }
   }
 
+  async function editAndRerun(stepId: string, output: unknown) {
+    if (!run) return;
+    const priorId = run.id;
+    setRunning(true);
+    setError(null);
+    setRun(null);
+    setLiveSteps([]);
+    try {
+      setRun(await api.rerunWithEdit(priorId, stepId, output, true));
+      refreshRuns();
+    } catch (e) {
+      setError(String(e));
+      // Bring the run the user was editing back so they can retry.
+      openRun(priorId).catch(() => {});
+    } finally {
+      setRunning(false);
+    }
+  }
+
   const steps = run?.steps ?? liveSteps;
+  const editedNames = run?.steps.filter((s) => s.edited).map((s) => s.name ?? s.stepId) ?? [];
 
   return (
     <main className="shell">
@@ -94,10 +114,13 @@ function App() {
       {run && run.status === "succeeded" && (
         <p className="muted">
           Latest result · {run.recipeName} · {new Date(run.startedAt).toLocaleString()}
+          {editedNames.length > 0 && <> · includes your edit to <strong>{editedNames.join(", ")}</strong></>}
           <span className="muted"> · the recipe panel below starts a new run</span>
         </p>
       )}
-      {run && run.status === "succeeded" && <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} />}
+      {run && run.status === "succeeded" && (
+        <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} steps={runRecipe?.steps ?? []} busy={running} onEdit={editAndRerun} />
+      )}
       <TracePanel run={run} steps={steps} />
 
       {recipes && (

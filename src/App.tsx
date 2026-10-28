@@ -506,7 +506,7 @@ function App() {
 
           {place === "library" && (
             <>
-              <p className="tagline">Describe the goal. Get the result. Open the door. <span className="muted">Pick a recipe to start, or make one.</span></p>
+              <p className="tagline">Describe the goal. Get the result. See how it was made. <span className="muted">Pick a recipe to start, or make one.</span></p>
               <Zone title="Recipes" sub="reusable processes that produce a result" aside={<><span>{recipes?.recipes.length ?? 0} on the shelf</span><button className="quiet" onClick={() => { setCreateError(null); setPlace("new"); }}><Glyph name="plus" /> New recipe</button></>}>
                 <div className="cards recipe-grid">
                   {recipes?.recipes.map((r) => {
@@ -568,11 +568,11 @@ function App() {
                     {confirmStop
                       ? <><button className="danger" disabled={stopping} onClick={() => { setStopping(true); api.stopRun().catch((e) => setError(String(e))).finally(() => { setStopping(false); setConfirmStop(false); }); }}>{stopping ? "Stopping…" : "Really stop"}</button><button onClick={() => setConfirmStop(false)}>Keep running</button></>
                       : <button className="stop" onClick={() => setConfirmStop(true)}><Glyph name="stop" /> Stop</button>}
-                    <span className="muted">Stopping ends the run after the step in progress is abandoned. Nothing already written is undone.</span>
+                    <span className="muted">Stop ends the run now: the step in progress is abandoned, and nothing already written is undone.</span>
                   </div>
                 )}
                 {flowFor(runRecipe ?? recipe, false)}
-                <Zone title="As it happens" sub="the execution trace, typed as each step starts and finishes">
+                <Zone title="As it happens" sub="each step typed as it starts and finishes (the trace)">
                   <Teletype records={runIsHere || runningHere ? steps : []} live={runningHere} />
                   <details className="trace-table">
                     <summary className="muted">The same facts as a table</summary>
@@ -676,7 +676,7 @@ function App() {
 
         <footer>
           {status
-            ? `${status.schemaTitle} v0 · tools: ${status.tools.join(", ")} · ${status.runCount} runs`
+            ? `${status.runCount} runs · ${status.tools.length} tools · recipe format v0`
             : "…"}
         </footer>
       </main>

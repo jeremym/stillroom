@@ -423,7 +423,7 @@ export function SlotsEditor({ doc, onChange, onClose }: { doc: RecipeDoc; onChan
   return (
     <>
       <h3>Model slots <span className="muted">(which kinds of model the recipe needs)</span></h3>
-      <p className="muted">A step names a slot, not a model. At run time each slot is filled by a pinned, recommended, or capable installed model.</p>
+      <p className="muted">A step names a slot, not a model. When a run starts each slot is filled, in this order: your pin, your default, the recipe's recommendation, the best installed model.</p>
       {Object.entries(slots).map(([name, slot]) => (
         <div className="edit-block" key={name}>
           <div className="row space">
@@ -489,7 +489,7 @@ export function PermissionsEditor({ doc, onChange, onClose }: { doc: RecipeDoc; 
   return (
     <>
       <h3>Permissions <span className="muted">(what the recipe may touch)</span></h3>
-      <p className="muted">Every file and web tool checks these at run time. The run's own results folder is always writable. Models are governed by your provider settings, not here.</p>
+      <p className="muted">Every file and web tool checks these at run time. The run's own results folder is always writable. Which models may be used is set in Settings › Models, not here.</p>
       <EntryList title="May read" entries={read} label={(e) => fsEntryLabel(e, inputs)} choices={fsChoices(read)} custom="a folder path" onChange={(l) => setFs("read", l)} />
       <EntryList title="May write" entries={write} label={(e) => fsEntryLabel(e, inputs)} choices={fsChoices(write)} custom="a folder path" onChange={(l) => setFs("write", l)} />
       <EntryList title="May reach" entries={net} label={(e) => netEntryLabel(e, inputs)} choices={netChoices(net)} custom="a host, like example.com or *.example.com" onChange={setNet} empty="no network" />

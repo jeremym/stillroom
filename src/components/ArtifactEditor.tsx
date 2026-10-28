@@ -57,7 +57,7 @@ export function ArtifactEditor({ kind, value, dependents, busy, onSave, onCancel
   }
 
   const summary = dependents.length === 0
-    ? "Nothing depends on this, so only this artifact changes."
+    ? "Nothing depends on this, so only this result changes."
     : `Saving regenerates ${dependents.length} step${dependents.length === 1 ? "" : "s"}: ${dependents.join(", ")}. Everything else is reused.`;
 
   return (

@@ -30,13 +30,13 @@ pub enum ExecError {
     UnknownTool { step: String, tool: String },
     #[error("step {step}: tool failed: {message}")]
     Tool { step: String, message: String },
-    #[error("step {step}: slot {slot} was not resolved")]
+    #[error("step {step}: slot {slot} has no model")]
     UnresolvedSlot { step: String, slot: String },
     #[error("step {step}: prompt {path} not found in recipe bundle")]
     MissingPrompt { step: String, path: String },
     #[error("step {step}: model call failed: {message}")]
     Model { step: String, message: String },
-    #[error("step {step}: output was not valid JSON for its schema: {message}")]
+    #[error("step {step}: the answer did not fit the output shape (schema): {message}")]
     BadStructuredOutput { step: String, message: String },
     #[error("step {step}: {kind} steps are not supported yet")]
     Unsupported { step: String, kind: &'static str },
@@ -44,9 +44,9 @@ pub enum ExecError {
     Output { name: String, source: refs::RefError },
     #[error("step {step}: edited output does not match its schema: {message}")]
     BadEdit { step: String, message: String },
-    #[error("step {step}: `over` must resolve to an array, got {got}")]
+    #[error("step {step}: the thing to loop over is not a list (got {got})")]
     NotAnArray { step: String, got: String },
-    #[error("step {step}: agent used all {turns} turns without finishing")]
+    #[error("step {step}: the agent used all {turns} turns without finishing")]
     AgentTurns { step: String, turns: u32 },
     #[error("step {step}: tool {tool} cannot be given to an agent (it has no description)")]
     ToolNotDescribable { step: String, tool: String },

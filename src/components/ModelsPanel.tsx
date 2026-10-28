@@ -37,7 +37,7 @@ export function ModelsPanel({ models, onRefresh }: { models: ModelsResponse | nu
           <button onClick={onRefresh}>Refresh</button>
         </>
       ) : (
-        <p className="muted">Looking for local model providers…</p>
+        <p className="muted">Looking for Ollama…</p>
       )}
     </section>
   );

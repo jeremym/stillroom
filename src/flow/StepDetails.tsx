@@ -125,7 +125,7 @@ function StepBody({ path, recipe, run, records, models, pins, onPin }: Props & {
       {recs.length === 1 && <SingleRun r={recs[0]} kind={outputKind} />}
       {recs.length > 1 && <ManyRuns recs={recs} map={map} />}
       {loopReused && <p className="muted">Reused: the whole loop kept its earlier results, so this step did not run again for any {map?.itemName ?? "item"}.</p>}
-      {recs.length === 0 && !loopReused && run && <p className="muted">Did not run in this run.</p>}
+      {recs.length === 0 && !loopReused && run && <p className="muted">Did not run this time.</p>}
     </>
   );
 }

@@ -31,7 +31,7 @@ export function Welcome({ models, settings, recipes, onSave, onOpenSettings, onR
     return (
       <div className="boot">
         <Logo size={64} />
-        <p className="boot-line glow">Describe the goal. Get the result. Open the door.</p>
+        <p className="boot-line glow">Describe the goal. Get the result. See how it was made.</p>
         <p className="muted boot-sub">Stillroom runs recipes: reusable processes that turn your files into notes, slides, tables, briefs, and more, using models that run on this Mac. Three short screens and you will have made something.</p>
         <div className="row">
           <button className="primary" style={{ marginTop: 0 }} onClick={() => setStep(1)}><Glyph name="power" /> Begin</button>

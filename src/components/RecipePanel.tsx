@@ -7,9 +7,9 @@ import { Glyph } from "../brand";
 
 const VIA_WORD: Record<string, string> = {
   pinned: "your pin on this slot",
-  default: "your default for this capability (Settings › Models)",
+  default: "your default for this kind of step (Settings › Models)",
   recommended: "the recipe's recommendation",
-  capability: "the best installed model for the slot's preference",
+  capability: "the best installed model, by preference",
 };
 
 function stepLabel(s: StepInfo): string {

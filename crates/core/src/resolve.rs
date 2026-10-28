@@ -37,10 +37,29 @@ pub struct Resolution {
 pub enum ResolveError {
     #[error("slot {slot}: pinned model {model} is not installed")]
     PinnedNotInstalled { slot: String, model: String },
-    #[error("slot {slot}: pinned model {model} lacks required capability {capability:?}")]
+    #[error("slot {slot}: the pinned model {model} cannot do {}", capability_word(*.capability))]
     PinnedLacksCapability { slot: String, model: String, capability: Capability },
-    #[error("slot {slot}: no installed model satisfies {requires:?}")]
+    #[error("slot {slot}: no installed model can do {}", capability_words(.requires))]
     NoCandidate { slot: String, requires: Vec<Capability> },
+}
+
+/// The friendly word for a capability, for messages people read.
+pub fn capability_word(c: Capability) -> &'static str {
+    match c {
+        Capability::Text => "text",
+        Capability::StructuredOutput => "structured output",
+        Capability::ToolCalling => "tool calling",
+        Capability::Thinking => "thinking",
+        Capability::Vision => "vision",
+        Capability::Embedding => "embeddings",
+        Capability::TextToSpeech => "text to speech",
+        Capability::SpeechToText => "speech to text",
+        Capability::ImageGeneration => "image generation",
+    }
+}
+
+fn capability_words(cs: &[Capability]) -> String {
+    cs.iter().map(|c| capability_word(*c)).collect::<Vec<_>>().join(" and ")
 }
 
 fn satisfies(m: &InstalledModel, slot: &ModelSlot) -> Result<(), Capability> {

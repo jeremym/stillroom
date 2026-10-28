@@ -29,7 +29,7 @@ const CAPABILITIES: { id: string; label: string; what: string }[] = [
   { id: "tool_calling", label: "Tool calling", what: "can call the recipe's tools (agents)" },
   { id: "thinking", label: "Thinking", what: "reasons before answering" },
   { id: "vision", label: "Vision", what: "reads images" },
-  { id: "embedding", label: "Embedding", what: "turns text into vectors for search" },
+  { id: "embedding", label: "Embedding", what: "turns text into numbers for search (embeddings)" },
 ];
 
 function lookOf(s: Settings): Look {
@@ -210,11 +210,11 @@ export default function SettingsApp() {
 
             <Zone title="Pull a model" sub="download through Ollama">
               <PullModel enabled={Boolean(provider?.available)} onDone={refreshModels} />
-              <p className="muted">A small model (4 to 8 billion parameters) answers in seconds on most Macs; a large one is slower and sharper. Recipes pick by capability, so any model with the right abilities works.</p>
+              <p className="muted">A small model (4 to 8 billion parameters) answers in seconds on most Macs; a large one is slower and sharper. Recipes ask for abilities (capabilities), not model names, so any model that has them works.</p>
             </Zone>
 
             <Zone title="Defaults" sub="what a slot gets when it has no pin">
-              <p className="muted">Order, decided before a run: your pin on the slot › your default for the slot's capability › the recipe's recommendation › the best installed model by this preference.</p>
+              <p className="muted">Order, decided before a run: your pin on the slot › your default for that kind of step › the recipe's recommendation › the best installed model by this preference.</p>
               <div className="defaults">
                 <span className="label">Prefer</span>
                 <span className="segmented" role="group" aria-label="Preference">
@@ -226,7 +226,7 @@ export default function SettingsApp() {
                     onChange={(e) => saveModels({ timeoutSecs: Math.max(0, Number(e.target.value) || 0) })} aria-label="Seconds per model call" />
                   <span className="muted">seconds per model call · 0 means wait forever · a stuck call fails the step instead of hanging the run</span>
                 </span>
-                <span className="label" title="num_ctx when a recipe does not set one">Context length</span>
+                <span className="label" title="when a recipe does not set one (num_ctx)">Context length</span>
                 <span className="row" style={{ margin: 0 }}>
                   <select value={settings.models?.contextLength ?? ""} style={{ width: 200 }} onChange={(e) => saveModels({ contextLength: e.target.value ? Number(e.target.value) : undefined })} aria-label="Default context length">
                     <option value="">Model's own default</option>
@@ -234,7 +234,7 @@ export default function SettingsApp() {
                   </select>
                   <span className="muted">how much text a step can hold at once, when the recipe does not say · bigger is slower and uses more memory</span>
                 </span>
-                <span className="label" title="think when a recipe does not set it">Thinking</span>
+                <span className="label" title="when a recipe does not say (think)">Thinking</span>
                 <span className="row" style={{ margin: 0 }}>
                   <span className="segmented" role="group" aria-label="Thinking">
                     {([["", "Model's default"], ["off", "Off"], ["on", "On"]] as const).map(([v, label]) => (
@@ -374,7 +374,7 @@ export default function SettingsApp() {
 
         {section === "about" && (
           <Zone title="About" sub="Stillroom 0.1, pre-alpha">
-            <p>Describe the goal. Get the result. Open the door.</p>
+            <p>Describe the goal. Get the result. See how it was made.</p>
             <p className="muted">{status ? `${status.schemaTitle} v0 · ${status.runCount} runs · tools: ${status.tools.join(", ")}` : "…"}</p>
             <p className="muted">Keyboard: ⌘0 Library · ⌘1 Recipe · ⌘2 Set up · ⌘3 Running · ⌘4 Results · ⌘5 Recipe card · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ Help</p>
             <button onClick={() => save({ firstRun: true })}>{settings.firstRun ? "The welcome will show on next launch" : "Show the welcome on next launch"}</button>

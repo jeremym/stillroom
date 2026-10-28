@@ -160,6 +160,19 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     };
   }, []);
 
+  // Escape closes whatever is open on the side: the inspector, a wire prompt, a connection, a dialog.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+      if (wire) setWire(null);
+      else if (selectedEdge) setSelectedEdge(null);
+      else if (panel !== "node") setPanel("node");
+      else if (selectedId) setSelectedId(null);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [wire, selectedEdge, panel, selectedId]);
+
   // Leaving the recipe leaves the editor too; a recipe just made opens already in edit mode.
   useEffect(() => {
     setEdit(null); setSelectedId(null); setSelectedEdge(null); setWire(null); setPanel("node");

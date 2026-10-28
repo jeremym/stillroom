@@ -238,6 +238,17 @@ function App() {
     const un = listen<string>("menu", (ev) => onMenu(ev.payload));
     return () => { un.then((f) => f()); };
   }, [onMenu]);
+  // Escape closes the Help sheet and an open stop confirmation.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setHelpOpen(false);
+      setConfirmStop(false);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
+
   // Outside Tauri (plain browser dev) the menu does not exist; a keyboard fallback keeps the shortcuts.
   useEffect(() => {
     if ("__TAURI_INTERNALS__" in window) return;

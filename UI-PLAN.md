@@ -397,3 +397,20 @@ Left for later, by agreement: map concurrency and the schema-only permissions an
 - `App.css` lost the rules the kit now owns (`.shell`, the settings rows, the checkbox row, the stop button hover, the hint line, the teletype colours, the small icon grid) and gained the one Stillroom-only rule the package dropped.
 - The kit's own test moved with it: Stillroom runs 25 frontend tests; the kit runs 33.
 - Checks: `tsc`, `pnpm test`, `pnpm build`; screenshots compared with the phase 5 set.
+
+### Phase 6: wording pass · 2026-10-27
+
+- The tagline follows the rename: "Describe the goal. Get the result. See how it was made." (Library, the welcome, About).
+- Friendly word first, jargon in parentheses: context length "(num_ctx)", thinking "(think)", "abilities (capabilities)", "numbers for search (embeddings)"; "your default for this kind of step" instead of "for this capability"; the slot explanation in the editor states the real order (pin, default, recommendation, best installed).
+- Running: the Stop explanation and the teletype subtitle read as sentences; the footer is "N runs · N tools · recipe format v0".
+- Rust messages people see: "no installed model can do structured output" instead of a Debug list; "slot X has no model"; "the answer did not fit the output shape (schema)"; "nothing answered at URL".
+- Checks: `cargo test` (52), `pnpm test` (25), `tsc`, `pnpm build`. Not re-screenshotted: text only.
+
+**Still open after the six phases** (for Jeremy's usability pass):
+
+- Permissions backlog above (true Files and Folders status, Local Network on macOS 15+, folders in the welcome, a LAN Ollama test, notifications for watches).
+- Audit items deferred by agreement: map concurrency and schema-only permissions and budget (5), watch settle time and frozen inputs (7), movable folders and retention (8).
+- A pull through Settings › Models was never exercised on screen; the access key path was tested only against a local Ollama.
+- "From a goal" in New recipe stays disabled until the planner. Cloud providers are explained but none exists.
+- A review with zero items on a first run still pauses for a Continue click (engine wart from before the redesign).
+- Mermaid and pptxgenjs still load with the main bundle (about 2 MB).

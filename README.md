@@ -53,7 +53,11 @@ shasum -a 256 Stillroom-X.Y.Z.zip             # matches the release .sha256
 codesign -d -r- /Applications/Stillroom.app   # check the leaf hash below
 ```
 
-A genuine build prints `certificate leaf = H"<leaf hash>"` (recorded here once the release certificate exists).
+A genuine build prints:
+
+```
+certificate leaf = H"32ace20bdc543323908a451fea68106e9225a6b9"
+```
 
 ### Releasing (maintainer)
 

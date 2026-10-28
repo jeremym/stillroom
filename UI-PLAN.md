@@ -377,3 +377,10 @@ Left for later, by agreement: map concurrency and the schema-only permissions an
 - Verified: `cargo test --workspace` (52), `pnpm test` (27, one new for lanes and marks), `tsc`, `pnpm build`; by eye on Summarize a File's card and the Permissions section.
 
 **Permissions backlog** (not done): a true read of Files and Folders status without probing (macOS gives no public API; `tccutil` only resets); Local Network status on macOS 15+; a first-run mention of folders in the welcome; a test of a remote Ollama on the LAN to confirm the Local Network prompt; notification permission when background watches arrive.
+
+### Phase 5: Recipe card · slice 2 built 2026-10-27, visual check pending
+
+- **Inspector** (click a step, input, or result): a glyph in the heading, `· local` after an AI step's kind, and a facts grid (Program, May call, Only if, Reads with input glyphs, Feeds with result glyphs) instead of prose lines. Output and result previews render on paper.
+- **Editor**: step, input, and result forms carry the same glyph headings; **Save recipe** has the icon picker, so a saved copy gets its own card icon; alternating ground on the slot blocks; the danger block separated by a rule.
+- **Settings › Permissions**: "Nothing here is required to start" is its own notice line in the opposite colour (amber on green, green on amber), per Jeremy.
+- Verified: `tsc`, `pnpm test` (27), `pnpm build`. Not by eye: Jeremy was in the browser; screenshots when the screen is free.

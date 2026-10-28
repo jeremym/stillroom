@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
-import { Empty, Glyph, Zone, inputGlyph, isGlyphName, outputGlyph, stepGlyph } from "../kit";
+import { Glyph, inputGlyph, isGlyphName, outputGlyph, stepGlyph } from "../brand";
+import { Empty, Zone } from "@overtone-foundry/app-kit";
 import { WatchPanel } from "./WatchPanel";
 import type { InstalledModel, RecipeInfo, RunSummary, WatchView } from "../types";
 

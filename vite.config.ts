@@ -8,6 +8,10 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react()],
 
+  // The app kit is linked from a sibling folder that has its own node_modules; make it share
+  // this app's React and Lucide so hooks run against one React.
+  resolve: { dedupe: ["react", "react-dom", "react/jsx-runtime", "lucide-react"] },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
@@ -28,5 +32,7 @@ export default defineConfig(() => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    // The linked app kit keeps its fonts in its own node_modules; let the dev server serve them.
+    fs: { allow: [".", "../overtone-foundry-app-kit"] },
   },
 }));

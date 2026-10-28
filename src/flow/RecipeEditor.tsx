@@ -7,7 +7,7 @@ import {
 import { KIND_EXPLAINED, KIND_LABEL } from "./graph";
 import { fsEntryLabel, netEntryLabel } from "../permissions";
 import type { Capability, InputSpec, ModelSlot, OutputSpec, RecipeDoc, RecipeSource, StepDoc, ToolInfo } from "../types";
-import { Glyph, RECIPE_GLYPHS, inputGlyph, isGlyphName, outputGlyph, stepGlyph, type GlyphName } from "../kit";
+import { Glyph, RECIPE_GLYPHS, inputGlyph, isGlyphName, outputGlyph, stepGlyph, type GlyphName } from "../brand";
 
 /* The forms behind Flow View's edit mode. Every change goes up as a whole new document (and,
    for prompts and schemas, a new files map); nothing is saved until the save dialog. */

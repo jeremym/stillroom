@@ -14,6 +14,7 @@ Goal-first, local-first AI workflow studio. Tauri 2 + React + TypeScript shell o
 
 ## Working here
 
+- The look comes from `@overtone-foundry/app-kit` (linked from `../overtone-foundry-app-kit`; run `pnpm build` there after changing it). Stillroom-only marks and recipe glyph helpers live in `src/brand.tsx`; app-specific CSS in `src/App.css`. Do not re-create a kit inside this repo.
 - Source of truth for validity is the Rust side: `schemas/recipe.schema.json` plus `core::draft::Draft::check`. Do not add a second validator in TypeScript.
 - Tools declare `cacheable` (output follows from inputs) and `has_side_effects` (acts on the world). A continued run re-observes but never repeats an action; keep that true when adding tools.
 - Before committing: `cargo test --workspace`, `pnpm test`, `pnpm exec tsc --noEmit`, `pnpm build`. A milestone also needs a live run against Ollama and a screenshot of the app. Grep for `TEMP` to catch leftover hooks.

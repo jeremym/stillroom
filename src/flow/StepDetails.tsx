@@ -1,5 +1,6 @@
 import { fmtMs } from "../api";
-import { Glyph, Help, fmtElapsed, inputGlyph, outputGlyph, stepGlyph, useElapsed } from "../kit";
+import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../brand";
+import { Help, fmtElapsed, useElapsed } from "@overtone-foundry/app-kit";
 import { pickViewer } from "../viewers";
 import { KIND_EXPLAINED, KIND_LABEL, STATUS_WORD, describeRef, findStep, parentOf, recordStatus, recordsFor, sourceStepOf, summarize } from "./graph";
 import type { InstalledModel, RecipeInfo, Run, StepInfo, StepRecord } from "../types";

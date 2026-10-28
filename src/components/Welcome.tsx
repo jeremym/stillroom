@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Glyph, Logo, Pill, Zone, isGlyphName } from "../kit";
+import { Glyph, Logo, isGlyphName } from "../brand";
+import { Pill, Zone } from "@overtone-foundry/app-kit";
 import { PullModel } from "./PullModel";
 import type { ModelsResponse, RecipeInfo, Settings } from "../types";
 

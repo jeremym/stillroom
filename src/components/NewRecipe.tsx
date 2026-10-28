@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Glyph, RECIPE_GLYPHS, Zone, type GlyphName } from "../kit";
+import { Glyph, RECIPE_GLYPHS, type GlyphName } from "../brand";
+import { Zone } from "@overtone-foundry/app-kit";
 import { slugify, uniqueId } from "../recipes/new";
 import type { RecipeInfo } from "../types";
 

@@ -14,10 +14,8 @@ import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
 import { Welcome } from "./components/Welcome";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
-import {
-  Dial, Empty, Glyph, Logo, Pill, Rail, Zone, applyLook, fmtElapsed, inputGlyph, isGlyphName, loadLook, useElapsed,
-  type DialPlace, type Look,
-} from "./kit";
+import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
+import { Dial, Empty, Pill, Rail, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
 import "./App.css";
 
 // React Flow is heavy; load it in its own chunk so the rest of the app paints first.

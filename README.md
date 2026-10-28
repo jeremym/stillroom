@@ -28,7 +28,7 @@ samples/        Fixtures for Inbox Triage (copy them before running against them
 crates/core     Recipe types, executor, tools, step cache, propagation, draft editing, folder watcher, SQLite store
 crates/models   Provider trait, Ollama native adapter, router; live test harness under tests/
 src-tauri/      Tauri 2 desktop shell and commands (Rust)
-src/            React + TypeScript frontend; src/flow is the graph view and editor
+src/            React + TypeScript frontend; src/flow is the graph view and editor; the look comes from @overtone-foundry/app-kit (../overtone-foundry-app-kit, linked), src/brand.tsx holds Stillroom's own marks
 ```
 
 User recipes live in the app data folder under `recipes/` and shadow a built-in with the same id. Runs, the step cache, and watches live in `stillroom.db` next to them.

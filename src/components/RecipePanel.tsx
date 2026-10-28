@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, fmtMs, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
 import type { InputSpec, InstalledModel, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
-import { Glyph } from "../kit";
+import { Glyph } from "../brand";
 
 const VIA_WORD: Record<string, string> = {
   pinned: "your pin on this slot",

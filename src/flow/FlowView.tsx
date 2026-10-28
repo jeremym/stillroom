@@ -5,7 +5,8 @@ import { api } from "../api";
 import { buildGraph, type FlowNode } from "./graph";
 import { StepDetails } from "./StepDetails";
 import { addStep, connect, disconnect, docToInfo, mutate, removeStep, stepPathOf } from "./draft";
-import { Glyph, fmtElapsed, inputGlyph, outputGlyph, stepGlyph, useElapsed } from "../kit";
+import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../brand";
+import { fmtElapsed, useElapsed } from "@overtone-foundry/app-kit";
 import {
   AddStepSelect, ConnectionPanel, InputForm, OutputForm, PermissionsEditor, SaveDialog, SlotsEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
 } from "./RecipeEditor";

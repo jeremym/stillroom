@@ -1,7 +1,6 @@
-/* Stillroom on the P1 kit. The kit (src/kit/kit.css) owns tokens and components; this file owns
+/* Stillroom on the app kit (@overtone-foundry/app-kit owns tokens and components); this file owns
    the shell and the app's own pieces: flow view, artifact viewers, review, editor. */
 
-.shell { max-width: var(--max); margin: 0 auto; padding: 12px 24px 48px; }
 .place { margin-top: 18px; }
 .recipe-title { display: inline-flex; align-items: center; gap: 10px; }
 .recipe-title .glyph { color: var(--phos); }
@@ -28,12 +27,6 @@ footer { margin-top: 24px; color: var(--phos-faint); font-size: var(--size-label
 .recipe-grid .card .glyph { color: var(--phos); }
 .needs { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 
-/* Settings */
-.settings-row { display: grid; grid-template-columns: 180px 1fr; gap: 10px 16px; align-items: center; margin: 10px 0; }
-.settings-row .label { font-family: var(--display); letter-spacing: 0.1em; text-transform: uppercase; font-size: var(--size-label); color: var(--phos-dim); }
-.settings-row > :not(.label) { justify-self: start; }
-label.row:has(> input[type="checkbox"]) { flex-wrap: nowrap; align-items: flex-start; }
-label.row > input[type="checkbox"] { margin-top: 5px; flex: none; }
 
 /* History and watches */
 .history, .watches, .providers { list-style: none; padding: 0; margin: 0; }
@@ -196,14 +189,8 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .flow-details .row input[type="text"] { flex: 1; min-width: 90px; margin: 0; }
 
 .stop-row { margin: 0 0 var(--gap); }
-button.stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); box-shadow: 0 0 10px var(--red-halo); }
 .slot-pick { margin: 6px 0 0; font-size: var(--size-small); }
 .slot-pick .tag { margin-left: 4px; }
-.tty .mark { color: var(--phos-dim); }
-.tty .bright { color: var(--phos); text-shadow: 0 0 8px var(--halo); }
-.tty .amber { color: var(--amber); }
-.tty .red { color: var(--red); }
-.tty .dim { color: var(--phos-dim); }
 .trace-table { margin-top: 10px; }
 .trace-table summary { cursor: pointer; font-size: var(--size-small); }
 .trace-table .panel { margin-top: 10px; }
@@ -214,7 +201,6 @@ button.stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); 
 .boot-sub { max-width: 640px; margin: 0; }
 @keyframes p1-boot { from { opacity: 0; filter: brightness(2); } to { opacity: 1; filter: none; } }
 @media (prefers-reduced-motion: reduce) { .boot { animation: none; } }
-.hint-line { color: var(--phos); border-left: 2px solid var(--phos); padding-left: 12px; }
 
 /* Recipe card: lanes and marks */
 .flow-canvas { position: relative; }
@@ -238,6 +224,4 @@ button.stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); 
 .flow-details .flow-preview.paper { padding: 12px 14px; }
 .flow-details .field.danger { border-top: 1px solid var(--bezel); margin-top: 16px; padding-top: 10px; }
 .flow-details .edit-block:nth-of-type(even) { background: var(--ground-3); }
-.icon-grid.small { grid-template-columns: repeat(auto-fill, 38px); gap: 6px; }
-.icon-grid.small button { width: 38px; height: 38px; }
-.icon-grid.small button .glyph { width: 20px; height: 20px; }
+.perms li.dim strong { color: var(--phos-dim); font-weight: 400; }

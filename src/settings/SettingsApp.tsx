@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { WatchPanel } from "../components/WatchPanel";
-import { Glyph, Logo, Zone, applyLook, loadLook, type GlyphName, type Look } from "../kit";
+import { Glyph, Logo, type GlyphName } from "../brand";
+import { Zone, applyLook, loadLook, type Look } from "@overtone-foundry/app-kit";
 import { PullModel } from "../components/PullModel";
 import type { ModelsResponse, PermissionEntry, RecipesResponse, RuntimeStatus, Settings, WatchView } from "../types";
 

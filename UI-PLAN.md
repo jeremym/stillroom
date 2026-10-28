@@ -389,3 +389,11 @@ Left for later, by agreement: map concurrency and the schema-only permissions an
 
 - Escape closes the inspector, wire prompt, connection panel, dialogs, Help, and a pending Stop.
 - **Extraction moves to its own project.** Jeremy's call: the kit is packaged by a fresh session in `~/GitProjects/personal/overtone-foundry-app-kit` (brief in its `PLAN.md`, rules in its `CLAUDE.md`, the current kit and screenshots under `reference/`). When that package exists, Stillroom adopts it by replacing `src/kit` (the package's `docs/MIGRATING-STILLROOM.md` will say how). Until then `src/kit` is frozen except for bug fixes, so the two do not drift.
+
+### Phase 6: the kit adopted · 2026-10-27
+
+- Stillroom now depends on **`@overtone-foundry/app-kit`** (`link:../overtone-foundry-app-kit` while it settles). `src/kit/` is gone. `src/brand.tsx` holds what is Stillroom's own: the alembic and llama marks, `Logo` passing the alembic, `RECIPE_GLYPHS`, and the input, step, and result glyph helpers. Every `"./kit"` import became two: brand names from `brand.tsx`, everything else from the package.
+- `main.tsx` imports the package CSS; the kit bundles the fonts, so the five `@fontsource` imports went.
+- `App.css` lost the rules the kit now owns (`.shell`, the settings rows, the checkbox row, the stop button hover, the hint line, the teletype colours, the small icon grid) and gained the one Stillroom-only rule the package dropped.
+- The kit's own test moved with it: Stillroom runs 25 frontend tests; the kit runs 33.
+- Checks: `tsc`, `pnpm test`, `pnpm build`; screenshots compared with the phase 5 set.

@@ -7,6 +7,7 @@ import {
 import { KIND_EXPLAINED, KIND_LABEL } from "./graph";
 import { fsEntryLabel, netEntryLabel } from "../permissions";
 import type { Capability, InputSpec, ModelSlot, OutputSpec, RecipeDoc, RecipeSource, StepDoc, ToolInfo } from "../types";
+import { Glyph, RECIPE_GLYPHS, inputGlyph, isGlyphName, outputGlyph, stepGlyph, type GlyphName } from "../kit";
 
 /* The forms behind Flow View's edit mode. Every change goes up as a whole new document (and,
    for prompts and schemas, a new files map); nothing is saved until the save dialog. */
@@ -119,7 +120,7 @@ export function StepForm({ doc, files, path, tools, onChange, onRemove, onSelect
 
   return (
     <>
-      <h3>{s.name ?? s.id} <span className="muted">({KIND_LABEL[s.kind] ?? s.kind})</span></h3>
+      <h3 className="inspect-head"><Glyph name={stepGlyph(s.kind)} /> {s.name ?? s.id} <span className="muted">({KIND_LABEL[s.kind] ?? s.kind})</span></h3>
       <p className="muted">{KIND_EXPLAINED[s.kind]}</p>
 
       <div className="field two">
@@ -342,7 +343,7 @@ export function InputForm({ doc, name, onChange, onRemove, onSelect }: { doc: Re
   const isFile = ["file", "files"].includes(spec.type);
   return (
     <>
-      <h3>{spec.label ?? name} <span className="muted">(input)</span></h3>
+      <h3 className="inspect-head"><Glyph name={inputGlyph(spec.type)} /> {spec.label ?? name} <span className="muted">(input)</span></h3>
       <div className="field two">
         <label><strong>Label</strong><input type="text" value={spec.label ?? ""} onChange={(e) => set({ label: e.target.value || undefined })} /></label>
         <label><strong>Name</strong> <span className="muted">(in references)</span>
@@ -385,7 +386,7 @@ export function OutputForm({ doc, name, onChange, onRemove, onSelect }: { doc: R
   }));
   return (
     <>
-      <h3>{spec.label ?? name} <span className="muted">(result)</span></h3>
+      <h3 className="inspect-head"><Glyph name={outputGlyph(spec.type)} /> {spec.label ?? name} <span className="muted">(result)</span></h3>
       <div className="field two">
         <label><strong>Label</strong><input type="text" value={spec.label ?? ""} onChange={(e) => set({ label: e.target.value || undefined })} /></label>
         <label><strong>Name</strong>
@@ -588,12 +589,13 @@ export function ConnectionPanel({ doc, edge, labelOf, onDisconnect, onClose }: {
 
 export function SaveDialog({ doc, source, sourceId, busy, error, onSave, onCancel }: {
   doc: RecipeDoc; source: RecipeSource; sourceId: string; busy: boolean; error: string | null;
-  onSave: (id: string, name: string, description: string) => void; onCancel: () => void;
+  onSave: (id: string, name: string, description: string, icon: string | null) => void; onCancel: () => void;
 }) {
   const builtin = source === "builtin";
   const [id, setId] = useState(builtin ? `${doc.id}-custom` : doc.id);
   const [name, setName] = useState(builtin ? `${doc.name} (custom)` : doc.name);
   const [description, setDescription] = useState(doc.description ?? "");
+  const [icon, setIcon] = useState<GlyphName>(isGlyphName(doc.icon) ? doc.icon : "recipe");
   const validId = /^[a-z0-9][a-z0-9-]*$/.test(id);
   const replaces = !builtin && id === sourceId;
   const shadows = builtin && id === sourceId;
@@ -603,12 +605,20 @@ export function SaveDialog({ doc, source, sourceId, busy, error, onSave, onCance
       <div className="field"><label><strong>Name</strong><input type="text" value={name} onChange={(e) => setName(e.target.value)} /></label></div>
       <div className="field"><label><strong>Id</strong> <span className="muted">· folder name, lowercase letters, digits, dashes</span><input type="text" className="mono" value={id} onChange={(e) => setId(e.target.value)} /></label></div>
       <div className="field"><label><strong>Description</strong><textarea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} /></label></div>
+      <div className="field">
+        <label><strong>Icon</strong></label>
+        <div className="icon-grid small" role="radiogroup" aria-label="Icon">
+          {RECIPE_GLYPHS.map((g) => (
+            <button key={g} type="button" role="radio" aria-checked={icon === g} aria-pressed={icon === g} title={g} onClick={() => setIcon(g)}><Glyph name={g} /></button>
+          ))}
+        </div>
+      </div>
       <p className="muted">
         {replaces ? "Replaces your saved copy of this recipe." : shadows ? "Keeps the same id as the built-in recipe, so your copy takes its place in the list. The built-in stays on disk." : "Saved as a new recipe in your recipes folder."}
       </p>
       {error && <pre className="error">{error}</pre>}
       <div className="row">
-        <button className="primary" style={{ marginTop: 0 }} disabled={busy || !validId || !name.trim()} onClick={() => onSave(id, name.trim(), description.trim())}>{busy ? "Saving…" : "Save"}</button>
+        <button className="primary" style={{ marginTop: 0 }} disabled={busy || !validId || !name.trim()} onClick={() => onSave(id, name.trim(), description.trim(), icon)}>{busy ? "Saving…" : "Save"}</button>
         <button disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </>

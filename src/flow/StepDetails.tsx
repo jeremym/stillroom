@@ -1,5 +1,5 @@
 import { fmtMs } from "../api";
-import { Help, fmtElapsed, useElapsed } from "../kit";
+import { Glyph, Help, fmtElapsed, inputGlyph, outputGlyph, stepGlyph, useElapsed } from "../kit";
 import { pickViewer } from "../viewers";
 import { KIND_EXPLAINED, KIND_LABEL, STATUS_WORD, describeRef, findStep, parentOf, recordStatus, recordsFor, sourceStepOf, summarize } from "./graph";
 import type { InstalledModel, RecipeInfo, Run, StepInfo, StepRecord } from "../types";
@@ -37,7 +37,7 @@ function InputDetails({ name, recipe, run }: Props & { name: string }) {
   const value = run?.inputs?.[name];
   return (
     <>
-      <h3>{spec.label ?? name} <span className="muted">(input)</span></h3>
+      <h3 className="inspect-head"><Glyph name={inputGlyph(spec.type)} /> {spec.label ?? name} <span className="muted">(input)</span></h3>
       {spec.description && <p>{spec.description}</p>}
       <p className="muted">Type: {spec.type}{spec.required === false ? " · optional" : ""}</p>
       {run && <p><strong>This run:</strong> <span className="mono">{value == null || value === "" ? "not given" : typeof value === "string" ? value : JSON.stringify(value)}</span></p>}
@@ -53,13 +53,13 @@ function OutputDetails({ name, recipe, run }: Props & { name: string }) {
   const value = run?.outputs?.[name];
   return (
     <>
-      <h3>{spec.label ?? name} <span className="muted">(result · {spec.type})</span></h3>
+      <h3 className="inspect-head"><Glyph name={outputGlyph(spec.type)} /> {spec.label ?? name} <span className="muted">(result · {spec.type})</span></h3>
       {spec.description && <p>{spec.description}</p>}
       <p className="muted">Comes from {describeRef(spec.from, recipe)}{src ? "" : ""}.</p>
       {value != null ? (
         <details className="flow-output">
           <summary>Preview</summary>
-          <div className="flow-preview">{pickViewer({ kind: spec.type, value })}</div>
+          <div className="flow-preview paper">{pickViewer({ kind: spec.type, value })}</div>
         </details>
       ) : (
         <p className="muted">{run ? "Not produced in this run." : "Run the recipe to produce it."}</p>
@@ -88,12 +88,20 @@ function StepBody({ path, recipe, run, records, models, pins, onPin }: Props & {
 
   return (
     <>
-      <h3>{step.name ?? step.id} <span className="muted">({KIND_LABEL[step.kind] ?? step.kind})</span></h3>
+      <h3 className="inspect-head"><Glyph name={stepGlyph(step.kind)} /> {step.name ?? step.id} <span className="muted">({KIND_LABEL[step.kind] ?? step.kind}{slot ? " · local" : ""})</span></h3>
       <p>{KIND_EXPLAINED[step.kind] ?? ""}{map ? ` Runs once for each ${map.itemName ?? "item"} in “${map.name ?? map.id}”.` : ""}</p>
 
-      {step.tool && <p><strong>Tool:</strong> <span className="mono">{step.tool}</span></p>}
-      {step.kind === "agent" && <p><strong>May call:</strong> <span className="mono">{step.allowedTools?.join(", ") || "no tools"}</span></p>}
-      {step.when && <p><strong>Runs only if</strong> {describeRef(step.when, recipe, map?.itemName ?? undefined)} is set.</p>}
+      <div className="facts inspect-facts">
+        {step.tool && <><span className="label">Program</span><span className="mono">{step.tool}</span></>}
+        {step.kind === "agent" && <><span className="label">May call</span><span className="mono">{step.allowedTools?.join(", ") || "no tools"}</span></>}
+        {step.when && <><span className="label">Only if</span><span>{describeRef(step.when, recipe, map?.itemName ?? undefined)} is set</span></>}
+        <span className="label">Reads</span>
+        <span>{readsInputs.length + readsSteps.length === 0
+          ? <span className="muted">{map ? `each ${map.itemName ?? "item"}` : "nothing"}</span>
+          : <>{readsInputs.map((r) => <span key={`i:${r}`} className="fact"><Glyph name="in" /> {r}</span>)}{readsSteps.map((r) => <span key={`s:${r}`} className="fact">{r}</span>)}</>}</span>
+        <span className="label">Feeds</span>
+        <span>{[...feeds, ...feedsOutputs].length ? <>{feeds.map((f) => <span key={`f:${f}`} className="fact">{f}</span>)}{feedsOutputs.map((f) => <span key={`o:${f}`} className="fact"><Glyph name={outputGlyph(outputKind)} /> {f}</span>)}</> : <span className="muted">nothing else</span>}</span>
+      </div>
 
       {slot && step.slot && (
         <div className="field">
@@ -112,10 +120,6 @@ function StepBody({ path, recipe, run, records, models, pins, onPin }: Props & {
         </div>
       )}
 
-      <p className="muted">
-        Reads: {[...readsInputs, ...readsSteps].join(", ") || (map ? `each ${map.itemName ?? "item"}` : "nothing")}
-        <br />Feeds: {[...feeds, ...feedsOutputs].join(", ") || "nothing else"}
-      </p>
 
       {recs.length === 1 && <SingleRun r={recs[0]} kind={outputKind} />}
       {recs.length > 1 && <ManyRuns recs={recs} map={map} />}
@@ -166,7 +170,7 @@ function SingleRun({ r, kind }: { r: StepRecord; kind: string }) {
       {r.output != null && (
         <details className="flow-output">
           <summary>Output</summary>
-          <div className="flow-preview">{pickViewer({ kind, value: r.output })}</div>
+          <div className="flow-preview paper">{pickViewer({ kind, value: r.output })}</div>
         </details>
       )}
     </div>

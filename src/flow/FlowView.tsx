@@ -212,7 +212,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     select(null);
   }
 
-  async function save(id: string, name: string, description: string) {
+  async function save(id: string, name: string, description: string, icon: string | null) {
     if (!edit) return;
     setSaving(true);
     setSaveError(null);
@@ -221,6 +221,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
         d.id = id;
         d.name = name;
         if (description) d.description = description; else delete d.description;
+        if (icon) d.icon = icon; else delete d.icon;
         // A saved copy is yours, whatever it was copied from.
         if (Array.isArray(d.tags)) d.tags = (d.tags as string[]).filter((t) => t !== "built-in");
         if (edit.source === "builtin" && id !== edit.sourceId) delete d.author;

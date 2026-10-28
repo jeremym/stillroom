@@ -271,3 +271,7 @@ button.pill:hover:not(:disabled) { color: var(--phos); border-color: var(--phos-
 .perm-act { flex: none; }
 .perm-act button { white-space: nowrap; }
 .perms li.dim strong { color: var(--phos-dim); font-weight: 400; }
+
+/* A notice: one line the eye cannot miss, in the opposite colour (amber on green, green on amber). */
+.notice { display: flex; align-items: center; gap: 10px; margin: 12px 0; padding: 12px 14px; background: var(--amber-fill); border: 1px solid var(--amber); color: var(--amber); font-family: var(--display); font-size: calc(var(--size-display) * 0.9); letter-spacing: 0.08em; text-transform: uppercase; text-shadow: 0 0 0 currentColor, 0 0 10px var(--amber-halo); }
+.notice .glyph { width: 1.2em; height: 1.2em; flex: none; }

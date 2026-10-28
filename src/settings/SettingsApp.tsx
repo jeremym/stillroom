@@ -320,7 +320,8 @@ export default function SettingsApp() {
         {section === "permissions" && (
           <>
             <Zone title="What macOS may ask for" sub="and where each one stands" aside={<button className="quiet" onClick={() => loadPerms(true)}>Check the folders now</button>}>
-              <p className="muted">Stillroom asks for very little. Folders are granted by macOS the first time a recipe or a watch touches them, with a system prompt. Nothing here is required to start.</p>
+              <p className="muted">Stillroom asks for very little. Folders are granted by macOS the first time a recipe or a watch touches them, with a system prompt.</p>
+              <p className="notice" role="note"><Glyph name="yesno" /> Nothing here is required to start. You can close this and run a recipe right now.</p>
               {!perms ? <p className="muted">…</p> : (
                 <ul className="rows perms">
                   {perms.map((p) => (

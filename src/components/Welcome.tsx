@@ -46,7 +46,7 @@ export function Welcome({ models, settings, recipes, onSave, onOpenSettings, onR
       <>
         <Zone title="Where will the thinking happen?" sub="step 1 of 3" className="accent"
           aside={provider && <Pill ok={provider.available}>{provider.label} · {provider.available ? `${installed.length} model${installed.length === 1 ? "" : "s"}` : "not running"}</Pill>}>
-          <p>Stillroom asks <strong>Ollama</strong>, a free program that runs AI models on your own computer. Nothing you give a recipe leaves this Mac.</p>
+          <p>Stillroom asks <strong>Ollama</strong>, a free program that runs AI models on your own computer. Nothing you give a recipe leaves this Mac unless you later turn on Codex in Settings › Models, and steps that use it are marked amber.</p>
           {!provider?.available ? (
             <>
               <p className="amber"><Glyph name="warning" /> Ollama is not answering at <span className="mono">{provider?.baseUrl ?? "http://localhost:11434"}</span>.</p>
@@ -59,14 +59,14 @@ export function Welcome({ models, settings, recipes, onSave, onOpenSettings, onR
           ) : chat.length === 0 ? (
             <>
               <p>Ollama is running but has no model yet. Pull one; a model around 8 billion parameters answers in seconds on most Macs.</p>
-              <PullModel enabled suggestion="qwen3:8b" onDone={onRefreshModels} />
+              <PullModel enabled installed={installed.map((m) => m.name)} onDone={onRefreshModels} />
             </>
           ) : (
             <>
               <p><Glyph name="yesno" /> Ready: {chat.length === 1 ? "one model" : `${chat.length} models`} can read and write ({chat.map((m) => m.name).slice(0, 4).join(", ")}{chat.length > 4 ? ", …" : ""}).</p>
               <details className="trace-table">
                 <summary className="muted">Pull another model</summary>
-                <PullModel enabled suggestion="qwen3:8b" onDone={onRefreshModels} />
+                <PullModel enabled installed={installed.map((m) => m.name)} onDone={onRefreshModels} />
               </details>
             </>
           )}

@@ -414,3 +414,13 @@ Left for later, by agreement: map concurrency and the schema-only permissions an
 - "From a goal" in New recipe stays disabled until the planner. Cloud providers are explained but none exists.
 - A review with zero items on a first run still pauses for a Continue click (engine wart from before the redesign).
 - Mermaid and pptxgenjs still load with the main bundle (about 2 MB).
+
+### Codex as a provider · 2026-10-27
+
+- Jeremy's call: cloud models come through the Codex app on his ChatGPT plan; a per-token OpenAI API adapter is not built and never will be tested (recorded in the vault decisions, `CLAUDE.md`, `PLAN.md`, and a one-line Settings zone "OpenAI by API key · not offered").
+- **Adapter** `crates/models/src/codex.rs`: one `codex exec` per call (`--ephemeral`, read-only sandbox, scratch folder, `--json`, `--output-schema` for fixed-shape answers, `-o` for the final message, `think` mapped to the reasoning effort). Token usage read from the event stream. Tools refused. Binary found in the usual places; the default model read from `~/.codex/config.toml`; extra names from Settings.
+- **Resolver**: `InstalledModel.local`; Auto (step 4) never picks a non-local model; a pin or a user default may. Test added.
+- **Settings › Models**: a Codex zone (program, signed in, default model, Use Codex models toggle, Check again, a path override when not found, the model list with Try and remove, Add a model); a Try button on every Ollama row (one tiny call, "answered in N s"); the pull suggestion skips models you already have and refuses to pull one you do; cloud models in the Defaults dropdown carry their provider word; Privacy and Permissions text follow the toggle.
+- **Marks**: `src/models.ts` (`isLocalModel`, `whereWord`, `shortModel`) replaces every hard-coded "local" in Set up, Results, the teletype, the inspector, and the map; a Codex model reads "Codex · cloud" in an amber tag.
+- Commands `codex_status`, `try_model`; setting `codex: { enabled, path, models }`.
+- Checks: `cargo test` (57), `pnpm test` (27), `tsc`, `pnpm build`. Headless Codex smoke test from the terminal: 4.3 s, schema honoured, about 13k input tokens per call. Jeremy tests the full path in the app.

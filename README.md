@@ -6,7 +6,7 @@ A goal-first, local-first AI workflow studio for people who have never built a w
 
 Describe what you want to accomplish. Stillroom runs a **Recipe** (a portable folder of steps, prompts, and schemas) against local models and hands you real outputs: notes, slides, diagrams, audio, tables, briefs, filed email. Then, only if you want, open the door and see the machine that made them: the graph, the prompts, the models, the data flowing between steps. Every recipe can be inspected, edited on the graph, rerun, and shared.
 
-Local models by default. No Docker, no account, no mandatory cloud.
+Local models by default. No Docker, no account, no mandatory cloud. Optional: the Codex app as a cloud provider on your ChatGPT plan, off until you turn it on.
 
 ## Status
 
@@ -17,7 +17,7 @@ Pre-alpha, macOS, developed in the open on a private repository. What works toda
 - **Flow View.** The recipe as a readable top-down map with the run's state on it, and an edit mode with forms per step, drag-to-wire, live checks from the runtime, and save as a copy or in place.
 - **Folder watches.** Point a recipe at a folder and it runs whenever something lands there, while the app is open. Each run continues the last, so files handled before are not handled again and reviews only ask about what is new.
 
-Not yet: a planner that drafts a recipe from a goal, sharing, MCP and Agent Skills, cloud providers, voices other than the system one. The design and roadmap are in [PLAN.md](PLAN.md).
+Not yet: a planner that drafts a recipe from a goal, sharing, MCP and Agent Skills, voices other than the system one. Not planned: a per-token API provider. The design and roadmap are in [PLAN.md](PLAN.md).
 
 ## Layout
 
@@ -26,7 +26,7 @@ schemas/        Recipe format v0 (JSON Schema)
 recipes/        Built-in recipes: recipe.yaml, prompts/, schemas/
 samples/        Fixtures for Inbox Triage (copy them before running against them)
 crates/core     Recipe types, executor, tools, step cache, propagation, draft editing, folder watcher, SQLite store
-crates/models   Provider trait, Ollama native adapter, router; live test harness under tests/
+crates/models   Provider trait, Ollama native adapter, Codex CLI adapter, router; live test harness under tests/
 src-tauri/      Tauri 2 desktop shell and commands (Rust)
 src/            React + TypeScript frontend; src/flow is the graph view and editor; the look comes from @overtone-foundry/app-kit (../overtone-foundry-app-kit, linked), src/brand.tsx holds Stillroom's own marks
 ```

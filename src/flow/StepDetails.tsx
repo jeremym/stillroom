@@ -2,6 +2,7 @@ import { fmtMs } from "../api";
 import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../brand";
 import { Help, fmtElapsed, useElapsed } from "@overtone-foundry/app-kit";
 import { pickViewer } from "../viewers";
+import { whereWord } from "../models";
 import { KIND_EXPLAINED, KIND_LABEL, STATUS_WORD, describeRef, findStep, parentOf, recordStatus, recordsFor, sourceStepOf, summarize } from "./graph";
 import type { InstalledModel, RecipeInfo, Run, StepInfo, StepRecord } from "../types";
 
@@ -89,7 +90,7 @@ function StepBody({ path, recipe, run, records, models, pins, onPin }: Props & {
 
   return (
     <>
-      <h3 className="inspect-head"><Glyph name={stepGlyph(step.kind)} /> {step.name ?? step.id} <span className="muted">({KIND_LABEL[step.kind] ?? step.kind}{slot ? " · local" : ""})</span></h3>
+      <h3 className="inspect-head"><Glyph name={stepGlyph(step.kind)} /> {step.name ?? step.id} <span className="muted">({KIND_LABEL[step.kind] ?? step.kind}{slot ? ` · ${whereWord(resolution?.modelId ?? (step.slot ? pins[step.slot] : undefined))}` : ""})</span></h3>
       <p>{KIND_EXPLAINED[step.kind] ?? ""}{map ? ` Runs once for each ${map.itemName ?? "item"} in “${map.name ?? map.id}”.` : ""}</p>
 
       <div className="facts inspect-facts">

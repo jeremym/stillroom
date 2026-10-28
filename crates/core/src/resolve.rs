@@ -124,10 +124,10 @@ pub fn resolve_slots_with(
                 }
             }
         }
-        // 4. Capability resolve
+        // 4. Capability resolve, among local models only: a cloud model is never an automatic pick
         let mut candidates: Vec<&InstalledModel> = installed
             .iter()
-            .filter(|m| satisfies(m, slot).is_ok() && fits_context(m, slot))
+            .filter(|m| m.local && satisfies(m, slot).is_ok() && fits_context(m, slot))
             .collect();
         if candidates.is_empty() {
             return Err(ResolveError::NoCandidate { slot: name.clone(), requires: slot.requires.clone() });
@@ -183,6 +183,7 @@ mod tests {
             capabilities: caps.to_vec(),
             context_window: Some(32_000),
             parameter_size: Some(size.into()),
+            local: true,
         }
     }
 
@@ -236,6 +237,23 @@ outputs:
         let good = resolve_slots(&recipe("accuracy", None), &installed, &BTreeMap::new()).unwrap();
         assert_eq!(good["writer"].model_id, "ollama:big");
         assert_eq!(good["writer"].via, ResolvedVia::Capability);
+    }
+
+    #[test]
+    fn auto_never_picks_a_cloud_model_but_a_pin_or_default_may() {
+        let mut cloud = model("remote", "", &[Capability::Text]);
+        cloud.id = "codex:remote".into();
+        cloud.provider = "codex".into();
+        cloud.local = false;
+        let installed = [cloud];
+        let err = resolve_slots(&recipe("accuracy", None), &installed, &BTreeMap::new()).unwrap_err();
+        assert!(matches!(err, ResolveError::NoCandidate { .. }), "{err}");
+        let pins = BTreeMap::from([("writer".to_string(), "codex:remote".to_string())]);
+        assert_eq!(resolve_slots(&recipe("accuracy", None), &installed, &pins).unwrap()["writer"].model_id, "codex:remote");
+        let mut defaults = ResolveDefaults::default();
+        defaults.by_capability.insert(Capability::Text, "codex:remote".into());
+        let r = resolve_slots_with(&recipe("accuracy", None), &installed, &BTreeMap::new(), &defaults).unwrap();
+        assert_eq!(r["writer"].via, ResolvedVia::Default);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+import { shortModel, whereWord } from "../models";
 import { fmtMs, fmtTokens } from "../api";
 import type { StepRecord } from "../types";
 
@@ -32,7 +33,7 @@ export function linesFor(records: StepRecord[]): Line[] {
       continue;
     }
     if (r.startedAt) {
-      const model = r.model ? ` · ${r.model.replace(/^ollama:/, "")} · local` : "";
+      const model = r.model ? ` · ${shortModel(r.model)} · ${whereWord(r.model)}` : "";
       out.push({ ...start, mark: "▶", text: `${where}${name} · ${kindWord(r.kind)}${model}`, tone: r.status === "running" ? "bright" : "" });
     }
     for (const c of r.toolCalls ?? []) {

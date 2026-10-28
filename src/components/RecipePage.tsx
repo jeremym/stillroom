@@ -56,7 +56,6 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
               Object.entries(recipe.modelSlots).map(([k, s]) => (
                 <span key={k} className="fact"><Glyph name="ai" /> {k} <span className="muted">· needs {s.requires.join(", ")}</span>{unfillable.some(([u]) => u === k) && <span className="tag amber">no model installed</span>}</span>
               ))}
-            <span className="tag">local</span>
           </span>
           <span className="label">May touch</span>
           <span className="muted">{describePermissions(recipe.permissions, recipe.inputs)}. Nothing else.</span>

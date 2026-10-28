@@ -9,6 +9,8 @@ export interface InstalledModel {
   capabilities: Capability[];
   contextWindow: number | null;
   parameterSize: string | null;
+  /** True when the model runs on this Mac. */
+  local: boolean;
 }
 
 export interface ProviderStatus {
@@ -16,6 +18,25 @@ export interface ProviderStatus {
   label: string;
   baseUrl: string;
   available: boolean;
+  local: boolean;
+}
+
+/** The Codex CLI as found on this Mac, whether or not it is turned on as a provider. */
+export interface CodexStatus {
+  installed: boolean;
+  path: string | null;
+  version: string | null;
+  signedIn: boolean;
+  defaultModel: string | null;
+}
+
+export interface TryResult {
+  ok: boolean;
+  durationMs: number;
+  answer: string | null;
+  error: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
 }
 
 export interface ModelsResponse {
@@ -320,6 +341,8 @@ export interface Settings {
     /** Thinking for steps whose recipe says nothing: true, false, or unset (the model's own default). */
     think?: boolean | null;
   };
+  /** The Codex CLI as a cloud provider: off unless turned on here. */
+  codex?: { enabled?: boolean; path?: string; models?: string[] };
   /** Model pins per recipe: recipe id → slot → model id. */
   pins?: Record<string, Record<string, string>>;
   firstRun?: boolean;

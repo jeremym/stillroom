@@ -16,6 +16,14 @@ pub struct InstalledModel {
     pub context_window: Option<u64>,
     /// Provider-reported size such as "8.2B". Used as a rough quality/speed proxy.
     pub parameter_size: Option<String>,
+    /// True when the model runs on this Mac. Auto never picks a model that is not local;
+    /// a cloud model is used only through a pin or a default you set.
+    #[serde(default = "yes")]
+    pub local: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl InstalledModel {
@@ -129,6 +137,7 @@ mod tests {
             capabilities: vec![],
             context_window: None,
             parameter_size: size.map(String::from),
+            local: true,
         }
     }
 

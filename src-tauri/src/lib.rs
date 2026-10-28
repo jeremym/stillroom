@@ -15,6 +15,7 @@ use stillroom_core::{
     ResolveDefaults, Run,
     RunTrigger, StepEdit, StepRecord, Store, Watch,
 };
+use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
 use stillroom_models::{InstalledModel, ModelRouter, ProviderStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -66,9 +67,31 @@ impl AppState {
         v
     }
 
+    /// The Codex CLI as configured (`codex.path`, `codex.models`), whether or not it is turned on.
+    fn codex(&self) -> Codex {
+        let settings = self.settings().ok();
+        let codex = settings.as_ref().and_then(|s| s.get("codex"));
+        let path = codex.and_then(|c| c.get("path")).and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()).map(PathBuf::from);
+        let models = codex
+            .and_then(|c| c.get("models"))
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default();
+        Codex::new(path, models)
+    }
+
+    /// `codex.enabled`: the user's opt-in. Off, Codex is not a provider at all.
+    fn codex_enabled(&self) -> bool {
+        self.settings().ok().and_then(|s| s.get("codex").and_then(|c| c.get("enabled")).and_then(Value::as_bool)).unwrap_or(false)
+    }
+
     /// The providers as configured right now. Cheap to build; a run keeps the one it started with.
     fn router(&self) -> Arc<ModelRouter> {
-        Arc::new(ModelRouter::new(vec![Arc::new(self.ollama())]))
+        let mut providers: Vec<Arc<dyn stillroom_models::Provider>> = vec![Arc::new(self.ollama())];
+        if self.codex_enabled() {
+            providers.push(Arc::new(self.codex()));
+        }
+        Arc::new(ModelRouter::new(providers))
     }
 
     /// Seconds one model call may take; `models.timeoutSecs`, default 600, 0 means no limit.
@@ -227,6 +250,43 @@ struct ModelsResponse {
 async fn list_models(state: State<'_, AppState>) -> CmdResult<ModelsResponse> {
     let router = state.router();
     Ok(ModelsResponse { providers: router.statuses().await, models: router.list_all().await })
+}
+
+/// What Settings shows about the Codex CLI, independent of the opt-in.
+#[tauri::command]
+async fn codex_status(state: State<'_, AppState>) -> CmdResult<stillroom_models::CodexStatus> {
+    Ok(state.codex().status().await)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TryResult {
+    ok: bool,
+    duration_ms: u64,
+    answer: Option<String>,
+    error: Option<String>,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+}
+
+/// One tiny call to a model, so Settings can show it answers and how fast. Two minutes at most.
+#[tauri::command]
+async fn try_model(state: State<'_, AppState>, model_id: String) -> CmdResult<TryResult> {
+    use stillroom_core::model::{ChatMessage, ChatRequest, ModelClient};
+    let router = state.router();
+    let req = ChatRequest {
+        messages: vec![ChatMessage::new("user", "Reply with the single word pong and nothing else.")],
+        think: Some(Value::Bool(false)),
+        ..Default::default()
+    };
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(120), router.chat(&model_id, req)).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    Ok(match outcome {
+        Ok(Ok(r)) => TryResult { ok: true, duration_ms, answer: Some(r.content.trim().chars().take(120).collect()), error: None, prompt_tokens: r.prompt_tokens, completion_tokens: r.completion_tokens },
+        Ok(Err(e)) => TryResult { ok: false, duration_ms, answer: None, error: Some(e.to_string()), prompt_tokens: None, completion_tokens: None },
+        Err(_) => TryResult { ok: false, duration_ms, answer: None, error: Some("no answer within 120 s".into()), prompt_tokens: None, completion_tokens: None },
+    })
 }
 
 #[derive(Deserialize)]
@@ -889,6 +949,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             list_models,
+            codex_status,
+            try_model,
             stop_run,
             preview_resolution,
             get_settings,

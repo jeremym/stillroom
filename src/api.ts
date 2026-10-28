@@ -1,9 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Draft, DraftResponse, ModelsResponse, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, ModelsResponse, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
   listModels: () => invoke<ModelsResponse>("list_models"),
+  /** The Codex CLI on this Mac: installed, signed in, its default model. */
+  codexStatus: () => invoke<CodexStatus>("codex_status"),
+  /** One tiny call to a model: did it answer, how fast. */
+  tryModel: (modelId: string) => invoke<TryResult>("try_model", { modelId }),
   getSettings: () => invoke<Settings>("get_settings"),
   /** Merge top-level keys; a key set to null is removed. Every window hears `settings:changed`. */
   setSettings: (patch: Partial<Settings> | Record<string, unknown>) => invoke<Settings>("set_settings", { patch }),

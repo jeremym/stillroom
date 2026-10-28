@@ -15,6 +15,7 @@ import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
 import { Welcome } from "./components/Welcome";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
 import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
+import { isLocalModel, whereWord } from "./models";
 import { Dial, Empty, Pill, Rail, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
 import "./App.css";
 
@@ -617,7 +618,7 @@ function App() {
                     <span>
                       {Object.values(run.resolutions ?? {}).length === 0 ? <span className="muted">programs only, no model</span> :
                         Object.values(run.resolutions ?? {}).map((r) => (
-                          <span key={r.slot} className="fact"><Glyph name="ai" /> <span className="muted">{r.slot}:</span> <span className="mono">{r.modelId}</span> <span className="tag">local</span></span>
+                          <span key={r.slot} className="fact"><Glyph name="ai" /> <span className="muted">{r.slot}:</span> <span className="mono">{r.modelId}</span> <span className={isLocalModel(r.modelId) ? "tag" : "tag amber"}>{whereWord(r.modelId)}</span></span>
                         ))}
                       {" "}<span className="muted">· {run.steps.filter((s) => !s.parent).length} steps{run.steps.some((s) => s.reusedFrom) ? `, ${run.steps.filter((s) => s.reusedFrom).length} reused from earlier runs` : ""}</span>
                     </span>

@@ -4,6 +4,7 @@ import { api, fmtMs, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
 import type { InputSpec, InstalledModel, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
 import { Glyph } from "../brand";
+import { isLocalModel, whereWord } from "../models";
 
 const VIA_WORD: Record<string, string> = {
   pinned: "your pin on this slot",
@@ -165,7 +166,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
             </select>
             <p className="muted slot-pick">
               {problem ? <span className="amber"><Glyph name="warning" /> {problem}</span>
-                : picked ? <><Glyph name="ai" /> Will use <span className="mono">{pickedName}</span> <span className="tag">local</span> · {via}</>
+                : picked ? <><Glyph name="ai" /> Will use <span className="mono">{pickedName}</span> <span className={isLocalModel(picked.modelId) ? "tag" : "tag amber"}>{whereWord(picked.modelId)}</span> · {via}</>
                 : preview ? "no model yet" : "…"}
             </p>
           </div>

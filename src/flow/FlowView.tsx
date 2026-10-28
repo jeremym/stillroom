@@ -6,6 +6,7 @@ import { buildGraph, type FlowNode } from "./graph";
 import { StepDetails } from "./StepDetails";
 import { addStep, connect, disconnect, docToInfo, mutate, removeStep, stepPathOf } from "./draft";
 import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../brand";
+import { isLocalModel } from "../models";
 import { fmtElapsed, useElapsed } from "@overtone-foundry/app-kit";
 import {
   AddStepSelect, ConnectionPanel, InputForm, OutputForm, PermissionsEditor, SaveDialog, SlotsEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
@@ -272,7 +273,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
   const providerFor = (slot: string): "local" | "cloud" | null => {
     const id = run?.resolutions?.[slot]?.modelId ?? pins[slot];
     if (!id) return "local";
-    return id.startsWith("ollama:") ? "local" : "cloud";
+    return isLocalModel(id) ? "local" : "cloud";
   };
 
   const shownRecipe = edit ? docToInfo(edit.doc, recipe) : recipe;

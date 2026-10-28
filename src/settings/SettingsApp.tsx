@@ -3,9 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { WatchPanel } from "../components/WatchPanel";
 import { Glyph, Logo, type GlyphName } from "../brand";
-import { Zone, applyLook, loadLook, type Look } from "@overtone-foundry/app-kit";
+import { Toggle, Zone, applyLook, loadLook, type Look } from "@overtone-foundry/app-kit";
+import { whereWord } from "../models";
 import { PullModel } from "../components/PullModel";
-import type { ModelsResponse, PermissionEntry, RecipesResponse, RuntimeStatus, Settings, WatchView } from "../types";
+import type { CodexStatus, ModelsResponse, PermissionEntry, RecipesResponse, RuntimeStatus, Settings, TryResult, WatchView } from "../types";
 
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
@@ -57,6 +58,21 @@ export default function SettingsApp() {
   const [perms, setPerms] = useState<PermissionEntry[] | null>(null);
   const loadPerms = useCallback((probe: boolean) => { api.permissionStatus(probe).then(setPerms).catch((e) => setError(String(e))); }, []);
   useEffect(() => { if (section === "permissions" && !perms) loadPerms(false); }, [section, perms, loadPerms]);
+  const [codex, setCodex] = useState<CodexStatus | null>(null);
+  const [codexDraft, setCodexDraft] = useState("");
+  const [codexPath, setCodexPath] = useState("");
+  const refreshCodex = useCallback(() => { api.codexStatus().then(setCodex).catch((e) => setError(String(e))); }, []);
+  useEffect(() => { if (section === "models") refreshCodex(); }, [section, refreshCodex, settings.codex?.path]);
+  const [tries, setTries] = useState<Record<string, { busy: boolean; result: TryResult | null }>>({});
+  const tryModel = useCallback(async (id: string) => {
+    setTries((t) => ({ ...t, [id]: { busy: true, result: null } }));
+    try {
+      const result = await api.tryModel(id);
+      setTries((t) => ({ ...t, [id]: { busy: false, result } }));
+    } catch (e) {
+      setTries((t) => ({ ...t, [id]: { busy: false, result: { ok: false, durationMs: 0, answer: null, error: String(e), promptTokens: null, completionTokens: null } } }));
+    }
+  }, []);
   const [keyDraft, setKeyDraft] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   const refreshKey = useCallback(() => { api.hasSecret("ollama.apiKey").then(setKeySet).catch(() => setKeySet(null)); }, []);
@@ -129,7 +145,11 @@ export default function SettingsApp() {
     refreshModels();
   }
 
-  const installed = models?.models ?? [];
+  const allModels = models?.models ?? [];
+  const installed = allModels.filter((m) => m.provider === "ollama");
+  const codexModels = allModels.filter((m) => m.provider === "codex");
+  const codexOn = Boolean(settings.codex?.enabled);
+  const saveCodex = (next: Partial<NonNullable<Settings["codex"]>>) => save({ codex: { ...settings.codex, ...next } }).then(refreshModels);
   const withCap = (cap: string) => installed.filter((m) => m.capabilities.includes(cap as never));
   const pins = settings.pins ?? {};
   const pinnedRecipes = Object.entries(pins).filter(([, slots]) => Object.keys(slots ?? {}).length > 0);
@@ -193,7 +213,7 @@ export default function SettingsApp() {
               <p className="muted">Sent as <span className="mono">Authorization: Bearer …</span> on every call to the address above. A local Ollama needs none.</p>
               {installed.length > 0 ? (
                 <table>
-                  <thead><tr><th>Model</th><th>Size</th><th>Context</th><th>Can</th></tr></thead>
+                  <thead><tr><th>Model</th><th>Size</th><th>Context</th><th>Can</th><th></th></tr></thead>
                   <tbody>
                     {installed.map((m) => (
                       <tr key={m.id}>
@@ -201,6 +221,7 @@ export default function SettingsApp() {
                         <td>{m.parameterSize ?? ""}</td>
                         <td>{m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : ""}</td>
                         <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>
+                        <td><TryCell id={m.id} state={tries[m.id]} onTry={tryModel} /></td>
                       </tr>
                     ))}
                   </tbody>
@@ -208,8 +229,8 @@ export default function SettingsApp() {
               ) : provider?.available ? <p className="muted">Ollama is running but has no models. Pull one below.</p> : null}
             </Zone>
 
-            <Zone title="Pull a model" sub="download through Ollama">
-              <PullModel enabled={Boolean(provider?.available)} onDone={refreshModels} />
+            <Zone title="Pull a model" sub={installed.length ? `download another through Ollama · you have ${installed.length}` : "download through Ollama"}>
+              <PullModel enabled={Boolean(provider?.available)} installed={installed.map((m) => m.name)} onDone={refreshModels} />
               <p className="muted">A small model (4 to 8 billion parameters) answers in seconds on most Macs; a large one is slower and sharper. Recipes ask for abilities (capabilities), not model names, so any model that has them works.</p>
             </Zone>
 
@@ -254,7 +275,7 @@ export default function SettingsApp() {
                         saveModels({ byCapability: next });
                       }}>
                         <option value="">Auto · {c.what}</option>
-                        {withCap(c.id).map((m) => <option key={m.id} value={m.id}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ""}</option>)}
+                        {withCap(c.id).map((m) => <option key={m.id} value={m.id}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ""}{m.local ? "" : ` · ${whereWord(m.id)}`}</option>)}
                       </select>
                     </span>
                   </span>
@@ -280,8 +301,61 @@ export default function SettingsApp() {
               )}
             </Zone>
 
-            <Zone title="Cloud providers" sub="off">
-              <p className="muted">Everything runs on this Mac and nothing leaves it. Cloud providers are not set up. When they arrive they will be opt-in here, keyed from the keychain, and every step that uses one will be marked amber on the map.</p>
+            <Zone title="Codex" sub="cloud models through your ChatGPT plan" className={codexOn ? "accent" : undefined}
+              aside={codex && <><span className={`dot ${codex.installed && codex.signedIn ? "ok" : "bad"}`} />{!codex.installed ? "not installed" : !codex.signedIn ? "not signed in" : codexOn ? "on" : "off"}</>}>
+              <p className="muted">Stillroom can hand an AI step to the <strong>Codex app</strong> (the command <span className="mono">codex exec</span>, run headless in a read-only sandbox). It is billed to the ChatGPT plan Codex is signed in with, never per token. <span className="amber">The prompt and the step's inputs leave this Mac</span>; every step on a Codex model is marked amber. Auto never picks one: you choose it as a pin or a default.</p>
+              {codex && (
+                <ul className="rows">
+                  <li><strong>Program</strong> <span className="muted">{codex.installed ? <>{codex.version ?? "found"} · <span className="mono">{codex.path}</span></> : "not found. Install the Codex app or CLI, then come back."}</span></li>
+                  <li><strong>Signed in</strong> <span className="muted">{!codex.installed ? "—" : codex.signedIn ? "yes" : <>no. In Terminal, run <span className="mono">codex login</span>, then check again.</>}</span></li>
+                  <li><strong>Default model</strong> <span className="muted mono">{codex.defaultModel ?? "none set in ~/.codex/config.toml"}</span></li>
+                </ul>
+              )}
+              <div className="row field-row">
+                <div className="field">
+                  <label><strong>Use Codex models</strong> <span className="muted">· off keeps Codex out of every list</span></label>
+                  <Toggle on={codexOn} onChange={(on) => saveCodex({ enabled: on })} label="Use Codex models" disabled={!codex?.installed || !codex?.signedIn} />
+                </div>
+                <button onClick={() => { refreshCodex(); refreshModels(); }}>Check again</button>
+              </div>
+              {!codex?.installed && (
+                <div className="row field-row">
+                  <div className="field">
+                    <label><strong>Where the program is</strong> <span className="muted">· only if Stillroom cannot find it on its own</span></label>
+                    <input type="text" className="mono" value={codexPath} onChange={(e) => setCodexPath(e.target.value)} placeholder="/path/to/codex" />
+                  </div>
+                  <button onClick={() => saveCodex({ path: codexPath.trim() || undefined })}>Save</button>
+                </div>
+              )}
+              {codexOn && (
+                <>
+                  <table>
+                    <thead><tr><th>Model</th><th>Can</th><th></th><th></th></tr></thead>
+                    <tbody>
+                      {codexModels.map((m) => (
+                        <tr key={m.id}>
+                          <td className="mono">{m.name}{m.name === codex?.defaultModel ? <span className="muted"> · Codex's default</span> : ""}</td>
+                          <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>
+                          <td><TryCell id={m.id} state={tries[m.id]} onTry={tryModel} /></td>
+                          <td>{m.name !== codex?.defaultModel && <button className="link" onClick={() => saveCodex({ models: (settings.codex?.models ?? []).filter((n) => n !== m.name) })}>remove</button>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="row field-row">
+                    <div className="field">
+                      <label><strong>Add a model</strong> <span className="muted">· a name Codex accepts; Try tells you whether it answers</span></label>
+                      <input type="text" className="mono" value={codexDraft} onChange={(e) => setCodexDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && codexDraft.trim()) { saveCodex({ models: [...(settings.codex?.models ?? []), codexDraft.trim()] }); setCodexDraft(""); } }} placeholder="gpt-5-codex" />
+                    </div>
+                    <button onClick={() => { if (codexDraft.trim()) { saveCodex({ models: [...(settings.codex?.models ?? []), codexDraft.trim()] }); setCodexDraft(""); } }} disabled={!codexDraft.trim()}>Add</button>
+                  </div>
+                  <p className="muted">Each call carries Codex's own instructions, about 13k tokens, before your prompt. Good for recipe steps, wasteful for chatter. Codex steps cannot use recipe tools, so agent steps stay local.</p>
+                </>
+              )}
+            </Zone>
+
+            <Zone title="OpenAI by API key" sub="not offered">
+              <p className="muted">Stillroom does not bill per token. Cloud models come through Codex and a ChatGPT plan, above.</p>
             </Zone>
           </>
         )}
@@ -350,7 +424,7 @@ export default function SettingsApp() {
               )}
             </Zone>
             <Zone title="Why so few" sub="local-first, by design">
-              <p className="muted">Models run in Ollama on this Mac, so there is no microphone, camera, screen, or accessibility access to grant. Files are read where you point, written to the recipe's own results, and the keychain holds only the optional access key for a remote Ollama.</p>
+              <p className="muted">Models run in Ollama on this Mac{codexOn ? ", or through the Codex app when you choose a Codex model," : ""} so there is no microphone, camera, screen, or accessibility access to grant. Files are read where you point, written to the recipe's own results, and the keychain holds only the optional access key for a remote Ollama.</p>
             </Zone>
           </>
         )}
@@ -359,6 +433,7 @@ export default function SettingsApp() {
           <>
             <Zone title="What leaves this Mac" sub="nothing, unless a recipe says so">
               <p>Models run in Ollama on this Mac. Files are read only where a recipe's permissions allow, and written only to its own results and the folders you chose.</p>
+              {codexOn ? <p className="amber"><Glyph name="warning" /> Codex is on: a step you put on a Codex model sends its prompt and inputs to OpenAI through your ChatGPT plan. Such steps are marked amber on the map and in Set up.</p> : <p className="muted">Codex is off, so no model step leaves this Mac.</p>}
               <p>A recipe reaches the network only if it declares <span className="mono">permissions.network</span>. The usual grant is <span className="mono">input</span>: exactly the hosts in the links you typed, checked on every redirect.</p>
             </Zone>
             <Zone title="Recipes that may use the network">
@@ -384,5 +459,18 @@ export default function SettingsApp() {
         {error && <pre className="error">{error}</pre>}
       </div>
     </div>
+  );
+}
+
+/* One tiny call to a model from the table: the answer time, or what went wrong. */
+function TryCell({ id, state, onTry }: { id: string; state?: { busy: boolean; result: TryResult | null }; onTry: (id: string) => void }) {
+  const r = state?.result;
+  return (
+    <span className="try-cell">
+      <button className="link" onClick={() => onTry(id)} disabled={state?.busy}>{state?.busy ? "trying…" : r ? "try again" : "Try"}</button>
+      {r && (r.ok
+        ? <span className="muted"> · answered in {(r.durationMs / 1000).toFixed(1)} s{r.answer ? <> · “{r.answer}”</> : ""}</span>
+        : <span className="red"> · {r.error}</span>)}
+    </span>
   );
 }

@@ -225,3 +225,7 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .flow-details .field.danger { border-top: 1px solid var(--bezel); margin-top: 16px; padding-top: 10px; }
 .flow-details .edit-block:nth-of-type(even) { background: var(--ground-3); }
 .perms li.dim strong { color: var(--phos-dim); font-weight: 400; }
+
+/* Settings › Models: the Try result beside a model */
+.try-cell { white-space: nowrap; }
+.try-cell .red { color: var(--red); }

@@ -44,3 +44,7 @@ weights/
 
 # conductor / session notes
 .context/
+
+# release packaging
+release/
+*.p12

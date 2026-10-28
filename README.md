@@ -33,6 +33,32 @@ src/            React + TypeScript frontend; src/flow is the graph view and edit
 
 User recipes live in the app data folder under `recipes/` and shadow a built-in with the same id. Runs, the step cache, and watches live in `stillroom.db` next to them.
 
+## Install
+
+Apple silicon Mac, macOS 13 or newer, and [Ollama](https://ollama.com) with one chat model.
+
+```
+brew install --cask jeremym/tap/stillroom
+open -a Stillroom
+```
+
+Or download `Stillroom-X.Y.Z.zip` from [Releases](https://github.com/jeremym/stillroom/releases), unzip, move to Applications, and right-click → Open the first time.
+
+Stillroom is signed with the project's own certificate, not an Apple Developer ID, and is not notarized. The cask removes the quarantine flag on install so it launches without a Gatekeeper prompt.
+
+### Verifying a download
+
+```
+shasum -a 256 Stillroom-X.Y.Z.zip             # matches the release .sha256
+codesign -d -r- /Applications/Stillroom.app   # check the leaf hash below
+```
+
+A genuine build prints `certificate leaf = H"<leaf hash>"` (recorded here once the release certificate exists).
+
+### Releasing (maintainer)
+
+Once, attended: `scripts/create-release-cert.sh` (two keychain prompts; back up the .p12). Then per release: bump the version in `package.json`, `src-tauri/tauri.conf.json`, `Cargo.toml` and `src-tauri/Cargo.toml`, run `scripts/build-release.sh --version X.Y.Z`, create the GitHub release with the files it names, and `scripts/update-tap.sh` to bump the cask in `jeremym/homebrew-tap`. The cask itself lives in `distribution/stillroom.rb`.
+
 ## Development
 
 Requires Rust 1.90+, Node 22+, pnpm, Xcode command line tools, and [Ollama](https://ollama.com) with at least one chat model for anything that calls a model.

@@ -221,7 +221,7 @@ button.stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); 
 .lane-band { position: absolute; top: 0; bottom: 0; z-index: 1; pointer-events: none; border-left: 1px dashed var(--phos-faint); border-right: 1px dashed var(--phos-faint); background: color-mix(in srgb, var(--phos) 2%, transparent); }
 .lane-band.in { border-left: 0; }
 .lane-band.out { border-right: 0; }
-.lane-label { position: absolute; top: 6px; left: 8px; right: 8px; font-family: var(--display); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--phos-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; gap: 6px; align-items: center; }
+.lane-label { position: absolute; bottom: 6px; left: 8px; right: 8px; font-family: var(--display); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--phos-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; gap: 6px; align-items: center; }
 .flow-edge.from-input .react-flow__edge-path { stroke-dasharray: 2 6; }
 .flow-edge.from-input.done .react-flow__edge-path, .flow-edge.from-input.reused .react-flow__edge-path, .flow-edge.from-input.edited .react-flow__edge-path { stroke-dasharray: none; }
 .flow-edge.from-input.running .react-flow__edge-path { stroke-dasharray: 10 8; }

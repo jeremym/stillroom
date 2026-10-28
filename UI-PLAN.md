@@ -365,3 +365,15 @@ Left for later, by agreement: map concurrency and the schema-only permissions an
 - **The teletype** in Running: the trace typed as each step starts and finishes (▶ ✓ ↻ ✗ ■), tool calls indented, the table folded beneath. Tests cover the line builder.
 - **The welcome (Power on)**: shown when `firstRun` is absent or true; boot screen with Begin or Skip; step 1 checks Ollama (address and key through Settings, in-app pull through the shared `PullModel`, preference, optional writing model); step 2 picks a recipe; step 3 is that recipe's Set up with a one-line hint, and the first Results carry a pointer to the Recipe card. Finishing or skipping writes `firstRun: false`; Settings › About brings it back.
 - Verified: `cargo test --workspace` (52, one new for Stop), `pnpm test` (26, three new for the teletype), `tsc`, `pnpm build`; by eye and live: boot, step 1, step 2, hand-off into Set up with the hint and the real Auto pick, a run on a fresh file with the teletype typing and the step timer, Stop pressed mid-step ending the run as "stopped by you" after 39 s and the Dial turning to Results (`docs/screenshots/phase4-*.png`).
+
+### Phase 5: Recipe card · slice 1 shipped 2026-10-27
+
+- **Lanes.** An IN band on the left ("In · what goes in") and an OUT band on the right ("Out · what you get"), drawn as faint bands with dashed rules and labels, sized from the graph's `lanes`.
+- **Edges from inputs** are dotted until data has passed (done, reused, edited), moving dashes while running. Edges into results carry `to-output`.
+- **Local and cloud marks.** Every AI step and agent says `AI step · local` or `AI step · cloud`; a cloud step is rimmed amber with a cloud glyph. Today every provider is Ollama, so every mark reads local; the class is ready for the first cloud provider.
+- **Condition line** takes the subtitle's place (with the subtitle after a dot) so "only if …" no longer crowds the model name: the "Draft a reply" wart.
+- **Editor problems** print teletype-style. The inspector and the Save card were already on the kit from phase 1.
+- **Settings › Permissions** (Jeremy's ask, same day): what macOS may ask for, each with a status tag (granted, not asked yet, not allowed, in use, not needed) and the right button: disabled "Not needed" with a tooltip, disabled "Granted", or "Open System Settings…" straight to the pane. Folders are probed only on "Check the folders now", because the probe is what makes macOS ask. Stillroom itself needs no Accessibility or Screen Recording; those were only for driving the app from the terminal during development.
+- Verified: `cargo test --workspace` (52), `pnpm test` (27, one new for lanes and marks), `tsc`, `pnpm build`; by eye on Summarize a File's card and the Permissions section.
+
+**Permissions backlog** (not done): a true read of Files and Folders status without probing (macOS gives no public API; `tccutil` only resets); Local Network status on macOS 15+; a first-run mention of folders in the welcome; a test of a remote Ollama on the LAN to confirm the Local Network prompt; notification permission when background watches arrive.

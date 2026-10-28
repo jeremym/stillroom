@@ -15,7 +15,7 @@ import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
 import { Welcome } from "./components/Welcome";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
 import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
-import { isLocalModel, whereWord } from "./models";
+import { isLocalModel, rememberProviders, whereWord } from "./models";
 import { Dial, Empty, Pill, Rail, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
 import "./App.css";
 
@@ -107,7 +107,7 @@ function App() {
   }, [recipeId, saveSettings]);
 
   const refreshModels = useCallback(() => {
-    api.listModels().then(setModels).catch((e) => setError(String(e)));
+    api.listModels().then((m) => { rememberProviders(m.providers); setModels(m); }).catch((e) => setError(String(e)));
   }, []);
   const refreshRecipes = useCallback(async () => {
     const r = await api.listRecipes();

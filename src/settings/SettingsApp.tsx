@@ -4,7 +4,7 @@ import { api } from "../api";
 import { WatchPanel } from "../components/WatchPanel";
 import { Glyph, Logo, type GlyphName } from "../brand";
 import { Toggle, Zone, applyLook, loadLook, type Look } from "@overtone-foundry/app-kit";
-import { whereWord } from "../models";
+import { rememberProviders, whereWord } from "../models";
 import { PullModel } from "../components/PullModel";
 import type { CodexStatus, ModelsResponse, PermissionEntry, RecipesResponse, RuntimeStatus, Settings, TryResult, WatchView } from "../types";
 
@@ -63,6 +63,14 @@ export default function SettingsApp() {
   const [codexPath, setCodexPath] = useState("");
   const refreshCodex = useCallback(() => { api.codexStatus().then(setCodex).catch((e) => setError(String(e))); }, []);
   useEffect(() => { if (section === "models") refreshCodex(); }, [section, refreshCodex, settings.codex?.path]);
+  const [oaUrl, setOaUrl] = useState("");
+  const [oaDraft, setOaDraft] = useState("");
+  const [oaKeyDraft, setOaKeyDraft] = useState("");
+  const [oaKeySet, setOaKeySet] = useState<boolean | null>(null);
+  const [oaKeyBusy, setOaKeyBusy] = useState(false);
+  const refreshOaKey = useCallback(() => { api.hasSecret("openai.apiKey").then(setOaKeySet).catch(() => setOaKeySet(null)); }, []);
+  useEffect(() => { if (section === "models") refreshOaKey(); }, [section, refreshOaKey]);
+  useEffect(() => { setOaUrl(settings.openai?.baseUrl ?? ""); }, [settings.openai?.baseUrl]);
   const [tries, setTries] = useState<Record<string, { busy: boolean; result: TryResult | null }>>({});
   const tryModel = useCallback(async (id: string) => {
     setTries((t) => ({ ...t, [id]: { busy: true, result: null } }));
@@ -82,7 +90,7 @@ export default function SettingsApp() {
 
   const refreshModels = useCallback(() => {
     setChecking(true);
-    api.listModels().then(setModels).catch((e) => setError(String(e))).finally(() => setChecking(false));
+    api.listModels().then((m) => { rememberProviders(m.providers); setModels(m); }).catch((e) => setError(String(e))).finally(() => setChecking(false));
   }, []);
   const refreshWatches = useCallback(() => { api.listWatches().then(setWatches).catch(() => {}); }, []);
 
@@ -149,6 +157,14 @@ export default function SettingsApp() {
   const installed = allModels.filter((m) => m.provider === "ollama");
   const codexModels = allModels.filter((m) => m.provider === "codex");
   const codexOn = Boolean(settings.codex?.enabled);
+  const openaiModels = allModels.filter((m) => m.provider === "openai");
+  const openaiStatus = models?.providers.find((p) => p.id === "openai");
+  const openaiOn = Boolean(settings.openai?.enabled);
+  const saveOpenai = (next: Partial<NonNullable<Settings["openai"]>>) => save({ openai: { ...settings.openai, ...next } }).then(refreshModels);
+  async function saveOaKey(value: string) {
+    setOaKeyBusy(true);
+    try { await api.setSecret("openai.apiKey", value); setOaKeyDraft(""); refreshOaKey(); refreshModels(); } catch (e) { setError(String(e)); } finally { setOaKeyBusy(false); }
+  }
   const saveCodex = (next: Partial<NonNullable<Settings["codex"]>>) => save({ codex: { ...settings.codex, ...next } }).then(refreshModels);
   const withCap = (cap: string) => installed.filter((m) => m.capabilities.includes(cap as never));
   const pins = settings.pins ?? {};
@@ -158,15 +174,16 @@ export default function SettingsApp() {
   return (
     <div className={`settings-shell ${collapsed ? "collapsed" : ""}`}>
       <nav className="settings-nav" aria-label="Settings sections">
-        <div className="settings-head"><Logo size={26} word={false} />{!collapsed && <h1>Settings</h1>}</div>
+        <div className="settings-head"><Logo size={26} word={false} />{!collapsed && <h1>Settings</h1>}
+          <button className="nav-toggle" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Show section names" : "Icons only"} aria-label={collapsed ? "Show section names" : "Icons only"} aria-pressed={collapsed}>
+            <Glyph name={collapsed ? "expand" : "collapse"} />
+          </button>
+        </div>
         {SECTIONS.map((s) => (
           <button key={s.id} aria-current={section === s.id} title={s.label} aria-label={s.label} onClick={() => setSection(s.id)}><Glyph name={s.glyph} />{!collapsed && <span>{s.label}</span>}</button>
         ))}
-        <button className="nav-toggle" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Show section names" : "Icons only"} aria-label={collapsed ? "Show section names" : "Icons only"} aria-pressed={collapsed}>
-          <Glyph name={collapsed ? "expand" : "collapse"} />{!collapsed && <span className="muted">Icons only</span>}
-        </button>
       </nav>
-      <div>
+      <div className="settings-main">
         {section === "look" && (
           <Zone title="Look" sub="the same three themes everywhere">
             <div className="settings-row">
@@ -354,8 +371,61 @@ export default function SettingsApp() {
               )}
             </Zone>
 
-            <Zone title="OpenAI by API key" sub="not offered">
-              <p className="muted">Stillroom does not bill per token. Cloud models come through Codex and a ChatGPT plan, above.</p>
+            <Zone title="OpenAI by API key" sub="or any service that speaks the same language" className={openaiOn && openaiStatus && !openaiStatus.local ? "accent" : undefined}
+              aside={<><span className={`dot ${openaiOn && openaiStatus?.available ? "ok" : "bad"}`} />{!openaiOn ? "off" : openaiStatus?.available ? `${openaiModels.length} models` : "not answering"}</>}>
+              <p className="muted">Pay-per-token access with a key: OpenAI itself, or anything with the same API, such as LM Studio or llama-server on this Mac. <span className="amber">A cloud address means prompts and inputs leave this Mac</span> and every such step is marked amber; an address on this Mac counts as local. Auto never picks a cloud model.</p>
+              <p className="muted">Checked by the author only against a local OpenAI-compatible server. If OpenAI's own service misbehaves, say so.</p>
+              <div className="row field-row">
+                <div className="field">
+                  <label><strong>Use these models</strong> <span className="muted">· off keeps them out of every list</span></label>
+                  <Toggle on={openaiOn} onChange={(on) => saveOpenai({ enabled: on })} label="Use OpenAI-compatible models" />
+                </div>
+                <button onClick={refreshModels}>Check again</button>
+              </div>
+              {openaiOn && (
+                <>
+                  <div className="row field-row">
+                    <div className="field">
+                      <label><strong>Address</strong> <span className="muted">· the API base, ending in /v1</span></label>
+                      <input type="text" className="mono" value={oaUrl} onChange={(e) => setOaUrl(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveOpenai({ baseUrl: oaUrl.trim() || undefined }); }} placeholder="https://api.openai.com/v1" />
+                    </div>
+                    <button onClick={() => saveOpenai({ baseUrl: oaUrl.trim() || undefined })}>Save and check</button>
+                  </div>
+                  {openaiStatus && !openaiStatus.available && <p className="muted">Nothing answered at <span className="mono">{openaiStatus.baseUrl}</span>. Check the address and the key.</p>}
+                  <div className="row field-row">
+                    <div className="field">
+                      <label><strong><Glyph name="key" /> API key</strong> <span className="muted">· kept in the macOS keychain, never shown again · a local server may need none</span></label>
+                      <input type="password" className="mono" value={oaKeyDraft} onChange={(e) => setOaKeyDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && oaKeyDraft.trim()) saveOaKey(oaKeyDraft); }}
+                        placeholder={oaKeySet ? "a key is set · type a new one to replace it" : "no key"} autoComplete="off" disabled={oaKeyBusy} />
+                    </div>
+                    <button onClick={() => saveOaKey(oaKeyDraft)} disabled={oaKeyBusy || !oaKeyDraft.trim()}>Save key</button>
+                    {oaKeySet && <button className="danger" onClick={() => saveOaKey("")} disabled={oaKeyBusy}>Remove key</button>}
+                  </div>
+                  {openaiModels.length > 0 && (
+                    <table>
+                      <thead><tr><th>Model</th><th>Can</th><th></th><th></th></tr></thead>
+                      <tbody>
+                        {openaiModels.map((m) => (
+                          <tr key={m.id}>
+                            <td className="mono">{m.name}</td>
+                            <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>
+                            <td><TryCell id={m.id} state={tries[m.id]} onTry={tryModel} /></td>
+                            <td>{(settings.openai?.models ?? []).includes(m.name) && <button className="link" onClick={() => saveOpenai({ models: (settings.openai?.models ?? []).filter((n) => n !== m.name) })}>remove</button>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  <div className="row field-row">
+                    <div className="field">
+                      <label><strong>Models</strong> <span className="muted">· {(settings.openai?.models ?? []).length ? "the names you listed; Try tells you whether each answers" : "none listed, so every model the service reports is offered · list names to keep it short"}</span></label>
+                      <input type="text" className="mono" value={oaDraft} onChange={(e) => setOaDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && oaDraft.trim()) { saveOpenai({ models: [...(settings.openai?.models ?? []), oaDraft.trim()] }); setOaDraft(""); } }} placeholder="gpt-5" />
+                    </div>
+                    <button onClick={() => { if (oaDraft.trim()) { saveOpenai({ models: [...(settings.openai?.models ?? []), oaDraft.trim()] }); setOaDraft(""); } }} disabled={!oaDraft.trim()}>Add</button>
+                  </div>
+                  <p className="muted">The service does not say what each model can do, so every listed model is offered for text, fixed-shape answers, tools, and thinking. Pick accordingly.</p>
+                </>
+              )}
             </Zone>
           </>
         )}
@@ -433,7 +503,9 @@ export default function SettingsApp() {
           <>
             <Zone title="What leaves this Mac" sub="nothing, unless a recipe says so">
               <p>Models run in Ollama on this Mac. Files are read only where a recipe's permissions allow, and written only to its own results and the folders you chose.</p>
-              {codexOn ? <p className="amber"><Glyph name="warning" /> Codex is on: a step you put on a Codex model sends its prompt and inputs to OpenAI through your ChatGPT plan. Such steps are marked amber on the map and in Set up.</p> : <p className="muted">Codex is off, so no model step leaves this Mac.</p>}
+              {codexOn && <p className="amber"><Glyph name="warning" /> Codex is on: a step you put on a Codex model sends its prompt and inputs to OpenAI through your ChatGPT plan. Such steps are marked amber on the map and in Set up.</p>}
+              {openaiOn && openaiStatus && !openaiStatus.local && <p className="amber"><Glyph name="warning" /> An API-key service at <span className="mono">{openaiStatus.baseUrl}</span> is on: a step you put on one of its models sends its prompt and inputs there. Such steps are marked amber.</p>}
+              {!codexOn && !(openaiOn && openaiStatus && !openaiStatus.local) && <p className="muted">No cloud provider is on, so no model step leaves this Mac.</p>}
               <p>A recipe reaches the network only if it declares <span className="mono">permissions.network</span>. The usual grant is <span className="mono">input</span>: exactly the hosts in the links you typed, checked on every redirect.</p>
             </Zone>
             <Zone title="Recipes that may use the network">

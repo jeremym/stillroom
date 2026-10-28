@@ -17,6 +17,7 @@ use stillroom_core::{
 };
 use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
+use stillroom_models::openai::OpenAi;
 use stillroom_models::{InstalledModel, ModelRouter, ProviderStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
 use watches::{WatchRuntime, WatchView};
@@ -85,11 +86,26 @@ impl AppState {
         self.settings().ok().and_then(|s| s.get("codex").and_then(|c| c.get("enabled")).and_then(Value::as_bool)).unwrap_or(false)
     }
 
+    /// `openai.enabled`, `openai.baseUrl`, `openai.models`; the key comes from the keychain.
+    fn openai(&self) -> Option<OpenAi> {
+        let settings = self.settings().ok()?;
+        let o = settings.get("openai")?;
+        if !o.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
+            return None;
+        }
+        let url = o.get("baseUrl").and_then(Value::as_str).map(str::trim).filter(|u| !u.is_empty()).unwrap_or(stillroom_models::openai::DEFAULT_URL);
+        let models = o.get("models").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+        Some(OpenAi::new(url, self.secret(OPENAI_KEY), models))
+    }
+
     /// The providers as configured right now. Cheap to build; a run keeps the one it started with.
     fn router(&self) -> Arc<ModelRouter> {
         let mut providers: Vec<Arc<dyn stillroom_models::Provider>> = vec![Arc::new(self.ollama())];
         if self.codex_enabled() {
             providers.push(Arc::new(self.codex()));
+        }
+        if let Some(o) = self.openai() {
+            providers.push(Arc::new(o));
         }
         Arc::new(ModelRouter::new(providers))
     }
@@ -126,7 +142,9 @@ impl AppState {
 const KEYCHAIN_SERVICE: &str = "com.jeremym.stillroom";
 /// The keychain item for a remote Ollama's access key (sent as a bearer token).
 const OLLAMA_KEY: &str = "ollama.apiKey";
-const KNOWN_SECRETS: &[&str] = &[OLLAMA_KEY];
+/// The keychain item for an OpenAI-compatible service's API key.
+const OPENAI_KEY: &str = "openai.apiKey";
+const KNOWN_SECRETS: &[&str] = &[OLLAMA_KEY, OPENAI_KEY];
 
 fn known_secret(name: &str) -> CmdResult<&'static str> {
     KNOWN_SECRETS.iter().copied().find(|k| *k == name).ok_or_else(|| format!("unknown secret {name}"))

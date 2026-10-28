@@ -343,6 +343,8 @@ export interface Settings {
   };
   /** The Codex CLI as a cloud provider: off unless turned on here. */
   codex?: { enabled?: boolean; path?: string; models?: string[] };
+  /** Any OpenAI-compatible service by API key (the key lives in the keychain). Off unless turned on. */
+  openai?: { enabled?: boolean; baseUrl?: string; models?: string[] };
   /** Model pins per recipe: recipe id → slot → model id. */
   pins?: Record<string, Record<string, string>>;
   firstRun?: boolean;

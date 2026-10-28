@@ -1,7 +1,17 @@
 /* Where a model runs, from its provider-qualified id. Ollama is the only local provider;
    anything else leaves this Mac and is marked amber wherever the model is named. */
 
-export const LOCAL_PROVIDERS = ["ollama"];
+/* Which providers are local is decided by the Rust side (an OpenAI-compatible server on
+   localhost counts as local). The registry starts with Ollama and learns the rest when a
+   model list arrives. */
+const localProviders = new Set<string>(["ollama"]);
+const cloudProviders = new Set<string>();
+
+export function rememberProviders(providers: { id: string; local: boolean }[]): void {
+  for (const p of providers) {
+    if (p.local) { localProviders.add(p.id); cloudProviders.delete(p.id); } else { cloudProviders.add(p.id); localProviders.delete(p.id); }
+  }
+}
 
 export function providerOf(modelId: string): string {
   const i = modelId.indexOf(":");
@@ -16,15 +26,17 @@ export function shortModel(modelId: string): string {
 
 export function isLocalModel(modelId: string | null | undefined): boolean {
   if (!modelId) return true;
-  return LOCAL_PROVIDERS.includes(providerOf(modelId));
+  return localProviders.has(providerOf(modelId));
 }
 
-const PROVIDER_WORD: Record<string, string> = { ollama: "local", codex: "Codex · cloud" };
+const PROVIDER_NAME: Record<string, string> = { ollama: "Ollama", codex: "Codex", openai: "OpenAI" };
 
 /** The word for the tag beside a model: "local", or the cloud provider's name with "cloud". */
 export function whereWord(modelId: string | null | undefined): string {
   if (!modelId) return "local";
-  return PROVIDER_WORD[providerOf(modelId)] ?? `${providerOf(modelId)} · cloud`;
+  const p = providerOf(modelId);
+  if (isLocalModel(modelId)) return p === "ollama" ? "local" : `${PROVIDER_NAME[p] ?? p} · local`;
+  return `${PROVIDER_NAME[p] ?? p} · cloud`;
 }
 
 /** Ollama model names people usually start with; the first one not yet installed is suggested. */

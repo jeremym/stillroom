@@ -424,3 +424,11 @@ Left for later, by agreement: map concurrency and the schema-only permissions an
 - **Marks**: `src/models.ts` (`isLocalModel`, `whereWord`, `shortModel`) replaces every hard-coded "local" in Set up, Results, the teletype, the inspector, and the map; a Codex model reads "Codex · cloud" in an amber tag.
 - Commands `codex_status`, `try_model`; setting `codex: { enabled, path, models }`.
 - Checks: `cargo test` (57), `pnpm test` (27), `tsc`, `pnpm build`. Headless Codex smoke test from the terminal: 4.3 s, schema honoured, about 13k input tokens per call. Jeremy tests the full path in the app.
+
+### OpenAI by API key, and Settings fixes · 2026-10-27
+
+- Jeremy corrected the decision: the API-key route is **offered**, he just never tests it. `crates/models/src/openai.rs` is a Chat Completions adapter for OpenAI or any compatible server (LM Studio, llama-server, Ollama's `/v1`): bearer key from the keychain (`openai.apiKey`), tool calls with sequential ids, `response_format` json_schema, `think` as `reasoning_effort` with a retry without it, a loopback address counts as local. Setting `openai: { enabled, baseUrl, models }`; an empty model list offers whatever `/models` reports.
+- Verified by two ignored live tests against Ollama's `/v1` (list, plain answer, schema-shaped answer, a tool-call round trip): `STILLROOM_OPENAI_URL=http://localhost:11434/v1 STILLROOM_OPENAI_MODEL=… cargo test -p stillroom-models --test openai_live -- --ignored`. Not run against api.openai.com.
+- Settings › Models: an "OpenAI by API key" card (toggle, address, key, models with Try and remove, Add) that says it was checked only against a local server. Privacy names any cloud address that is on.
+- `src/models.ts` learns which providers are local from the model list (`rememberProviders`), so an OpenAI-compatible server on this Mac reads "OpenAI · local" and OpenAI itself "OpenAI · cloud".
+- **Fixes from Jeremy's test:** the content column could grow wider than the window (a Try result forced no-wrap on a table cell) so the window got a horizontal scrollbar; now the column is capped (`.settings-main { min-width: 0 }`), tables fill it, cells wrap. The collapse control moved from a faint "Icons only" line at the bottom of the sidebar to a chevron beside the Settings title.

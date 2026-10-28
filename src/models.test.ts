@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isInstalled, isLocalModel, shortModel, suggestPull, whereWord } from "./models";
+import { isInstalled, isLocalModel, rememberProviders, shortModel, suggestPull, whereWord } from "./models";
 
 describe("models", () => {
   it("knows local from cloud by provider", () => {
@@ -9,6 +9,10 @@ describe("models", () => {
     expect(whereWord("ollama:qwen3:8b")).toBe("local");
     expect(whereWord("codex:gpt-5.6-sol")).toBe("Codex · cloud");
     expect(shortModel("ollama:qwen3:8b")).toBe("qwen3:8b");
+    rememberProviders([{ id: "openai", local: true }]);
+    expect(whereWord("openai:qwen3")).toBe("OpenAI · local");
+    rememberProviders([{ id: "openai", local: false }]);
+    expect(whereWord("openai:gpt-5")).toBe("OpenAI · cloud");
   });
   it("suggests a model that is not installed yet", () => {
     expect(suggestPull([])).toBe("qwen3:8b");

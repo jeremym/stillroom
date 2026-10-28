@@ -378,9 +378,14 @@ Left for later, by agreement: map concurrency and the schema-only permissions an
 
 **Permissions backlog** (not done): a true read of Files and Folders status without probing (macOS gives no public API; `tccutil` only resets); Local Network status on macOS 15+; a first-run mention of folders in the welcome; a test of a remote Ollama on the LAN to confirm the Local Network prompt; notification permission when background watches arrive.
 
-### Phase 5: Recipe card · slice 2 built 2026-10-27, visual check pending
+### Phase 5: Recipe card · slice 2 shipped 2026-10-27
 
 - **Inspector** (click a step, input, or result): a glyph in the heading, `· local` after an AI step's kind, and a facts grid (Program, May call, Only if, Reads with input glyphs, Feeds with result glyphs) instead of prose lines. Output and result previews render on paper.
 - **Editor**: step, input, and result forms carry the same glyph headings; **Save recipe** has the icon picker, so a saved copy gets its own card icon; alternating ground on the slot blocks; the danger block separated by a rule.
 - **Settings › Permissions**: "Nothing here is required to start" is its own notice line in the opposite colour (amber on green, green on amber), per Jeremy.
-- Verified: `tsc`, `pnpm test` (27), `pnpm build`. Not by eye: Jeremy was in the browser; screenshots when the screen is free.
+- Verified: `tsc`, `pnpm test` (27), `pnpm build`, and by eye: the inspector on a step (`docs/screenshots/phase5-inspector.png`) and the Permissions notice (`docs/screenshots/phase5-permissions-notice.png`).
+
+### Phase 6: polish and extraction · in progress 2026-10-27
+
+- Escape closes the inspector, wire prompt, connection panel, dialogs, Help, and a pending Stop.
+- **Extraction moves to its own project.** Jeremy's call: the kit is packaged by a fresh session in `~/GitProjects/personal/overtone-foundry-app-kit` (brief in its `PLAN.md`, rules in its `CLAUDE.md`, the current kit and screenshots under `reference/`). When that package exists, Stillroom adopts it by replacing `src/kit` (the package's `docs/MIGRATING-STILLROOM.md` will say how). Until then `src/kit` is frozen except for bug fixes, so the two do not drift.

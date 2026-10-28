@@ -231,7 +231,7 @@ button.stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); 
 .flow-kind .glyph { width: 1em; height: 1em; }
 
 /* Inspector and editor polish */
-.inspect-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.inspect-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-right: 56px; }
 .inspect-head .glyph { color: var(--phos); width: 1.2em; height: 1.2em; }
 .inspect-facts { margin: 8px 0 12px; font-size: var(--size-small); }
 .inspect-facts .label { font-size: 12px; }

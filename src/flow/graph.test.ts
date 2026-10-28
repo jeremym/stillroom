@@ -141,3 +141,29 @@ describe("helpers", () => {
     expect(summarize([], true)).toEqual({ status: "waiting", text: "waiting" });
   });
 });
+
+describe("lanes and marks", () => {
+  it("reports the lanes and tags edges from inputs", async () => {
+    const { buildGraph } = await import("./graph");
+    const recipe = {
+      id: "r", name: "R", version: null, description: null, source: "builtin" as const, path: "",
+      inputs: { f: { type: "file" as const, label: "F" } },
+      modelSlots: { w: { requires: ["text" as const] } },
+      permissions: null,
+      steps: [
+        { id: "a", kind: "tool", name: "Read", tool: "file.read", dependsOn: [], usesInputs: ["f"] },
+        { id: "b", kind: "model", name: "Write", slot: "w", dependsOn: ["a"], usesInputs: [] },
+      ],
+      outputs: { out: { from: "${steps.b.output}", type: "markdown" as const, label: "Out" } },
+    };
+    const g = buildGraph({ recipe: recipe as never, run: null, records: [], inProgress: false, modelFor: () => null, providerFor: () => "cloud", selectedId: null });
+    expect(g.lanes.in).toBeDefined();
+    expect(g.lanes.out).toBeDefined();
+    expect(g.edges.find((e) => e.source === "in:f")?.className).toContain("from-input");
+    expect(g.edges.find((e) => e.target === "out:out")?.className).toContain("to-output");
+    const write = g.nodes.find((n) => n.id === "step:b");
+    expect(write?.data.kindLabel).toBe("AI step · cloud");
+    expect(write?.data.provider).toBe("cloud");
+    expect(g.nodes.find((n) => n.id === "step:a")?.data.provider).toBeNull();
+  });
+});

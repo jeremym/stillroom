@@ -589,6 +589,91 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
     Ok(())
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PermissionEntry {
+    id: String,
+    label: String,
+    /// What it is for, in plain words.
+    why: String,
+    /// required, optional, or not_needed
+    need: &'static str,
+    /// granted, denied, unknown, not_needed, in_use, not_in_use
+    status: &'static str,
+    /// A System Settings privacy pane to open, when one applies.
+    pane: Option<&'static str>,
+}
+
+/// What macOS may ask Stillroom for, and where each stands. With `probe`, the Files and Folders
+/// entries are tested by listing the folder, which is what makes macOS ask in the first place.
+#[tauri::command]
+fn permission_status(app: AppHandle, state: State<'_, AppState>, probe: bool) -> CmdResult<Vec<PermissionEntry>> {
+    let home = app.path().home_dir().map_err(err)?;
+    let mut out = Vec::new();
+    for (name, pane) in [("Desktop", "Privacy_DesktopFolder"), ("Documents", "Privacy_DocumentsFolder"), ("Downloads", "Privacy_DownloadsFolder")] {
+        let status = if probe {
+            match std::fs::read_dir(home.join(name)) {
+                Ok(_) => "granted",
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => "denied",
+                Err(_) => "unknown",
+            }
+        } else {
+            "unknown"
+        };
+        out.push(PermissionEntry {
+            id: format!("folder-{}", name.to_lowercase()),
+            label: format!("Files and Folders · {name}"),
+            why: format!("Recipes read what you choose and watches look at folders. If you pick something in {name}, macOS asks once."),
+            need: "optional",
+            status,
+            pane: Some(pane),
+        });
+    }
+    out.push(PermissionEntry {
+        id: "keychain".into(),
+        label: "Keychain".into(),
+        why: "Holds the access key for a remote Ollama. macOS may ask to allow Stillroom the first time it reads it.".into(),
+        need: "optional",
+        status: if state.secret(OLLAMA_KEY).is_some() { "in_use" } else { "not_in_use" },
+        pane: None,
+    });
+    out.push(PermissionEntry {
+        id: "local-network".into(),
+        label: "Local Network".into(),
+        why: "Only if Ollama runs on another machine on your network. A local Ollama needs nothing.".into(),
+        need: "optional",
+        status: "unknown",
+        pane: Some("Privacy_LocalNetwork"),
+    });
+    for (id, label) in [
+        ("accessibility", "Accessibility"), ("screen-recording", "Screen Recording"), ("microphone", "Microphone"),
+        ("camera", "Camera"), ("full-disk", "Full Disk Access"), ("automation", "Automation"), ("contacts-calendars", "Contacts and Calendars"),
+    ] {
+        out.push(PermissionEntry {
+            id: id.into(),
+            label: label.into(),
+            why: "Stillroom does not use this.".into(),
+            need: "not_needed",
+            status: "not_needed",
+            pane: None,
+        });
+    }
+    Ok(out)
+}
+
+/// Open one System Settings privacy pane. Only the panes Stillroom can need.
+#[tauri::command]
+fn open_privacy_pane(app: AppHandle, pane: String) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    const PANES: &[&str] = &["Privacy_DesktopFolder", "Privacy_DocumentsFolder", "Privacy_DownloadsFolder", "Privacy_LocalNetwork", "Privacy"];
+    if !PANES.contains(&pane.as_str()) {
+        return Err(format!("unknown pane {pane}"));
+    }
+    app.opener()
+        .open_url(format!("x-apple.systempreferences:com.apple.preference.security?{pane}"), None::<&str>)
+        .map_err(err)
+}
+
 /// Show the user's recipes folder in the Finder.
 #[tauri::command]
 fn reveal_recipes_folder(state: State<'_, AppState>) -> CmdResult<()> {
@@ -829,6 +914,8 @@ pub fn run() {
             remove_watch,
             delete_recipe,
             reveal_recipes_folder,
+            permission_status,
+            open_privacy_pane,
             fire_watch,
             write_text_file,
             write_binary_file,

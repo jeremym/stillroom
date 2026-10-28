@@ -338,3 +338,12 @@ export interface ResolutionPreview {
   resolutions: Record<string, { slot: string; modelId: string; via: "pinned" | "default" | "recommended" | "capability" }>;
   problems: Record<string, string>;
 }
+
+export interface PermissionEntry {
+  id: string;
+  label: string;
+  why: string;
+  need: "required" | "optional" | "not_needed";
+  status: "granted" | "denied" | "unknown" | "not_needed" | "in_use" | "not_in_use";
+  pane: string | null;
+}

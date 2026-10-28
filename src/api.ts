@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Draft, DraftResponse, ModelsResponse, ModelUsage, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
+import type { Draft, DraftResponse, ModelsResponse, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -31,6 +31,9 @@ export const api = {
   /** Delete one of your recipes and the watches bound to it. Built-ins refuse. */
   deleteRecipe: (recipeId: string) => invoke<void>("delete_recipe", { recipeId }),
   revealRecipesFolder: () => invoke<void>("reveal_recipes_folder"),
+  /** What macOS may ask for and where each stands. `probe` tests the folders, which is what makes macOS ask. */
+  permissionStatus: (probe: boolean) => invoke<PermissionEntry[]>("permission_status", { probe }),
+  openPrivacyPane: (pane: string) => invoke<void>("open_privacy_pane", { pane }),
   listWatches: () => invoke<WatchView[]>("list_watches"),
   /** Watch `input`'s folder: the recipe runs with these inputs whenever something lands there. */
   addWatch: (recipeId: string, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) =>

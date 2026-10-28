@@ -31,6 +31,8 @@ export interface FlowNodeData extends Record<string, unknown> {
   ioType?: string;
   /** When the step started, for a live timer while it runs. */
   startedAt?: string | null;
+  /** For AI steps: where the model runs. */
+  provider?: "local" | "cloud" | null;
 }
 
 export type FlowNode = Node<FlowNodeData>;
@@ -183,6 +185,8 @@ export interface GraphOptions {
   inProgress: boolean;
   /** Model name to show for a slot: the run's resolution, else the pin, else null (auto). */
   modelFor: (slot: string) => string | null;
+  /** Where the slot's model runs: "local" (Ollama on this Mac) or "cloud". Null when unknown. */
+  providerFor?: (slot: string) => "local" | "cloud" | null;
   selectedId: string | null;
 }
 
@@ -192,13 +196,21 @@ export interface Graph {
   /** Size of the whole drawing, so the canvas can be sized to show it at full scale. */
   width: number;
   height: number;
+  /** Where the IN and OUT lanes sit, in drawing coordinates, so the canvas can label them. */
+  lanes: { in?: { x: number; w: number }; out?: { x: number; w: number } };
 }
 
 /* Layout: steps flow top to bottom, one row per depth (a step sits one row below the deepest
    step it reads from). Inputs sit in a lane on the left beside the first row that reads them;
    results sit in a lane on the right beside the step that produces them. So every line is either
    a short horizontal into or out of a step, or a vertical from one row to the next. */
-export function buildGraph({ recipe, run, records, inProgress, modelFor, selectedId }: GraphOptions): Graph {
+export function buildGraph({ recipe, run, records, inProgress, modelFor, providerFor, selectedId }: GraphOptions): Graph {
+  const provider = (st: StepInfo) => (st.kind === "model" || st.kind === "agent") && st.slot ? providerFor?.(st.slot) ?? "local" : null;
+  const kindLabel = (st: StepInfo) => {
+    const base = KIND_LABEL[st.kind] ?? st.kind;
+    const p = provider(st);
+    return p ? `${base} · ${p}` : base;
+  };
   const steps = recipe.steps;
   const stepIds = new Set(steps.map((s) => s.id));
 
@@ -246,8 +258,8 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
     const recs = recordsFor(records, s.id);
     const { status, text, startedAt } = summarize(recs, inProgress);
     const base: FlowNodeData = {
-      role: "step", title: s.name ?? s.id, kindLabel: KIND_LABEL[s.kind] ?? s.kind, subtitle: stepSubtitle(s, modelFor),
-      status, statusText: text, stepId: s.id, kind: s.kind, startedAt,
+      role: "step", title: s.name ?? s.id, kindLabel: kindLabel(s), subtitle: stepSubtitle(s, modelFor),
+      status, statusText: text, stepId: s.id, kind: s.kind, startedAt, provider: provider(s),
       condition: s.when ? `only if ${describeRef(s.when, recipe)}` : undefined,
     };
     for (const d of s.dependsOn) if (stepIds.has(d)) edges.push(edge(`step:${d}`, id, status, "b", "t"));
@@ -286,8 +298,8 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
           id: cid, type: "step", parentId: id, extent: "parent",
           position: { x: GROUP_PAD + c * (NODE_W + INNER_GAP_X), y: GROUP_HEAD + r * (NODE_H + INNER_GAP_Y) },
           data: {
-            role: "step", title: i.name ?? i.id, kindLabel: KIND_LABEL[i.kind] ?? i.kind, subtitle: stepSubtitle(i, modelFor),
-            status: sum.status, statusText: sum.text, stepId: i.id, kind: i.kind, startedAt: sum.startedAt,
+            role: "step", title: i.name ?? i.id, kindLabel: kindLabel(i), subtitle: stepSubtitle(i, modelFor),
+            status: sum.status, statusText: sum.text, stepId: i.id, kind: i.kind, startedAt: sum.startedAt, provider: provider(i),
             condition: i.when ? `only if ${describeRef(i.when, recipe, itemName(s))}` : undefined,
           },
           selected: selectedId === cid,
@@ -390,7 +402,10 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, selecte
     nodes.push({ ...p.node, width: p.w, height: p.h });
     if (p.children) nodes.push(...p.children.map((c) => ({ ...c, width: NODE_W, height: NODE_H })));
   }
-  return { nodes, edges: dedupe(edges), width: hasOut ? outX + IO_W : centerX + centerW, height: Math.max(0, y - ROW_GAP) };
+  return {
+    nodes, edges: dedupe(edges), width: hasOut ? outX + IO_W : centerX + centerW, height: Math.max(0, y - ROW_GAP),
+    lanes: { ...(hasIn ? { in: { x: 0, w: IO_W } } : {}), ...(hasOut ? { out: { x: outX, w: IO_W } } : {}) },
+  };
 }
 
 function itemName(map: StepInfo): string | undefined {
@@ -401,7 +416,7 @@ function edge(source: string, target: string, targetStatus: NodeStatus, sourceHa
   return {
     id: `${source}->${target}`, source, target, sourceHandle, targetHandle, type: "smoothstep",
     animated: targetStatus === "running",
-    className: `flow-edge ${targetStatus}`,
+    className: `flow-edge ${targetStatus}${source.startsWith("in:") ? " from-input" : ""}${target.startsWith("out:") ? " to-output" : ""}`,
   };
 }
 

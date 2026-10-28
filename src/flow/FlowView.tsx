@@ -57,13 +57,14 @@ function StepNode({ data, selected }: NodeProps<FlowNode>) {
   const elapsed = useElapsed(data.status === "running" ? data.startedAt : null);
   const statusText = data.status === "running" && elapsed != null ? `${data.statusText} ${fmtElapsed(elapsed)}` : data.statusText;
   return (
-    <div className={`flow-node step kind-${data.kind ?? ""} ${data.status} ${selected ? "selected" : ""}`} title="Click for details">
+    <div className={`flow-node step kind-${data.kind ?? ""} ${data.status} ${data.provider === "cloud" ? "cloud" : ""} ${selected ? "selected" : ""}`} title="Click for details">
       <StepHandles />
       <Glyph name={stepGlyph(data.kind ?? "")} />
-      <div className="flow-kind">{data.kindLabel}</div>
+      <div className="flow-kind">{data.provider === "cloud" && <Glyph name="cloud" />}{data.kindLabel}</div>
       <div className="flow-title">{data.title}</div>
-      {data.subtitle && <div className="flow-sub mono">{data.subtitle}</div>}
-      {data.condition && <div className="flow-cond">{data.condition}</div>}
+      {data.condition
+        ? <div className="flow-cond" title={data.subtitle}>{data.condition}{data.subtitle ? <span className="muted"> · {data.subtitle}</span> : null}</div>
+        : data.subtitle && <div className="flow-sub mono">{data.subtitle}</div>}
       {statusText && <div className={`flow-status ${data.status}`}>{statusText}</div>}
     </div>
   );
@@ -252,15 +253,21 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     const id = run?.resolutions?.[slot]?.modelId ?? pins[slot];
     return id ? modelName(id) : null;
   };
+  // Every provider is Ollama on this Mac today; anything else would be a cloud model and marked amber.
+  const providerFor = (slot: string): "local" | "cloud" | null => {
+    const id = run?.resolutions?.[slot]?.modelId ?? pins[slot];
+    if (!id) return "local";
+    return id.startsWith("ollama:") ? "local" : "cloud";
+  };
 
   const shownRecipe = edit ? docToInfo(edit.doc, recipe) : recipe;
   const shownRun = edit ? null : run;
   const shownRecords = edit ? [] : records;
   const shownProgress = edit ? false : inProgress;
 
-  const { nodes, edges, width, height } = useMemo(
+  const { nodes, edges, width, height, lanes } = useMemo(
     () => {
-      const g = buildGraph({ recipe: shownRecipe, run: shownRun, records: shownRecords, inProgress: shownProgress, modelFor, selectedId });
+      const g = buildGraph({ recipe: shownRecipe, run: shownRun, records: shownRecords, inProgress: shownProgress, modelFor, providerFor, selectedId });
       if (selectedEdge) g.edges = g.edges.map((e) => (e.id === selectedEdge.id ? { ...e, selected: true, className: `${e.className} selected` } : e));
       return g;
     },
@@ -317,13 +324,23 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
         </div>
       )}
       {edit && edit.problems.length > 0 && (
-        <ul className="flow-problems">
-          {edit.problems.map((p, i) => <li key={i}>{p}</li>)}
-        </ul>
+        <div className="tty flow-problems" role="log">
+          {edit.problems.map((p, i) => <div key={i} className="red"><span className="mark">✗ </span>{p}</div>)}
+        </div>
       )}
 
       <div className={`flow-layout ${hasPanel ? "with-details" : ""}`}>
         <div className="flow-canvas" ref={wrapRef} style={{ height: canvasH }}>
+          {lanes.in && (
+            <div className="lane-band in" style={{ left: viewport.x + lanes.in.x * zoom, width: lanes.in.w * zoom }}>
+              <span className="lane-label"><Glyph name="in" /> In · what goes in</span>
+            </div>
+          )}
+          {lanes.out && (
+            <div className="lane-band out" style={{ left: viewport.x + lanes.out.x * zoom, width: lanes.out.w * zoom }}>
+              <span className="lane-label"><Glyph name="out" /> Out · what you get</span>
+            </div>
+          )}
           <ReactFlow
             nodes={nodes}
             edges={edges}

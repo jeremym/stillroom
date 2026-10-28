@@ -168,8 +168,7 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .panel.flow-panel.editing { border-color: var(--amber); border-style: dashed; }
 .flow-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; }
 .flow-toolbar-gap { flex: 1; }
-.flow-problems { margin: 0 0 10px; padding-left: 20px; color: var(--red); font-size: 0.92em; }
-.flow-problems li { margin: 2px 0; }
+.flow-problems { margin: 0 0 10px; max-height: 160px; }
 .flow-details .field { margin: 10px 0; }
 .flow-details .field label { display: block; }
 .flow-details input[type="text"], .flow-details input[type="number"], .flow-details textarea, .flow-details select { width: 100%; margin: 3px 0; }
@@ -216,3 +215,17 @@ button.stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); 
 @keyframes p1-boot { from { opacity: 0; filter: brightness(2); } to { opacity: 1; filter: none; } }
 @media (prefers-reduced-motion: reduce) { .boot { animation: none; } }
 .hint-line { color: var(--phos); border-left: 2px solid var(--phos); padding-left: 12px; }
+
+/* Recipe card: lanes and marks */
+.flow-canvas { position: relative; }
+.lane-band { position: absolute; top: 0; bottom: 0; z-index: 1; pointer-events: none; border-left: 1px dashed var(--phos-faint); border-right: 1px dashed var(--phos-faint); background: color-mix(in srgb, var(--phos) 2%, transparent); }
+.lane-band.in { border-left: 0; }
+.lane-band.out { border-right: 0; }
+.lane-label { position: absolute; top: 6px; left: 8px; right: 8px; font-family: var(--display); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--phos-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; gap: 6px; align-items: center; }
+.flow-edge.from-input .react-flow__edge-path { stroke-dasharray: 2 6; }
+.flow-edge.from-input.done .react-flow__edge-path, .flow-edge.from-input.reused .react-flow__edge-path, .flow-edge.from-input.edited .react-flow__edge-path { stroke-dasharray: none; }
+.flow-edge.from-input.running .react-flow__edge-path { stroke-dasharray: 10 8; }
+.flow-node.cloud { border-color: var(--amber); }
+.flow-node.cloud .flow-kind { color: var(--amber); display: inline-flex; gap: 4px; align-items: center; }
+.flow-node.cloud .glyph { color: var(--amber); }
+.flow-kind .glyph { width: 1em; height: 1em; }

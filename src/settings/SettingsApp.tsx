@@ -4,20 +4,24 @@ import { api } from "../api";
 import { WatchPanel } from "../components/WatchPanel";
 import { Glyph, Logo, Zone, applyLook, loadLook, type GlyphName, type Look } from "../kit";
 import { PullModel } from "../components/PullModel";
-import type { ModelsResponse, RecipesResponse, RuntimeStatus, Settings, WatchView } from "../types";
+import type { ModelsResponse, PermissionEntry, RecipesResponse, RuntimeStatus, Settings, WatchView } from "../types";
 
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
 
-type Section = "look" | "models" | "folders" | "watches" | "privacy" | "about";
+type Section = "look" | "models" | "folders" | "watches" | "permissions" | "privacy" | "about";
 const SECTIONS: { id: Section; label: string; glyph: GlyphName }[] = [
   { id: "look", label: "Look", glyph: "image" },
   { id: "models", label: "Models", glyph: "models" },
   { id: "folders", label: "Folders", glyph: "folder" },
   { id: "watches", label: "Watches", glyph: "watch" },
+  { id: "permissions", label: "Permissions", glyph: "checklist" },
   { id: "privacy", label: "Privacy", glyph: "shield" },
   { id: "about", label: "About", glyph: "help" },
 ];
+const PERM_WORD: Record<PermissionEntry["status"], string> = {
+  granted: "granted", denied: "not allowed", unknown: "not asked yet", not_needed: "not needed", in_use: "in use", not_in_use: "not in use",
+};
 const CAPABILITIES: { id: string; label: string; what: string }[] = [
   { id: "text", label: "Text", what: "reads and writes prose" },
   { id: "structured_output", label: "Structured output", what: "answers in a fixed shape (JSON)" },
@@ -49,6 +53,9 @@ export default function SettingsApp() {
   });
   useEffect(() => { try { localStorage.setItem("p1.settingsNav", collapsed ? "collapsed" : "open"); } catch { /* per-viewer */ } }, [collapsed]);
   const [keySet, setKeySet] = useState<boolean | null>(null);
+  const [perms, setPerms] = useState<PermissionEntry[] | null>(null);
+  const loadPerms = useCallback((probe: boolean) => { api.permissionStatus(probe).then(setPerms).catch((e) => setError(String(e))); }, []);
+  useEffect(() => { if (section === "permissions" && !perms) loadPerms(false); }, [section, perms, loadPerms]);
   const [keyDraft, setKeyDraft] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   const refreshKey = useCallback(() => { api.hasSecret("ollama.apiKey").then(setKeySet).catch(() => setKeySet(null)); }, []);
@@ -307,6 +314,42 @@ export default function SettingsApp() {
                 <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={() => {}} onError={(m) => setError(m)} />
               </>
             )}
+          </>
+        )}
+
+        {section === "permissions" && (
+          <>
+            <Zone title="What macOS may ask for" sub="and where each one stands" aside={<button className="quiet" onClick={() => loadPerms(true)}>Check the folders now</button>}>
+              <p className="muted">Stillroom asks for very little. Folders are granted by macOS the first time a recipe or a watch touches them, with a system prompt. Nothing here is required to start.</p>
+              {!perms ? <p className="muted">…</p> : (
+                <ul className="rows perms">
+                  {perms.map((p) => (
+                    <li key={p.id} className={p.need === "not_needed" ? "dim" : ""}>
+                      <div className="perm-row">
+                        <span className="perm-main">
+                          <strong>{p.label}</strong>
+                          <span className={`tag ${p.status === "granted" || p.status === "in_use" ? "live" : p.status === "denied" ? "bad" : ""}`}>{PERM_WORD[p.status]}</span>
+                          {p.need === "optional" && <span className="tag">optional</span>}
+                          <br /><span className="muted">{p.why}</span>
+                        </span>
+                        <span className="perm-act">
+                          {p.need === "not_needed"
+                            ? <button disabled title="Stillroom does not use this, so there is nothing to grant">Not needed</button>
+                            : p.status === "granted" || p.status === "in_use"
+                              ? <button disabled title="Already granted">Granted</button>
+                              : p.pane
+                                ? <button onClick={() => api.openPrivacyPane(p.pane!).catch((e) => setError(String(e)))} title="Opens System Settings at the right pane">Open System Settings…</button>
+                                : <button disabled title="macOS asks when it is first used">Asked when used</button>}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Zone>
+            <Zone title="Why so few" sub="local-first, by design">
+              <p className="muted">Models run in Ollama on this Mac, so there is no microphone, camera, screen, or accessibility access to grant. Files are read where you point, written to the recipe's own results, and the keychain holds only the optional access key for a remote Ollama.</p>
+            </Zone>
           </>
         )}
 

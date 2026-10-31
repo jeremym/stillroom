@@ -577,7 +577,13 @@ impl Planner {
         let mut taken: Vec<String> = Vec::new();
         let mut custom = 0usize;
         for st in answer.stages {
-            match st.use_.as_deref().filter(|u| lib.get(u).is_some()) {
+            // The model often names the ready-made stage it means in the why, "(watch_pages)",
+            // instead of writing `use`. Take the hint.
+            let hinted = st.use_.clone().filter(|u| lib.get(u).is_some()).or_else(|| {
+                let text = format!("{} {}", st.name.clone().unwrap_or_default(), st.why.clone().unwrap_or_default());
+                lib.stages.iter().map(|d| d.id.clone()).find(|id| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == id))
+            });
+            match hinted.as_deref() {
                 Some(u) => {
                     let mut o = serde_json::Map::new();
                     o.insert("use".into(), Value::String(u.into()));
@@ -884,6 +890,17 @@ mod tests {
         assert_eq!(y["steps"].as_array().unwrap().iter().find(|s| s["id"] == "ideas").unwrap()["inputs"]["pages"], "${steps.links_pages.output}");
         let brief = y["steps"].as_array().unwrap().iter().find(|s| s["id"] == "brief_write").unwrap();
         assert!(brief["inputs"].get("files").is_none() && brief["inputs"].get("pages").is_some(), "{brief}");
+
+        // A custom stage whose why names a ready-made stage is taken as that stage.
+        let strip = json!({ "stages": [ { "name": "Read the pages", "why": "Fetch each link and extract findings (read_links)." }, { "name": "Brief", "why": "One brief, cited (write_brief)." } ] }).to_string();
+        let (mut p, _) = planner(vec![strip]);
+        p.library = Some(lib.clone());
+        let out = p.plan(&req(), None).await.unwrap();
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert_eq!(out.attempts, 1);
+        assert_eq!(out.draft.yaml["stages"][0]["id"], "read_links");
+        assert_eq!(out.draft.yaml["stages"][1]["id"], "write_brief");
+        assert_eq!(out.draft.yaml["stages"][0]["name"], "Read the pages", "the model's name stays");
 
         // All ready-made: one call, nothing to compose.
         let strip = json!({ "stages": [ { "use": "index_folder" }, { "use": "answer_from_index" } ] }).to_string();

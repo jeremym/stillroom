@@ -172,6 +172,9 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       ))}
 
       <h3>Models for this run <span className="muted">(model slots)</span></h3>
+      {unfillable.some(([, s]) => s.requires.includes("embedding")) && (
+        <p className="hint-line"><Glyph name="warning" /> This recipe needs an embedding model (one that turns text into numbers for search). None is installed. In Settings › Models, pull <span className="mono">nomic-embed-text</span> or <span className="mono">bge-m3</span>, then come back.</p>
+      )}
       {Object.entries(recipe.modelSlots).map(([slot, spec]) => {
         const candidates = slotCandidates(spec.requires);
         const picked = preview?.resolutions[slot];
@@ -223,7 +226,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       </label>
       <button className="primary" disabled={running || missing.length > 0 || unfillable.length > 0}
         onClick={() => onRun(recipe, inputs, pins, reuse)}>
-        {running ? "Running…" : missing.length > 0 ? `Run · needs ${missing.map((k) => recipe.inputs[k]?.label ?? k).join(", ")}` : unfillable.length > 0 ? `Run · no model for ${unfillable.map(([s]) => s).join(", ")}` : "Run"}
+        {running ? "Running…" : missing.length > 0 ? `Run · needs ${missing.map((k) => recipe.inputs[k]?.label ?? k).join(", ")}` : unfillable.length > 0 ? `Run · no installed model can do ${unfillable.map(([, s]) => s.requires.join(" and ")).join("; ")}` : "Run"}
       </button>
       {folderInputs.length > 0 && (
         <>

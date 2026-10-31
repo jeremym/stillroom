@@ -40,7 +40,7 @@ export function whereWord(modelId: string | null | undefined): string {
 }
 
 /** Ollama model names people usually start with; the first one not yet installed is suggested. */
-export const STARTER_MODELS = ["qwen3:8b", "gemma3:12b", "llama3.2:3b", "qwen3:4b"];
+export const STARTER_MODELS = ["qwen3:8b", "gemma3:12b", "llama3.2:3b", "qwen3:4b", "nomic-embed-text"];
 
 export function suggestPull(installed: string[]): string {
   const have = new Set(installed.map((n) => n.toLowerCase()));

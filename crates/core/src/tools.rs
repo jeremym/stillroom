@@ -973,7 +973,7 @@ impl Tool for FsList {
                 "required": ["path"],
                 "properties": {
                     "path": { "type": "string", "description": "Absolute path of the directory" },
-                    "extensions": { "type": "array", "items": { "type": "string" }, "description": "Only files with these extensions, e.g. [\"md\"]" },
+                    "extensions": { "type": "array", "items": { "type": "string" }, "description": "Only files with these extensions, e.g. [\"md\"]; folders are then left out of the list" },
                     "recursive": { "type": "boolean", "description": "Include subdirectories" }
                 }
             }),
@@ -1008,7 +1008,11 @@ impl Tool for FsList {
                 if is_dir && recursive {
                     stack.push(path.clone());
                 }
-                if !is_dir && !exts.is_empty() {
+                if !exts.is_empty() {
+                    // An extension filter means files of those kinds; folders are walked, not listed.
+                    if is_dir {
+                        continue;
+                    }
                     let ext = path.extension().map(|x| x.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
                     if !exts.contains(&ext) {
                         continue;

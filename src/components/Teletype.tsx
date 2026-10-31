@@ -30,6 +30,10 @@ export function linesFor(records: StepRecord[], stages: Stage[] = []): Line[] {
     const name = r.name ?? r.stepId;
     const where = r.parent ? `${r.parent} › ` : "";
     const start = clock(r.startedAt);
+    if (r.reusedFrom?.startsWith("keep:")) {
+      out.push({ ...clock(r.finishedAt ?? r.startedAt), mark: "↻", text: `${where}${name} · kept from the last build of this stage (its sources have not changed)`, tone: "dim" });
+      continue;
+    }
     if (r.reusedFrom) {
       out.push({ ...clock(r.finishedAt ?? r.startedAt), mark: "↻", text: `${where}${name} · reused from an earlier run (nothing it depends on changed)`, tone: "dim" });
       continue;

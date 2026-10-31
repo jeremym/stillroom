@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from "react";
-import { fmtTokens } from "../api";
+import { useEffect, useState, type ReactNode } from "react";
+import { api, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
 import { Glyph, inputGlyph, isGlyphName, outputGlyph, stepGlyph } from "../brand";
 import { Empty, Zone } from "@overtone-foundry/app-kit";
 import { WatchPanel } from "./WatchPanel";
-import type { InstalledModel, RecipeInfo, RunSummary, StepInfo, WatchView } from "../types";
+import { keepWord } from "../stages";
+import type { InstalledModel, JournalEntry, KeepState, RecipeInfo, RunSummary, StepInfo, WatchView } from "../types";
 
 /* The recipe's own page: what it does, what it needs, its runs, its watches, how it works. */
 interface Props {
@@ -19,13 +20,21 @@ interface Props {
   onDuplicate: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
+  /** Kept stages' state, by stage id. */
+  keeps?: Record<string, KeepState>;
   onWatchesChanged: () => void;
   onError: (message: string) => void;
 }
 
 const RUN_WORD: Record<string, string> = { succeeded: "done", failed: "failed", cancelled: "stopped", needs_review: "needs you", running: "running" };
 
-export function RecipePage({ recipe, models, history, watches, map, onSetup, onDoor, onOpenRun, onDuplicate, onRename, onDelete, onWatchesChanged, onError }: Props) {
+export function RecipePage({ recipe, models, history, watches, map, onSetup, onDoor, onOpenRun, onDuplicate, onRename, onDelete, onWatchesChanged, onError, keeps }: Props) {
+  const [journalFor, setJournalFor] = useState<string | null>(null);
+  const [journal, setJournal] = useState<JournalEntry[]>([]);
+  useEffect(() => {
+    if (!journalFor) return;
+    api.keepJournal(recipe.id, journalFor).then(setJournal).catch((e) => onError(String(e)));
+  }, [journalFor, recipe.id, onError, keeps]);
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(recipe.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -65,6 +74,27 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
               <span key={st.id} className="stage-row">
                 <span className="stage-n">{i + 1}</span>
                 <span><strong>{st.name}</strong>{st.why && <span className="muted"> · {st.why}</span>}
+                  {st.keep && (() => {
+                    const k = keeps?.[st.id];
+                    const w = k ? keepWord(k) : null;
+                    return (
+                      <span className="keep-line">
+                        {w && <span className={`tag ${w.tone === "amber" ? "amber" : ""}`}>{w.status}</span>}
+                        <span className="muted"> remembers between runs</span>
+                        {k && k.fresh != null && (
+                          <button className="link" onClick={() => setJournalFor(journalFor === st.id ? null : st.id)}>{journalFor === st.id ? "hide history" : "history"}</button>
+                        )}
+                        {journalFor === st.id && (
+                          <ul className="journal">
+                            {journal.length === 0 && <li className="muted">No runs yet.</li>}
+                            {journal.map((j, n) => (
+                              <li key={n}><span className="mono">{new Date(j.at).toLocaleString()}</span> · +{j.added} added · {j.replaced} replaced · {j.removed} removed · {j.reason} · <span className="mono">{j.runId.slice(0, 8)}</span></li>
+                            ))}
+                          </ul>
+                        )}
+                      </span>
+                    );
+                  })()}
                   <span className="strip">
                     {(st.steps ?? []).map((id) => recipe.steps.find((s) => s.id === id)).filter((s): s is StepInfo => Boolean(s)).map((s, k) => (
                       <span key={s.id} style={{ display: "contents" }}>

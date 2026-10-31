@@ -1,4 +1,4 @@
-import type { RecipeInfo, Run, Stage, StepRecord } from "./types";
+import type { KeepState, RecipeInfo, Run, Stage, StepRecord } from "./types";
 
 /* The strip, as drawn: each stage of a recipe with one status word, from what is known right now:
    which inputs are filled (Set up), which steps have run (Running, Results), whether a review is
@@ -23,6 +23,17 @@ export interface StripContext {
   records?: StepRecord[];
   running?: boolean;
   runStatus?: Run["status"] | null;
+  /** Kept stages' state for the inputs at hand, by stage id. */
+  keeps?: Record<string, KeepState>;
+}
+
+export function keepWord(k: KeepState): { status: string; tone: StageTone } {
+  const n = `${k.records} record${k.records === 1 ? "" : "s"}`;
+  const when = k.builtAt ? ` · ${new Date(k.builtAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "";
+  if (k.fresh == null) return { status: "not built yet", tone: "dim" };
+  if (k.refresh === "always") return { status: `${n} · runs every time`, tone: "green" };
+  if (k.fresh) return { status: `fresh · ${n}${when}`, tone: "green" };
+  return { status: `stale · will rebuild · ${n}`, tone: "amber" };
 }
 
 function empty(v: unknown): boolean {
@@ -59,6 +70,7 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
     if (waiting) return { ...base, status: "waiting for you", tone: "amber" };
     const finished = recs.filter((r) => r.status === "succeeded" || r.status === "skipped");
     if (finished.length === stepIds.length) {
+      if (recs.length > 0 && recs.every((r) => r.reusedFrom?.startsWith("keep:"))) return { ...base, status: "ready · kept", tone: "green" };
       const reused = recs.filter((r) => r.reusedFrom).length;
       return { ...base, status: reused === recs.length && reused > 0 ? "done · reused" : "done", tone: "green" };
     }
@@ -66,7 +78,12 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
     if (recs.length > 0) return { ...base, status: "not finished", tone: "dim" };
   }
 
-  // Before a run: does this stage still need something from the user?
+  // Before a run: a kept stage says what it holds; any stage says if it still needs you.
+  const keep = ctx.keeps?.[stage.id];
+  if (keep && stage.keep) {
+    const w = keepWord(keep);
+    return { ...base, ...w };
+  }
   const missing = (stage.inputs ?? []).filter((name) => {
     const spec = recipe.inputs[name];
     if (!spec || spec.required === false) return false;

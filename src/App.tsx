@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
-import type { ModelsResponse, ModelUsage, PlanEvent, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
+import type { KeepState, ModelsResponse, ModelUsage, PlanEvent, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
 import { Teletype } from "./components/Teletype";
@@ -73,6 +73,11 @@ function App() {
   // The strip: which stage is selected, and what Set up holds so the strip can say who needs you.
   const [stageSel, setStageSel] = useState<string | null>(null);
   const [setupInputs, setSetupInputs] = useState<Record<string, unknown>>({});
+  // What each kept stage of the open recipe holds, for the inputs typed so far.
+  const [keeps, setKeeps] = useState<Record<string, KeepState>>({});
+  const keepsFor = useCallback((id: string, inputs: Record<string, unknown>) => {
+    api.keepStates(id, inputs).then((list) => setKeeps(Object.fromEntries(list.map((k) => [k.stage, k])))).catch(() => setKeeps({}));
+  }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   // The welcome shows until it has been finished or skipped once (firstRun absent means never shown).
@@ -455,6 +460,12 @@ function App() {
     }
   })();
 
+  useEffect(() => {
+    if (!recipe || !recipe.stages.some((st) => st.keep)) { setKeeps({}); return; }
+    const t = setTimeout(() => keepsFor(recipe.id, setupInputs), 250);
+    return () => clearTimeout(t);
+  }, [recipe, setupInputs, history, keepsFor]);
+
   const flowFor = (r: RecipeInfo | null, editable = true) => {
     if (!r) return null;
     const flowRun = run && run.recipeId === r.id ? run : null;
@@ -525,6 +536,7 @@ function App() {
                 records: runIsHere || runningHere ? steps : undefined,
                 running: runningHere,
                 runStatus: runIsHere ? run?.status : null,
+                keeps: place === "recipe" || place === "setup" ? keeps : undefined,
               })}
               current={stageSel}
               onSelect={(id) => {
@@ -597,7 +609,7 @@ function App() {
             <p className="result-line hint-line"><Glyph name="sparkles" /> {planNote}</p>
           )}
           {place === "recipe" && recipe && (
-            <RecipePage recipe={recipe} models={models?.models ?? []} history={history} watches={watches}
+            <RecipePage recipe={recipe} models={models?.models ?? []} history={history} watches={watches} keeps={keeps}
               map={flowFor(recipe, false)}
               onSetup={() => setPlace("setup")} onDoor={() => setPlace("door")} onOpenRun={openRun}
               onDuplicate={() => duplicateRecipe(recipe)} onRename={(n) => renameRecipe(recipe, n)} onDelete={() => deleteRecipe(recipe)}
@@ -609,7 +621,8 @@ function App() {
           )}
           {place === "setup" && recipes && recipe && (
             <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
-              models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} onInputsChange={setSetupInputs} />
+              models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} onInputsChange={setSetupInputs}
+              keeps={keeps} onRebuild={(stage) => api.rebuildKeep(recipe.id, stage).then(() => keepsFor(recipe.id, setupInputs)).catch((e) => setError(String(e)))} />
           )}
 
           {place === "running" && (

@@ -46,6 +46,17 @@ describe("stripFor", () => {
     expect(bad[0]).toMatchObject({ status: "failed", tone: "bad" });
   });
 
+  it("says what a kept stage holds", () => {
+    const kept = { ...recipe, stages: [{ ...recipe.stages[0], keep: { refresh: "when_sources_change" as const } }, ...recipe.stages.slice(1)] };
+    const k = (fresh: boolean | null, refresh: "always" | "when_sources_change" | "manual" = "when_sources_change") => ({ docs: { stage: "docs", records: 42, builtAt: "2026-10-31T12:00:00Z", fresh, refresh, last: null } });
+    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(null) })[0].status).toBe("not built yet");
+    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true) })[0].status).toMatch(/^fresh · 42 records · /);
+    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(false) })[0]).toMatchObject({ status: "stale · will rebuild · 42 records", tone: "amber" });
+    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true, "always") })[0].status).toBe("42 records · runs every time");
+    const skipped = [rec("list", "succeeded", { reusedFrom: "keep:docs" }), rec("answer", "running")];
+    expect(stripFor(kept, { records: skipped, running: true })[0].status).toBe("ready · kept");
+  });
+
   it("maps steps and outputs to stages", () => {
     expect(stageOfStep(recipe, "answer")?.id).toBe("ask");
     expect(outputsByStage(recipe)).toEqual([

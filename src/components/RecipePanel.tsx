@@ -3,7 +3,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, fmtMs, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
 import { defaultInputs } from "../recipes/defaults";
-import type { InputSpec, InstalledModel, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
+import { keepWord } from "../stages";
+import type { InputSpec, InstalledModel, KeepState, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
 import { Glyph } from "../brand";
 import { isLocalModel, whereWord } from "../models";
 
@@ -36,6 +37,10 @@ interface Props {
   onWatch: (recipe: RecipeInfo, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) => void;
   /** The strip above wants to know which stage still needs you. */
   onInputsChange?: (inputs: Record<string, unknown>) => void;
+  /** Kept stages' state for the inputs typed so far, by stage id. */
+  keeps?: Record<string, KeepState>;
+  /** Empty a stage's keep so the next run builds it again. */
+  onRebuild?: (stage: string) => void;
 }
 
 function InputField({
@@ -81,7 +86,8 @@ function InputField({
   );
 }
 
-export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch, onInputsChange }: Props) {
+export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch, onInputsChange, keeps, onRebuild }: Props) {
+  const [confirmRebuild, setConfirmRebuild] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [preview, setPreview] = useState<ResolutionPreview | null>(null);
@@ -135,11 +141,28 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       </div>
       {recipe.description && <p className="muted">{recipe.description}</p>}
 
-      {recipe.stages.filter((st) => (st.inputs ?? []).some((n) => n in recipe.inputs)).map((st, i) => (
+      {recipe.stages.filter((st) => (st.inputs ?? []).some((n) => n in recipe.inputs) || st.keep).map((st, i) => (
         <section key={st.id} id={`stage-${st.id}`} className="stage-section">
           {recipe.stages.length > 1 && (
             <h3 className="stage-head"><span className="stage-n">{recipe.stages.indexOf(st) + 1}</span> {st.name}{st.why && <span className="muted"> · {st.why}</span>}</h3>
           )}
+          {st.keep && (() => {
+            const k = keeps?.[st.id];
+            const w = k ? keepWord(k) : { status: "…", tone: "dim" as const };
+            const last = k?.last;
+            return (
+              <div className="row keep-line">
+                <span className={`tag ${w.tone === "amber" ? "amber" : ""}`}>{w.status}</span>
+                <span className="muted">
+                  This stage remembers between runs (a run keep, kept on this Mac in Stillroom's data folder; deleting the recipe deletes it).
+                  {last && ` Last run: +${last.added} added, ${last.replaced} replaced, ${last.removed} removed (${last.reason}).`}
+                </span>
+                {onRebuild && k && k.fresh != null && (confirmRebuild === st.id
+                  ? <><button className="danger" onClick={() => { setConfirmRebuild(null); onRebuild(st.id); }}>Really rebuild</button><button onClick={() => setConfirmRebuild(null)}>Keep it</button></>
+                  : <button disabled={running} onClick={() => setConfirmRebuild(st.id)}>Rebuild…</button>)}
+              </div>
+            );
+          })()}
           {(st.inputs ?? []).filter((n) => n in recipe.inputs).map((name) => (
             <InputField key={name} name={name} spec={recipe.inputs[name]} value={inputs[name]}
               onChange={(v) => setInputs((i) => ({ ...i, [name]: v }))} />

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CodexStatus, Draft, DraftResponse, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -22,8 +22,14 @@ export const api = {
   setSecret: (name: string, value: string) => invoke<void>("set_secret", { name, value }),
   hasSecret: (name: string) => invoke<boolean>("has_secret", { name }),
   listRecipes: () => invoke<RecipesResponse>("list_recipes"),
-  runRecipe: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>, reuse = true) =>
-    invoke<Run>("run_recipe", { args: { recipeId, inputs, pins, reuse } }),
+  runRecipe: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>, reuse = true, rebuild: string[] = []) =>
+    invoke<Run>("run_recipe", { args: { recipeId, inputs, pins, reuse, rebuild } }),
+  /** What each kept stage holds and whether it is fresh for these inputs. */
+  keepStates: (recipeId: string, inputs: Record<string, unknown>) => invoke<KeepState[]>("keep_states", { args: { recipeId, inputs } }),
+  /** Empty a stage's keep now; the next run builds it again. */
+  rebuildKeep: (recipeId: string, stage: string) => invoke<void>("rebuild_keep", { recipeId, stage }),
+  keepJournal: (recipeId: string, stage: string, limit = 50) => invoke<JournalEntry[]>("keep_journal", { recipeId, stage, limit }),
+  keepRecords: (recipeId: string, stage: string, limit = 200) => invoke<KeepRecord[]>("keep_records", { recipeId, stage, limit }),
   /** Change propagation: rerun `runId` with `stepId`'s output replaced by the user's edit. */
   rerunWithEdit: (runId: string, stepId: string, output: unknown, reuse = true) =>
     invoke<Run>("rerun_with_edit", { args: { runId, stepId, output, reuse } }),

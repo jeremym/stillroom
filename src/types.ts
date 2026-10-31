@@ -246,6 +246,24 @@ export interface Stage {
   inputs?: string[];
   steps?: string[];
   outputs?: string[];
+  /** A run keep: what this stage holds on to between runs. */
+  keep?: { refresh?: "always" | "when_sources_change" | "manual" } | null;
+}
+
+/** What each run changed in a stage's keep. */
+export interface JournalEntry { runId: string; at: string; added: number; replaced: number; removed: number; reason: string }
+
+export interface KeepRecord { id: string; data: unknown; runId: string; writtenAt: string }
+
+/** A kept stage's state for the inputs at hand. */
+export interface KeepState {
+  stage: string;
+  records: number;
+  builtAt: string | null;
+  /** Whether a run started now would skip the stage; null when it is not built yet. */
+  fresh: boolean | null;
+  refresh: "always" | "when_sources_change" | "manual";
+  last: JournalEntry | null;
 }
 
 export interface RecipesResponse {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { addStep, connect, dependentsOf, disconnect, removeStep, renameStepId, sourcesFor, stepInfosFromDoc, uniqueId } from "./draft";
+import { stagesOrImplied } from "./draft";
 import type { RecipeDoc } from "../types";
 
 const doc: RecipeDoc = {
@@ -78,5 +79,17 @@ describe("editing", () => {
     expect(inner).toContain("${steps.parse.output}");
     expect(inner).not.toContain("${steps.triage.output}");
     expect(inner).not.toContain("${steps.draft.output}");
+  });
+});
+
+describe("stagesOrImplied", () => {
+  it("implies Make and places what no stage names", () => {
+    const doc = { schemaVersion: "0", id: "x", name: "X", inputs: { a: { type: "text" }, b: { type: "text" } }, steps: [{ id: "s1", kind: "tool" }, { id: "s2", kind: "tool" }], outputs: { o: { from: "${steps.s2.output}", type: "text" } } } as unknown as Parameters<typeof stagesOrImplied>[0];
+    expect(stagesOrImplied(doc)).toEqual([{ id: "make", name: "Make", inputs: ["a", "b"], steps: ["s1", "s2"], outputs: ["o"] }]);
+    const partial = { ...doc, stages: [{ id: "one", name: "One", steps: ["s1"] }] };
+    const st = stagesOrImplied(partial);
+    expect(st.map((s) => s.id)).toEqual(["one", "make"]);
+    expect(st[0].inputs).toEqual(["a", "b"]);
+    expect(st[1]).toMatchObject({ steps: ["s2"], outputs: ["o"] });
   });
 });

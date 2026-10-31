@@ -44,6 +44,7 @@ const IO_H = 92;
 const ROW_GAP = 56;
 const COL_GAP = 40;
 const LANE_GAP = 56;
+const BAND_PAD = 10;
 const STACK_GAP = 14;
 const INNER_GAP_X = 44;
 const INNER_GAP_Y = 24;
@@ -198,6 +199,8 @@ export interface Graph {
   height: number;
   /** Where the IN and OUT lanes sit, in drawing coordinates, so the canvas can label them. */
   lanes: { in?: { x: number; w: number }; out?: { x: number; w: number } };
+  /** Horizontal bands, one per stage that has steps on the drawing, in drawing coordinates. */
+  bands: { id: string; name: string; index: number; y: number; h: number }[];
 }
 
 /* Layout: steps flow top to bottom, one row per depth (a step sits one row below the deepest
@@ -402,8 +405,15 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, provide
     nodes.push({ ...p.node, width: p.w, height: p.h });
     if (p.children) nodes.push(...p.children.map((c) => ({ ...c, width: NODE_W, height: NODE_H })));
   }
+  const bands = (recipe.stages ?? []).flatMap((st, index) => {
+    const mine = placed.filter((p) => p.lane === "center" && (st.steps ?? []).includes(p.node.id.replace(/^step:/, "")));
+    if (mine.length === 0) return [];
+    const top = Math.min(...mine.map((p) => p.node.position.y));
+    const bottom = Math.max(...mine.map((p) => p.node.position.y + p.h));
+    return [{ id: st.id, name: st.name, index, y: top - BAND_PAD, h: bottom - top + BAND_PAD * 2 }];
+  });
   return {
-    nodes, edges: dedupe(edges), width: hasOut ? outX + IO_W : centerX + centerW, height: Math.max(0, y - ROW_GAP),
+    nodes, edges: dedupe(edges), width: hasOut ? outX + IO_W : centerX + centerW, height: Math.max(0, y - ROW_GAP), bands,
     lanes: { ...(hasIn ? { in: { x: 0, w: IO_W } } : {}), ...(hasOut ? { out: { x: outX, w: IO_W } } : {}) },
   };
 }

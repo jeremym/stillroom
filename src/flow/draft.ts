@@ -1,4 +1,4 @@
-import type { InputSpec, OutputSpec, RecipeDoc, RecipeInfo, StepDoc, StepInfo } from "../types";
+import type { InputSpec, OutputSpec, RecipeDoc, RecipeInfo, Stage, StepDoc, StepInfo } from "../types";
 
 /* Editing a recipe: pure functions over the recipe.yaml document. Every function returns a new
    document; nothing here touches the disk. Node ids match graph.ts: in:<name>, out:<name>,
@@ -83,6 +83,24 @@ export function stepInfosFromDoc(doc: RecipeDoc): StepInfo[] {
   return doc.steps.map((s) => info(s, null));
 }
 
+/** The strip as drawn, the same rule as the Rust side: unassigned inputs join the first stage,
+    unassigned steps and outputs a final "Make"; no stages at all is one stage, Make. */
+export function stagesOrImplied(doc: RecipeDoc): Stage[] {
+  const stages: Stage[] = (doc.stages ?? []).map((s) => ({ ...s, inputs: [...(s.inputs ?? [])], steps: [...(s.steps ?? [])], outputs: [...(s.outputs ?? [])] }));
+  const has = (key: "inputs" | "steps" | "outputs", name: string) => stages.some((s) => (s[key] ?? []).includes(name));
+  const inputs = Object.keys(doc.inputs ?? {}).filter((n) => !has("inputs", n));
+  const steps = doc.steps.map((s) => s.id).filter((n) => !has("steps", n));
+  const outputs = Object.keys(doc.outputs ?? {}).filter((n) => !has("outputs", n));
+  if (stages.length === 0) return [{ id: "make", name: "Make", inputs, steps, outputs }];
+  if (inputs.length) stages[0].inputs = [...(stages[0].inputs ?? []), ...inputs];
+  if (steps.length || outputs.length) {
+    const make = stages.find((s) => s.id === "make");
+    if (make) { make.steps = [...(make.steps ?? []), ...steps]; make.outputs = [...(make.outputs ?? []), ...outputs]; }
+    else stages.push({ id: "make", name: "Make", inputs: [], steps, outputs });
+  }
+  return stages;
+}
+
 /** The document as a RecipeInfo, so the graph can draw it. */
 export function docToInfo(doc: RecipeDoc, base: RecipeInfo): RecipeInfo {
   return {
@@ -96,6 +114,7 @@ export function docToInfo(doc: RecipeDoc, base: RecipeInfo): RecipeInfo {
     modelSlots: doc.modelSlots ?? {},
     permissions: doc.permissions ?? null,
     steps: stepInfosFromDoc(doc),
+    stages: stagesOrImplied(doc),
     outputs: doc.outputs ?? {},
   };
 }

@@ -167,3 +167,18 @@ describe("lanes and marks", () => {
     expect(g.nodes.find((n) => n.id === "step:a")?.data.provider).toBeNull();
   });
 });
+
+describe("stage bands", () => {
+  it("draws one band per stage that has steps, in stage order", () => {
+    const staged = { ...recipe, stages: [
+      { id: "a", name: "Gather", steps: ["list"] },
+      { id: "b", name: "Decide", steps: ["triage", "table"] },
+      { id: "c", name: "Empty" },
+    ] };
+    const g = buildGraph({ ...opts, recipe: staged });
+    expect(g.bands.map((b) => b.name)).toEqual(["Gather", "Decide"]);
+    expect(g.bands[0].y).toBeLessThan(g.bands[1].y);
+    expect(g.bands.every((b) => b.h > 0)).toBe(true);
+    expect(buildGraph({ ...opts, recipe }).bands).toEqual([]);
+  });
+});

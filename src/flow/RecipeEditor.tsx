@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import type { Edge } from "@xyflow/react";
 import {
-  addStep, dependentsOf, locate, mutate, newInput, newOutput, refFor, refsIn, renameInput, renameKey, renameSlot, renameStepId,
+  addStep, dependentsOf, locate, mutate, newInput, newOutput, refFor, refsIn, renameInput, renameKey, renameSlot, renameStepId, uniqueId,
   sourcesFor, stepPathOf, updateStep, STEP_KINDS, type Source, type StepKind,
 } from "./draft";
 import { KIND_EXPLAINED, KIND_LABEL } from "./graph";
 import { fsEntryLabel, netEntryLabel } from "../permissions";
-import type { Capability, InputSpec, ModelSlot, OutputSpec, RecipeDoc, RecipeSource, StepDoc, ToolInfo } from "../types";
+import type { Capability, InputSpec, ModelSlot, OutputSpec, RecipeDoc, RecipeSource, Stage, StepDoc, ToolInfo } from "../types";
 import { Glyph, RECIPE_GLYPHS, inputGlyph, isGlyphName, outputGlyph, stepGlyph, type GlyphName } from "../brand";
 
 /* The forms behind Flow View's edit mode. Every change goes up as a whole new document (and,
@@ -454,6 +454,61 @@ export function SlotsEditor({ doc, onChange, onClose }: { doc: RecipeDoc; onChan
       ))}
       <div className="row">
         <button onClick={() => onChange(mutate(doc, (d) => { (d.modelSlots ??= {})[Object.keys(d.modelSlots).includes("writer") ? `slot${Object.keys(d.modelSlots).length + 1}` : "writer"] = { requires: ["text"], preference: "accuracy" }; }))}>Add slot</button>
+        <button onClick={onClose}>Done</button>
+      </div>
+    </>
+  );
+}
+
+/** The strip: stages in order, each with a name, a why, and what it holds. An item lives in one stage; ticking it here moves it. */
+export function StagesEditor({ doc, onChange, onClose }: { doc: RecipeDoc; onChange: Change; onClose: () => void }) {
+  const stages: Stage[] = doc.stages ?? [];
+  const inputs = Object.keys(doc.inputs ?? {});
+  const stepIds = doc.steps.map((s) => s.id);
+  const outputs = Object.keys(doc.outputs ?? {});
+  const setStages = (next: Stage[]) => onChange(mutate(doc, (d) => { if (next.length) d.stages = next; else delete d.stages; }));
+  const patch = (i: number, p: Partial<Stage>) => setStages(stages.map((s, k) => (k === i ? { ...s, ...p } : s)));
+  const move = (i: number, by: number) => { const n = [...stages]; const [s] = n.splice(i, 1); n.splice(i + by, 0, s); setStages(n); };
+  const toggle = (i: number, key: "inputs" | "steps" | "outputs", name: string) => {
+    const on = (stages[i][key] ?? []).includes(name);
+    setStages(stages.map((s, k) => {
+      const list = (s[key] ?? []).filter((x) => x !== name);
+      return { ...s, [key]: k === i && !on ? [...list, name] : list };
+    }));
+  };
+  const stepName = (id: string) => doc.steps.find((s) => s.id === id)?.name ?? id;
+  const group = (i: number, key: "inputs" | "steps" | "outputs", names: string[], label: (n: string) => string) => (
+    <div className="caps">
+      {names.map((n) => (
+        <label className="check" key={n}>
+          <input type="checkbox" checked={(stages[i][key] ?? []).includes(n)} onChange={() => toggle(i, key, n)} /> {label(n)}
+        </label>
+      ))}
+    </div>
+  );
+  return (
+    <>
+      <h3>Stages <span className="muted">(the strip the user reads first)</span></h3>
+      <p className="muted">Chapters of the recipe, in order. Each has a name, one sentence saying why it exists, and the inputs, steps, and results it holds. Anything left out lands in a final “Make” stage.</p>
+      {stages.map((st, i) => (
+        <div className="edit-block" key={`${st.id}-${i}`}>
+          <div className="row space">
+            <span><span className="stage-n">{i + 1}</span> <KeyInput value={st.id} onCommit={(id) => patch(i, { id })} /></span>
+            <span>
+              <button className="link" disabled={i === 0} onClick={() => move(i, -1)}>up</button>{" "}
+              <button className="link" disabled={i === stages.length - 1} onClick={() => move(i, 1)}>down</button>{" "}
+              <button className="link" onClick={() => setStages(stages.filter((_, k) => k !== i))}>remove</button>
+            </span>
+          </div>
+          <label>Name<input type="text" value={st.name} onChange={(e) => patch(i, { name: e.target.value })} /></label>
+          <label>Why <span className="muted">(one plain sentence)</span><textarea rows={2} value={st.why ?? ""} onChange={(e) => patch(i, { why: e.target.value || undefined })} /></label>
+          {inputs.length > 0 && <><span className="muted">Asks for</span>{group(i, "inputs", inputs, (n) => doc.inputs?.[n]?.label ?? n)}</>}
+          <span className="muted">Runs</span>{group(i, "steps", stepIds, stepName)}
+          {outputs.length > 0 && <><span className="muted">Delivers</span>{group(i, "outputs", outputs, (n) => doc.outputs[n]?.label ?? n)}</>}
+        </div>
+      ))}
+      <div className="row">
+        <button onClick={() => setStages([...stages, { id: uniqueId("stage", stages.map((s) => s.id)), name: "New stage", inputs: [], steps: [], outputs: [] }])}>Add stage</button>
         <button onClick={onClose}>Done</button>
       </div>
     </>

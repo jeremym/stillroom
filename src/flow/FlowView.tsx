@@ -9,7 +9,7 @@ import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../brand";
 import { isLocalModel } from "../models";
 import { fmtElapsed, useElapsed } from "@overtone-foundry/app-kit";
 import {
-  AddStepSelect, ConnectionPanel, InputForm, OutputForm, PermissionsEditor, SaveDialog, SlotsEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
+  AddStepSelect, ConnectionPanel, InputForm, OutputForm, PermissionsEditor, SaveDialog, SlotsEditor, StagesEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
 } from "./RecipeEditor";
 import type { InstalledModel, RecipeDoc, RecipeInfo, RecipeSource, Run, StepRecord, ToolInfo } from "../types";
 
@@ -136,7 +136,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
   const [edit, setEdit] = useState<EditState | null>(null);
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [wire, setWire] = useState<{ source: string; target: string } | null>(null);
-  const [panel, setPanel] = useState<"node" | "slots" | "permissions" | "save">("node");
+  const [panel, setPanel] = useState<"node" | "slots" | "permissions" | "stages" | "save">("node");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -281,7 +281,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
   const shownRecords = edit ? [] : records;
   const shownProgress = edit ? false : inProgress;
 
-  const { nodes, edges, width, height, lanes } = useMemo(
+  const { nodes, edges, width, height, lanes, bands } = useMemo(
     () => {
       const g = buildGraph({ recipe: shownRecipe, run: shownRun, records: shownRecords, inProgress: shownProgress, modelFor, providerFor, selectedId });
       if (selectedEdge) g.edges = g.edges.map((e) => (e.id === selectedEdge.id ? { ...e, selected: true, className: `${e.className} selected` } : e));
@@ -331,6 +331,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
           <button onClick={() => { const { name, spec } = newOutput(edit.doc); change(mutate(edit.doc, (d) => { d.outputs[name] = spec; })); select(`out:${name}`); }}>Add result</button>
           <button onClick={() => { setPanel("slots"); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Model slots</button>
           <button onClick={() => { setPanel("permissions"); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Permissions</button>
+          <button onClick={() => { setPanel("stages"); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Stages</button>
           <span className="flow-toolbar-gap" />
           <button className="primary" style={{ marginTop: 0 }} disabled={edit.problems.length > 0} title={edit.problems.length ? "Fix the problems first" : ""}
             onClick={() => { setPanel("save"); setSaveError(null); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Save…</button>
@@ -347,6 +348,11 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
 
       <div className={`flow-layout ${hasPanel ? "with-details" : ""}`}>
         <div className="flow-canvas" ref={wrapRef} style={{ height: canvasH }}>
+          {bands.length > 1 && bands.map((b) => (
+            <div key={b.id} className="stage-band" style={{ top: viewport.y + b.y * zoom, height: b.h * zoom }}>
+              <span className="stage-band-label">{b.index + 1} · {b.name}</span>
+            </div>
+          ))}
           {lanes.in && (
             <div className="lane-band in" style={{ left: viewport.x + lanes.in.x * zoom, width: lanes.in.w * zoom }}>
               <span className="lane-label"><Glyph name="in" /> In · what goes in</span>
@@ -406,6 +412,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
             )}
             {panel === "slots" && <SlotsEditor doc={edit.doc} onChange={change} onClose={() => setPanel("node")} />}
             {panel === "permissions" && <PermissionsEditor doc={edit.doc} onChange={change} onClose={() => setPanel("node")} />}
+            {panel === "stages" && <StagesEditor doc={edit.doc} onChange={change} onClose={() => setPanel("node")} />}
             {panel === "node" && wire && (
               <WirePrompt doc={edit.doc} source={wire.source} target={wire.target}
                 onConnect={(key) => { change(connect(edit.doc, wire.source, wire.target, key)); setWire(null); }}

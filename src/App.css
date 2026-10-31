@@ -252,3 +252,7 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .stage-row .strip { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 6px; }
 .tabs .tab-group { font-family: var(--display); font-size: calc(var(--size-display) * 0.7); letter-spacing: 0.12em; text-transform: uppercase; color: var(--phos-faint); align-self: center; margin: 0 6px 0 10px; }
 .tty .head { color: var(--phos-dim); font-family: var(--display); letter-spacing: 0.1em; margin-top: 6px; }
+
+/* Stage bands on the card: one translucent band per stage, labelled at the left edge. */
+.stage-band { position: absolute; left: 0; right: 0; z-index: 0; pointer-events: none; border-top: 1px dashed var(--phos-faint); background: color-mix(in srgb, var(--phos) 2%, transparent); }
+.stage-band-label { position: absolute; top: 4px; left: 8px; font-family: var(--display); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--phos-dim); white-space: nowrap; }

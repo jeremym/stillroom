@@ -1,0 +1,164 @@
+schemaVersion: "0"
+id: ask-your-documents
+name: Ask Your Documents
+icon: search
+version: 0.1.0
+description: Point it at a folder of PDFs, Word files, Markdown, or text. It reads them once and builds an index it keeps; then ask it anything and get an answer that quotes the passages it used, with the file and page. Ask again as often as you like; the index is rebuilt only when the files change.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, documents, keep]
+
+inputs:
+  folder:
+    type: directory
+    label: Your documents
+    description: A folder of .pdf, .docx, .md, or .txt files. Subfolders are read too.
+  question:
+    type: text
+    label: Your question
+    description: Ask in plain words. The answer uses only what the documents say.
+
+modelSlots:
+  embedder:
+    requires: [embedding]
+    description: Turns passages into numbers (embeddings) so a question can find the passages that match it.
+  answerer:
+    requires: [text]
+    preference: accuracy
+    description: Writes the answer from the passages found.
+
+permissions:
+  filesystem:
+    read: [input]
+
+steps:
+  - id: list
+    kind: tool
+    name: List the files
+    tool: fs.list
+    inputs:
+      path: ${inputs.folder}
+      extensions: [pdf, docx, md, markdown, txt]
+      recursive: true
+
+  - id: index
+    kind: map
+    name: Read and index each file
+    over: ${steps.list.output.entries}
+    as: file
+    concurrency: 2
+    steps:
+      - id: text
+        kind: tool
+        name: Read the file
+        tool: doc.text
+        inputs:
+          path: ${file.path}
+
+      - id: chunks
+        kind: tool
+        name: Split into passages
+        tool: text.chunk
+        inputs:
+          pages: ${steps.text.output.pages}
+          size: 1500
+          overlap: 200
+
+      - id: store
+        kind: tool
+        name: Index the passages
+        tool: keep.index
+        inputs:
+          slot: embedder
+          chunks: ${steps.chunks.output.chunks}
+          source: ${file.path}
+
+  - id: indexed
+    kind: tool
+    name: What the index holds
+    tool: list.table
+    inputs:
+      items: ${steps.index.output}
+      columns:
+        File: file.path
+        Kind: text.kind
+        Characters: text.chars
+        Passages: chunks.count
+        Indexed: store.indexed
+        Unchanged: store.skipped
+        Note: text.note
+
+  - id: search
+    kind: tool
+    name: Find the passages that match
+    tool: keep.search
+    inputs:
+      slot: embedder
+      query: ${inputs.question}
+      limit: 8
+      stage: index
+    dependsOn: [index]
+
+  - id: answer
+    kind: model
+    name: Write the answer
+    slot: answerer
+    prompt: prompts/answer.md
+    inputs:
+      question: ${inputs.question}
+      passages: ${steps.search.output.passages}
+    params:
+      temperature: 0.2
+      contextLength: 16384
+
+  - id: sources
+    kind: tool
+    name: The passages used
+    tool: list.table
+    inputs:
+      items: ${steps.search.output.passages}
+      columns:
+        File: source
+        Page: page
+        Match: score
+        Passage: text
+
+outputs:
+  answer:
+    from: ${steps.answer.output}
+    type: markdown
+    label: Answer
+    description: The answer, citing passages by number.
+  sources:
+    from: ${steps.sources.output.rows}
+    type: table
+    label: Passages used
+    description: Every passage the answer could draw on, with its file and page.
+  files:
+    from: ${steps.indexed.output.rows}
+    type: table
+    label: Files in the index
+    description: Each file read, how many passages it became, and how many were new this run.
+
+stages:
+  - id: documents
+    name: Add your documents
+    why: The folder you choose is the only thing the recipe reads; subfolders included.
+    inputs: [folder]
+  - id: index
+    name: Build the index
+    why: Each file is read, split into passages, and each passage turned into numbers (embeddings) and remembered, so a question can find the passages that match it. Built once; rebuilt only when the files change, and only new or changed passages are embedded again.
+    keep: { refresh: when_sources_change }
+    steps: [list, index, indexed]
+    outputs: [files]
+  - id: ask
+    name: Ask
+    why: Your question is turned into numbers the same way and matched against the index; only the eight closest passages go to the model.
+    inputs: [question]
+    steps: [search]
+  - id: answer
+    name: Answer
+    why: The answer is written from those passages alone and cites them by number, so you can check every claim against its file and page.
+    steps: [answer, sources]
+    outputs: [answer, sources]

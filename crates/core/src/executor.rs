@@ -469,6 +469,8 @@ impl Executor {
             net: net_policy(&req.recipe, &req.inputs),
             artifact_dir,
             keeps: KeepAccess::default(),
+            models: Some(self.models.clone()),
+            resolutions: req.resolutions.iter().map(|(k, r)| (k.clone(), r.model_id.clone())).collect(),
         };
 
         let mut state = RunState {
@@ -1271,6 +1273,115 @@ outputs:
                 completion_tokens: Some(5),
             })
         }
+        /// A letter histogram, so texts that share words land near each other.
+        async fn embed(&self, _model_id: &str, texts: Vec<String>) -> Result<Vec<Vec<f32>>, ModelError> {
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    let mut v = vec![0f32; 26];
+                    for c in t.to_ascii_lowercase().chars().filter(|c| c.is_ascii_lowercase()) {
+                        v[(c as u8 - b'a') as usize] += 1.0;
+                    }
+                    v
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_index_stage_is_kept_and_searched_by_meaning() {
+        let yaml = r#"
+schemaVersion: "0"
+id: ask
+name: Ask
+inputs:
+  folder: { type: directory }
+  question: { type: text }
+modelSlots:
+  embedder: { requires: [embedding] }
+steps:
+  - id: list
+    kind: tool
+    tool: fs.list
+    inputs: { path: "${inputs.folder}", extensions: ["md", "txt"] }
+  - id: index
+    kind: map
+    over: "${steps.list.output.entries}"
+    as: file
+    steps:
+      - id: text
+        kind: tool
+        tool: doc.text
+        inputs: { path: "${file.path}" }
+      - id: chunks
+        kind: tool
+        tool: text.chunk
+        inputs: { pages: "${steps.text.output.pages}", size: 120, overlap: 20 }
+      - id: store
+        kind: tool
+        tool: keep.index
+        inputs: { slot: embedder, chunks: "${steps.chunks.output.chunks}", source: "${file.path}" }
+  - id: search
+    kind: tool
+    tool: keep.search
+    inputs: { slot: embedder, query: "${inputs.question}", limit: 2, stage: index }
+    dependsOn: [index]
+outputs:
+  passages: { from: "${steps.search.output.passages}", type: json }
+stages:
+  - { id: documents, name: Add documents, inputs: [folder] }
+  - { id: index, name: Build the index, steps: [list, index], keep: { refresh: when_sources_change } }
+  - { id: ask, name: Ask, inputs: [question], steps: [search], outputs: [passages] }
+"#;
+        let base = std::env::temp_dir().join(format!("stillroom-ask-{}", uuid::Uuid::now_v7()));
+        let docs = base.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("fruit.md"), "Apples and pears grow on trees. Oranges and lemons are citrus fruit that like the sun.").unwrap();
+        std::fs::write(docs.join("cars.txt"), "Engines, wheels, brakes and gearboxes make a car move and stop.").unwrap();
+        let make = |q: &str| RunRequest {
+            keep_base: Some(base.clone()),
+            rebuild: Vec::new(),
+            recipe: Recipe::from_yaml(yaml).unwrap(),
+            prompts: HashMap::new(),
+            inputs: IndexMap::from([
+                ("folder".to_string(), Value::String(docs.to_string_lossy().into())),
+                ("question".to_string(), Value::String(q.into())),
+            ]),
+            resolutions: BTreeMap::from([("embedder".to_string(), Resolution { slot: "embedder".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability })]),
+            artifact_base: Some(base.clone()),
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
+        };
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        let first = exec.run(make("which fruit likes the sun, oranges or lemons?"), None).await;
+        assert_eq!(first.status, RunStatus::Succeeded, "{:?}", first.error);
+        let top = first.outputs["passages"][0]["source"].as_str().unwrap().to_string();
+        assert!(top.ends_with("fruit.md"), "{top}");
+        let keep = Keep::open(keep_dir(&base, "ask", "index")).unwrap();
+        assert!(keep.count().unwrap() >= 2);
+
+        // A new question: the index stage is kept, only the search runs.
+        let second = exec.run(make("brakes and wheels"), None).await;
+        assert_eq!(second.status, RunStatus::Succeeded, "{:?}", second.error);
+        let by = |r: &Run, id: &str| r.steps.iter().find(|s| s.step_id == id).unwrap().reused_from.clone();
+        assert_eq!(by(&second, "index").as_deref(), Some("keep:index"));
+        assert!(second.outputs["passages"][0]["source"].as_str().unwrap().ends_with("cars.txt"));
+
+        // A new file: the sources changed, the stage rebuilds, and unchanged passages are skipped.
+        std::fs::write(docs.join("boats.txt"), "Sails, hulls and rudders let a boat cross water.").unwrap();
+        let third = exec.run(make("sails and hulls"), None).await;
+        assert!(by(&third, "index").is_none());
+        let stored = third.steps.iter().filter(|s| s.step_id.starts_with("index[") && s.step_id.ends_with("store")).filter_map(|s| s.output.clone()).collect::<Vec<_>>();
+        let skipped: u64 = stored.iter().filter_map(|o| o["skipped"].as_u64()).sum();
+        let indexed: u64 = stored.iter().filter_map(|o| o["indexed"].as_u64()).sum();
+        assert!(skipped >= 2 && indexed >= 1, "skipped {skipped}, indexed {indexed}");
+        assert!(third.outputs["passages"][0]["source"].as_str().unwrap().ends_with("boats.txt"));
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[tokio::test]

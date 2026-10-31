@@ -24,3 +24,5 @@ mailparse = "0.16"
 reqwest.workspace = true
 url = "2"
 notify = "8"
+pdf-extract = "0.12.1"
+zip = "9.2.0"

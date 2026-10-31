@@ -100,6 +100,12 @@ impl Keep {
                 written_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS vectors (
+                id    TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                dim   INTEGER NOT NULL,
+                vec   BLOB NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS journal (
                 seq      INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id   TEXT NOT NULL,
@@ -175,6 +181,62 @@ impl Keep {
         Ok(n > 0)
     }
 
+    /// Whether a record with this id holds exactly this data (so indexing can skip it).
+    pub fn has_same(&self, id: &str, data: &Value) -> Result<bool, KeepError> {
+        Ok(self.get(id)?.is_some_and(|r| &r.data == data))
+    }
+
+    /// Store the vector for a record, replacing any earlier one.
+    pub fn put_vector(&self, id: &str, model: &str, vec: &[f32]) -> Result<(), KeepError> {
+        let bytes: Vec<u8> = vec.iter().flat_map(|x| x.to_le_bytes()).collect();
+        self.conn()?.execute(
+            "INSERT INTO vectors (id, model, dim, vec) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(id) DO UPDATE SET model = excluded.model, dim = excluded.dim, vec = excluded.vec",
+            params![id, model, vec.len() as i64, bytes],
+        )?;
+        Ok(())
+    }
+
+    /// The records nearest to `query` by cosine similarity, best first, with their scores.
+    /// A brute-force scan: fine for the tens of thousands of passages a keep holds.
+    pub fn search(&self, query: &[f32], limit: usize) -> Result<Vec<(KeepRecord, f32)>, KeepError> {
+        let qn = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if qn == 0.0 {
+            return Ok(Vec::new());
+        }
+        let mut scored: Vec<(String, f32)> = {
+            let conn = self.conn()?;
+            let mut stmt = conn.prepare("SELECT id, dim, vec FROM vectors")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize, r.get::<_, Vec<u8>>(2)?)))?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (id, dim, bytes) = row?;
+                if dim != query.len() {
+                    continue;
+                }
+                let mut dot = 0f32;
+                let mut n = 0f32;
+                for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+                    let x = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    dot += x * query[i];
+                    n += x * x;
+                }
+                let n = n.sqrt();
+                if n > 0.0 {
+                    out.push((id, dot / (n * qn)));
+                }
+            }
+            out
+        };
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out = Vec::new();
+        for (id, score) in scored.into_iter().take(limit) {
+            if let Some(rec) = self.get(&id)? {
+                out.push((rec, score));
+            }
+        }
+        Ok(out)
+    }
+
     pub fn count(&self) -> Result<u64, KeepError> {
         Ok(self.conn()?.query_row("SELECT COUNT(*) FROM records", [], |r| r.get::<_, i64>(0))? as u64)
     }
@@ -233,7 +295,7 @@ impl Keep {
         let removed = self.count()?;
         {
             let conn = self.conn()?;
-            conn.execute_batch("DELETE FROM records; DELETE FROM meta;")?;
+            conn.execute_batch("DELETE FROM records; DELETE FROM meta; DELETE FROM vectors;")?;
         }
         self.append_journal(&JournalEntry { run_id: run_id.into(), at: Utc::now(), added: 0, replaced: 0, removed, reason: "rebuilt".into() })
     }
@@ -298,6 +360,20 @@ mod tests {
         assert_eq!(j[0].reason, "rebuilt");
         assert_eq!(j[0].removed, 2);
         assert_eq!(keep_dir(Path::new("/base"), "r", "s"), PathBuf::from("/base/r/s"));
+
+        // Vectors: nearest by cosine, best first; a mismatched dimension is ignored.
+        k.put("p1", &json!({ "text": "apples" }), "r").unwrap();
+        k.put("p2", &json!({ "text": "oranges" }), "r").unwrap();
+        k.put("p3", &json!({ "text": "cars" }), "r").unwrap();
+        k.put_vector("p1", "m", &[1.0, 0.0, 0.0]).unwrap();
+        k.put_vector("p2", "m", &[0.9, 0.1, 0.0]).unwrap();
+        k.put_vector("p3", "m", &[0.0, 0.0, 1.0]).unwrap();
+        k.put_vector("odd", "m", &[1.0, 1.0]).unwrap();
+        let hits = k.search(&[1.0, 0.05, 0.0], 2).unwrap();
+        assert_eq!(hits.iter().map(|(r, _)| r.id.as_str()).collect::<Vec<_>>(), vec!["p1", "p2"]);
+        assert!(hits[0].1 > hits[1].1);
+        assert!(k.has_same("p1", &json!({ "text": "apples" })).unwrap());
+        assert!(!k.has_same("p1", &json!({ "text": "pears" })).unwrap());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

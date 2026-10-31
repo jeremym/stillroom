@@ -112,6 +112,10 @@ pub enum ModelError {
 #[async_trait::async_trait]
 pub trait ModelClient: Send + Sync {
     async fn chat(&self, model_id: &str, req: ChatRequest) -> Result<ChatResponse, ModelError>;
+    /// One vector per text, from an embedding model. Providers that cannot embed say so.
+    async fn embed(&self, model_id: &str, _texts: Vec<String>) -> Result<Vec<Vec<f32>>, ModelError> {
+        Err(ModelError::Remote(format!("{model_id} cannot make embeddings")))
+    }
 }
 
 fn parse_size(s: &str) -> Option<f64> {

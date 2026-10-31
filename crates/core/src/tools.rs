@@ -33,7 +33,7 @@ impl FsPolicy {
 }
 
 /// What a tool may know about the run it is part of.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolContext {
     pub run_id: String,
     /// Directory this run may write artifact files into. Created on demand.
@@ -42,6 +42,25 @@ pub struct ToolContext {
     pub net: NetPolicy,
     /// The run keeps this step may reach: its own stage's to write, earlier stages' to read.
     pub keeps: KeepAccess,
+    /// The run's models, for tools that embed text; and which model each slot resolved to.
+    pub models: Option<Arc<dyn crate::model::ModelClient>>,
+    pub resolutions: HashMap<String, String>,
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext").field("run_id", &self.run_id).field("artifact_dir", &self.artifact_dir).field("resolutions", &self.resolutions).finish()
+    }
+}
+
+impl ToolContext {
+    /// The model behind a slot named in a tool's inputs, for tools that embed.
+    fn model_for(&self, inputs: &Value) -> Result<(Arc<dyn crate::model::ModelClient>, String), ToolError> {
+        let slot = inputs.get("slot").and_then(Value::as_str).ok_or_else(|| ToolError::InvalidInput("slot (the model slot to embed with) is required".into()))?;
+        let id = self.resolutions.get(slot).cloned().ok_or_else(|| ToolError::Failed(format!("slot “{slot}” has no model; declare it in modelSlots with requires: [embedding]")))?;
+        let models = self.models.clone().ok_or_else(|| ToolError::Failed("no models are available to this run".into()))?;
+        Ok((models, id))
+    }
 }
 
 /// Which run keeps a step can see. `own` is the stage the step belongs to (writable when that
@@ -67,6 +86,273 @@ impl KeepAccess {
 
 fn keep_err(e: crate::keep::KeepError) -> ToolError {
     ToolError::Failed(e.to_string())
+}
+
+/// `doc.text`: the text of a document. PDF (text layer), DOCX, Markdown, or plain text.
+/// Output `{ path, kind, text, chars, pages: [{ number, text }] }`; a PDF with no text layer
+/// comes back with `text: ""` and a `note`, never an error.
+pub struct DocText {
+    pub max_bytes: u64,
+}
+
+impl Default for DocText {
+    fn default() -> Self {
+        Self { max_bytes: 100 * 1024 * 1024 }
+    }
+}
+
+fn docx_text(bytes: &[u8]) -> Result<String, String> {
+    use std::io::Read;
+    let cursor = std::io::Cursor::new(bytes);
+    let mut zip = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+    let mut file = zip.by_name("word/document.xml").map_err(|_| "not a Word document (no word/document.xml)".to_string())?;
+    let mut xml = String::new();
+    file.read_to_string(&mut xml).map_err(|e| e.to_string())?;
+    // Paragraph and break ends become newlines; every other tag goes; entities are decoded.
+    let mut out = String::with_capacity(xml.len() / 2);
+    let mut rest = xml.as_str();
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        let Some(j) = rest[i..].find('>') else { break };
+        let tag = &rest[i + 1..i + j];
+        if tag.starts_with("/w:p") || tag.starts_with("w:br") || tag.starts_with("w:cr") {
+            out.push('\n');
+        } else if tag.starts_with("w:tab") {
+            out.push('\t');
+        }
+        rest = &rest[i + j + 1..];
+    }
+    out.push_str(rest);
+    let decoded = out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'");
+    Ok(decoded.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string())
+}
+
+#[async_trait::async_trait]
+impl Tool for DocText {
+    fn id(&self) -> &str {
+        "doc.text"
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Read a document as text: a PDF (its text layer), a Word document (.docx), Markdown, or plain text. Pages are kept for PDFs.".into(),
+            returns: "`{ path, kind, text, chars, pages: [{ number, text }], note }`; a scanned PDF with no text layer gives an empty `text` and a `note` saying so.".into(),
+            parameters: json!({ "type": "object", "required": ["path"], "properties": { "path": { "type": "string", "description": "Absolute path of the document" } } }),
+        })
+    }
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let raw = inputs.get("path").and_then(Value::as_str).ok_or_else(|| ToolError::InvalidInput("path (string) is required".into()))?;
+        let path = ctx.check_read(raw)?;
+        let meta = std::fs::metadata(&path).map_err(|e| ToolError::Failed(format!("{}: {e}", path.display())))?;
+        if meta.len() > self.max_bytes {
+            return Err(ToolError::Failed(format!("{} is larger than {} bytes", path.display(), self.max_bytes)));
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+        let (kind, text, pages, note): (&str, String, Vec<Value>, Option<String>) = match ext.as_str() {
+            "pdf" => {
+                let bytes = std::fs::read(&path).map_err(|e| ToolError::Failed(e.to_string()))?;
+                match tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&bytes)).await {
+                    Ok(Ok(t)) => {
+                        let pages: Vec<Value> = t.split('\u{c}').enumerate().filter(|(_, p)| !p.trim().is_empty()).map(|(i, p)| json!({ "number": i + 1, "text": p.trim() })).collect();
+                        let text = pages.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n\n");
+                        let note = text.trim().is_empty().then(|| "This PDF has no text layer (a scan, or images only); nothing to read without vision.".to_string());
+                        ("pdf", text, pages, note)
+                    }
+                    Ok(Err(e)) => ("pdf", String::new(), Vec::new(), Some(format!("The PDF could not be read: {e}"))),
+                    Err(e) => return Err(ToolError::Failed(e.to_string())),
+                }
+            }
+            "docx" => {
+                let bytes = std::fs::read(&path).map_err(|e| ToolError::Failed(e.to_string()))?;
+                let text = docx_text(&bytes).map_err(ToolError::Failed)?;
+                ("docx", text, Vec::new(), None)
+            }
+            "md" | "markdown" => ("markdown", std::fs::read_to_string(&path).map_err(|e| ToolError::Failed(e.to_string()))?, Vec::new(), None),
+            _ => ("text", std::fs::read_to_string(&path).map_err(|e| ToolError::Failed(format!("{}: {e} (not a text file?)", path.display())))?, Vec::new(), None),
+        };
+        let pages = if pages.is_empty() && !text.is_empty() { vec![json!({ "number": 1, "text": text })] } else { pages };
+        Ok(json!({ "path": path.to_string_lossy(), "kind": kind, "chars": text.chars().count(), "text": text, "pages": pages, "note": note }))
+    }
+}
+
+/// `text.chunk`: split text into overlapping passages. Inputs `text` or `pages` (from
+/// `doc.text`), `size` (characters, default 1500), `overlap` (default 200). Output
+/// `{ chunks: [{ index, text, page }], count }`.
+pub struct TextChunk;
+
+fn split_chunks(text: &str, size: usize, overlap: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let size = size.max(100);
+    let overlap = overlap.min(size / 2);
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let mut end = (start + size).min(chars.len());
+        // Prefer to end at a paragraph or sentence boundary inside the last quarter.
+        if end < chars.len() {
+            let floor = start + size * 3 / 4;
+            if let Some(cut) = (floor..end).rev().find(|&i| chars[i] == '\n' || chars[i] == '.' || chars[i] == '!' || chars[i] == '?') {
+                end = cut + 1;
+            }
+        }
+        let piece: String = chars[start..end].iter().collect();
+        if !piece.trim().is_empty() {
+            out.push(piece.trim().to_string());
+        }
+        if end >= chars.len() {
+            break;
+        }
+        start = end.saturating_sub(overlap).max(start + 1);
+    }
+    out
+}
+
+#[async_trait::async_trait]
+impl Tool for TextChunk {
+    fn id(&self) -> &str {
+        "text.chunk"
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Split text into overlapping passages of about `size` characters, ending at sentence or paragraph breaks where possible. Give `pages` from doc.text to keep page numbers.".into(),
+            returns: "`{ chunks: [{ index, text, page }], count }`.".into(),
+            parameters: json!({ "type": "object", "properties": { "text": { "type": "string" }, "pages": { "type": "array", "description": "[{ number, text }] from doc.text; used instead of text when given" }, "size": { "type": "integer", "description": "Characters per passage, default 1500" }, "overlap": { "type": "integer", "description": "Characters shared by neighbours, default 200" } } }),
+        })
+    }
+    async fn call(&self, _ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let size = inputs.get("size").and_then(Value::as_u64).unwrap_or(1500) as usize;
+        let overlap = inputs.get("overlap").and_then(Value::as_u64).unwrap_or(200) as usize;
+        let mut chunks = Vec::new();
+        match inputs.get("pages").and_then(Value::as_array) {
+            Some(pages) if !pages.is_empty() => {
+                for p in pages {
+                    let page = p.get("number").cloned().unwrap_or(Value::Null);
+                    for piece in split_chunks(p.get("text").and_then(Value::as_str).unwrap_or(""), size, overlap) {
+                        chunks.push(json!({ "index": chunks.len(), "text": piece, "page": page }));
+                    }
+                }
+            }
+            _ => {
+                let text = inputs.get("text").and_then(Value::as_str).ok_or_else(|| ToolError::InvalidInput("text or pages is required".into()))?;
+                for piece in split_chunks(text, size, overlap) {
+                    chunks.push(json!({ "index": chunks.len(), "text": piece, "page": Value::Null }));
+                }
+            }
+        }
+        Ok(json!({ "count": chunks.len(), "chunks": chunks }))
+    }
+}
+
+/// `keep.index`: embed passages and store them in this stage's keep so `keep.search` can find
+/// them by meaning. Inputs `slot` (a model slot with the embedding capability), `chunks`
+/// (`[{ text, page?, index? }]`), `source` (file path or name the passages came from), optional
+/// `data` (extra fields kept on every record). A passage already stored with the same text is
+/// not embedded again. Output `{ indexed, skipped, source }`.
+pub struct KeepIndex;
+
+#[async_trait::async_trait]
+impl Tool for KeepIndex {
+    fn id(&self) -> &str {
+        "keep.index"
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+    fn has_side_effects(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Turn passages into numbers (embeddings) and store them in this stage's run keep, so keep.search can find them by meaning later. Needs a model slot with the embedding capability. Passages already stored unchanged are skipped.".into(),
+            returns: "`{ indexed, skipped, source }`.".into(),
+            parameters: json!({ "type": "object", "required": ["slot", "chunks", "source"], "properties": { "slot": { "type": "string", "description": "A model slot with requires: [embedding]" }, "chunks": { "type": "array", "description": "[{ text, page, index }] from text.chunk" }, "source": { "type": "string", "description": "Where the passages came from (a file path), kept on each record" }, "data": { "type": "object", "description": "Extra fields kept on every record" } } }),
+        })
+    }
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let keep = ctx.keeps.writing()?;
+        let (models, model_id) = ctx.model_for(&inputs)?;
+        let source = inputs.get("source").and_then(Value::as_str).ok_or_else(|| ToolError::InvalidInput("source is required".into()))?.to_string();
+        let chunks = inputs.get("chunks").and_then(Value::as_array).ok_or_else(|| ToolError::InvalidInput("chunks (array) is required".into()))?;
+        let extra = inputs.get("data").and_then(Value::as_object).cloned().unwrap_or_default();
+        let mut todo: Vec<(String, Value, String)> = Vec::new();
+        let mut skipped = 0usize;
+        for (i, c) in chunks.iter().enumerate() {
+            let text = c.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let index = c.get("index").and_then(Value::as_u64).unwrap_or(i as u64);
+            let id = format!("{source}#{index}");
+            let mut data = serde_json::Map::new();
+            data.insert("text".into(), Value::String(text.clone()));
+            data.insert("source".into(), Value::String(source.clone()));
+            data.insert("page".into(), c.get("page").cloned().unwrap_or(Value::Null));
+            data.insert("index".into(), Value::from(index));
+            for (k, v) in &extra {
+                data.insert(k.clone(), v.clone());
+            }
+            let data = Value::Object(data);
+            if keep.has_same(&id, &data).map_err(keep_err)? {
+                skipped += 1;
+                continue;
+            }
+            todo.push((id, data, text));
+        }
+        let mut indexed = 0usize;
+        for batch in todo.chunks(32) {
+            let texts: Vec<String> = batch.iter().map(|(_, _, t)| t.clone()).collect();
+            let vectors = models.embed(&model_id, texts).await.map_err(|e| ToolError::Failed(e.to_string()))?;
+            if vectors.len() != batch.len() {
+                return Err(ToolError::Failed(format!("the embedding model returned {} vectors for {} passages", vectors.len(), batch.len())));
+            }
+            for ((id, data, _), vec) in batch.iter().zip(vectors) {
+                keep.put(id, data, &ctx.run_id).map_err(keep_err)?;
+                keep.put_vector(id, &model_id, &vec).map_err(keep_err)?;
+                indexed += 1;
+            }
+        }
+        Ok(json!({ "indexed": indexed, "skipped": skipped, "source": source }))
+    }
+}
+
+/// `keep.search`: the passages nearest in meaning to a query, from this stage's keep or an
+/// earlier kept stage named by `stage`. Output `{ passages: [{ id, text, source, page, score }], count }`.
+pub struct KeepSearch;
+
+#[async_trait::async_trait]
+impl Tool for KeepSearch {
+    fn id(&self) -> &str {
+        "keep.search"
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Find the passages nearest in meaning to a question, from a run keep built with keep.index: this stage's, or an earlier stage's named by `stage`. Needs the same embedding slot the index was built with.".into(),
+            returns: "`{ passages: [{ id, text, source, page, score }], count }`, best first.".into(),
+            parameters: json!({ "type": "object", "required": ["slot", "query"], "properties": { "slot": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer", "description": "Default 8" }, "stage": { "type": "string", "description": "An earlier stage whose keep to search" } } }),
+        })
+    }
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let keep = ctx.keeps.reading(inputs.get("stage").and_then(Value::as_str))?;
+        let (models, model_id) = ctx.model_for(&inputs)?;
+        let query = inputs.get("query").and_then(Value::as_str).ok_or_else(|| ToolError::InvalidInput("query is required".into()))?.to_string();
+        let limit = inputs.get("limit").and_then(Value::as_u64).unwrap_or(8) as usize;
+        let mut vectors = models.embed(&model_id, vec![query]).await.map_err(|e| ToolError::Failed(e.to_string()))?;
+        let q = vectors.pop().unwrap_or_default();
+        let hits = keep.search(&q, limit).map_err(keep_err)?;
+        let passages: Vec<Value> = hits
+            .into_iter()
+            .map(|(r, score)| json!({ "id": r.id, "text": r.data.get("text").cloned().unwrap_or(Value::Null), "source": r.data.get("source").cloned().unwrap_or(Value::Null), "page": r.data.get("page").cloned().unwrap_or(Value::Null), "score": score }))
+            .collect();
+        Ok(json!({ "count": passages.len(), "passages": passages }))
+    }
 }
 
 /// `keep.put`: write or replace one record in this stage's run keep. Inputs `data` (any JSON),
@@ -387,6 +673,10 @@ impl ToolRegistry {
         r.register(Arc::new(KeepQuery));
         r.register(Arc::new(KeepList));
         r.register(Arc::new(KeepRemove));
+        r.register(Arc::new(DocText::default()));
+        r.register(Arc::new(TextChunk));
+        r.register(Arc::new(KeepIndex));
+        r.register(Arc::new(KeepSearch));
         r
     }
 
@@ -1289,7 +1579,45 @@ mod tests {
             fs: FsPolicy::open(),
             net: NetPolicy::none(),
             keeps: KeepAccess::default(),
+            models: None,
+            resolutions: HashMap::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn doc_text_reads_markdown_docx_and_pdf_and_chunks_them() {
+        let dir = std::env::temp_dir().join(format!("stillroom-doc-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.md"), "# Title\n\nFirst paragraph. Second sentence!\n\nSecond paragraph.").unwrap();
+        // A minimal Word document: a zip with word/document.xml.
+        {
+            let f = std::fs::File::create(dir.join("b.docx")).unwrap();
+            let mut z = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            z.start_file("word/document.xml", opts).unwrap();
+            std::io::Write::write_all(&mut z, br#"<?xml version="1.0"?><w:document><w:body><w:p><w:r><w:t>Hello &amp; welcome</w:t></w:r></w:p><w:p><w:r><w:t>Second line</w:t></w:r></w:p></w:body></w:document>"#).unwrap();
+            z.finish().unwrap();
+        }
+        // A real PDF made by the system's text-to-PDF filter, checked in as a fixture.
+        std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pdf"), dir.join("c.pdf")).unwrap();
+        let t = DocText::default();
+        let md = t.call(&ctx(), json!({ "path": dir.join("a.md") })).await.unwrap();
+        assert_eq!(md["kind"], "markdown");
+        assert!(md["text"].as_str().unwrap().starts_with("# Title"));
+        let docx = t.call(&ctx(), json!({ "path": dir.join("b.docx") })).await.unwrap();
+        assert_eq!(docx["text"], "Hello & welcome\nSecond line");
+        let pdf = t.call(&ctx(), json!({ "path": dir.join("c.pdf") })).await.unwrap();
+        assert_eq!(pdf["kind"], "pdf");
+        assert!(pdf["text"].as_str().unwrap().contains("Hello PDF world"), "{pdf}");
+        assert_eq!(pdf["pages"][0]["number"], 1);
+
+        let c = TextChunk.call(&ctx(), json!({ "text": "One. Two. Three. Four. Five. Six. Seven. Eight. Nine. Ten. Eleven. Twelve. Thirteen. Fourteen. Fifteen. Sixteen. Seventeen. Eighteen. Nineteen. Twenty.", "size": 100, "overlap": 10 })).await.unwrap();
+        let chunks = c["chunks"].as_array().unwrap();
+        assert!(chunks.len() >= 2, "{c}");
+        assert!(chunks[0]["text"].as_str().unwrap().ends_with('.'), "ends at a sentence: {}", chunks[0]["text"]);
+        let paged = TextChunk.call(&ctx(), json!({ "pages": [{ "number": 1, "text": "Page one text." }, { "number": 2, "text": "Page two text." }] })).await.unwrap();
+        assert_eq!(paged["chunks"][1]["page"], 2);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

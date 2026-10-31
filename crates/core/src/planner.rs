@@ -469,6 +469,56 @@ fn merge_partial(skeleton: &mut Draft, partial: &Draft, lib: &crate::stagelib::S
     for (path, text) in &partial.files {
         skeleton.files.entry(path.clone()).or_insert_with(|| text.clone());
     }
+    // An input, step, or output lives in the first stage that lists it.
+    if let Some(stages) = base.get_mut("stages").and_then(Value::as_array_mut) {
+        for key in ["inputs", "steps", "outputs"] {
+            let mut seen: Vec<String> = Vec::new();
+            for st in stages.iter_mut() {
+                if let Some(list) = st.get_mut(key).and_then(Value::as_array_mut) {
+                    list.retain(|v| {
+                        let s = v.as_str().unwrap_or("").to_string();
+                        if seen.contains(&s) {
+                            false
+                        } else {
+                            seen.push(s);
+                            true
+                        }
+                    });
+                }
+            }
+        }
+    }
+    // The model sometimes names a ready-made stage where it means the step that stage returns.
+    let aliases: Vec<(String, String)> = lib
+        .stages
+        .iter()
+        .filter_map(|def| {
+            let first = def.returns.iter().find_map(|r| r.split("${steps.").nth(1).and_then(|s| s.split(['.', '}']).next()).map(String::from))?;
+            Some((format!("${{steps.{}.", def.id), format!("${{steps.{first}.")))
+        })
+        .collect();
+    if !aliases.is_empty() {
+        fn rewrite(v: &mut Value, aliases: &[(String, String)]) {
+            match v {
+                Value::String(s) => {
+                    for (from, to) in aliases {
+                        if s.contains(from.as_str()) {
+                            *s = s.replace(from.as_str(), to);
+                        }
+                    }
+                }
+                Value::Array(a) => a.iter_mut().for_each(|x| rewrite(x, aliases)),
+                Value::Object(o) => o.values_mut().for_each(|x| rewrite(x, aliases)),
+                _ => {}
+            }
+        }
+        if let Some(steps) = base.get_mut("steps") {
+            rewrite(steps, &aliases);
+        }
+        if let Some(outputs) = base.get_mut("outputs") {
+            rewrite(outputs, &aliases);
+        }
+    }
     declare_keeps(base);
 }
 
@@ -600,7 +650,7 @@ impl Planner {
         let mut system = assemble_system_with(&self.prompt, &self.tools, if skeleton.is_some() { None } else { lib });
         let mut user = user_message(req);
         if let (Some(sk), Some(lib)) = (&skeleton, lib) {
-            system.push_str("\n\n## Already built\n\nThe recipe already contains these stages, in this order, fully built with their inputs, model slots, steps, prompts, and outputs. Do not write them again; reference what they return.\n");
+            system.push_str("\n\n## Already built\n\nThe recipe already contains these stages, in this order, fully built with their inputs, model slots, steps, prompts, and outputs. Do not write them again, do not list their inputs in your stages, and reference only what they return, exactly as written (a stage id is not a step id).\n");
             system.push_str(&already_built(sk, lib));
             let custom: Vec<String> = sk
                 .yaml
@@ -810,6 +860,30 @@ mod tests {
         let seen = script.seen.lock().unwrap();
         assert!(seen[0].json_schema.as_ref().unwrap()["properties"]["stages"]["items"]["properties"]["use"]["enum"].as_array().unwrap().len() >= 10);
         assert!(seen[1].messages[0].content.contains("## Already built") && seen[1].messages[1].content.contains("`cards` **Cards**"));
+
+        // A custom stage that re-lists a library input, references the stage id as a step, and a
+        // brief that reads only the sibling that exists: all three are mended in the merge.
+        let strip = json!({ "stages": [ { "use": "read_links" }, { "use": "write_brief" }, { "name": "Ideas", "why": "w" } ] }).to_string();
+        let answer = json!({
+            "recipe": {
+                "id": "x", "name": "X", "description": "d",
+                "inputs": { "urls": { "type": "urls" } }, "modelSlots": {},
+                "steps": [ { "id": "ideas", "kind": "model", "slot": "writer", "prompt": "prompts/ideas.md", "inputs": { "pages": "${steps.read_links.output}", "brief": "${steps.brief_write.output}" } } ],
+                "outputs": { "ideas": { "from": "${steps.ideas.output}", "type": "markdown" } },
+                "stages": [ { "id": "ideas", "name": "Ideas", "why": "w", "inputs": ["urls"], "steps": ["ideas"], "outputs": ["ideas"] } ]
+            },
+            "files": [ { "path": "prompts/ideas.md", "text": "Ideas." } ]
+        })
+        .to_string();
+        let (mut p, _) = planner(vec![strip, answer]);
+        p.library = Some(lib.clone());
+        let out = p.plan(&req(), None).await.unwrap();
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        let y = &out.draft.yaml;
+        assert_eq!(y["stages"][2]["inputs"], json!([]), "urls stays with read_links");
+        assert_eq!(y["steps"].as_array().unwrap().iter().find(|s| s["id"] == "ideas").unwrap()["inputs"]["pages"], "${steps.links_pages.output}");
+        let brief = y["steps"].as_array().unwrap().iter().find(|s| s["id"] == "brief_write").unwrap();
+        assert!(brief["inputs"].get("files").is_none() && brief["inputs"].get("pages").is_some(), "{brief}");
 
         // All ready-made: one call, nothing to compose.
         let strip = json!({ "stages": [ { "use": "index_folder" }, { "use": "answer_from_index" } ] }).to_string();

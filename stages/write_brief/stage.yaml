@@ -12,10 +12,10 @@ steps:
     name: Write the brief
     slot: writer
     prompt: prompts/write_brief.md
-    inputs: { focus: "${inputs.focus}", files: "${steps.read_files.output}", pages: "${steps.links_pages.output}" }
+    inputs: { focus: "${inputs.focus}", files?: "${steps.read_files.output}", pages?: "${steps.links_pages.output}" }
     params: { think: false, temperature: 0.3, contextLength: 32768 }
 outputs:
   brief: { from: "${steps.brief_write.output}", type: markdown, label: Brief, description: "What the documents and pages say about your focus, cited by file and page." }
 returns:
   - "${steps.brief_write.output}: the brief in Markdown"
-  - "This stage reads ${steps.read_files.output} and ${steps.links_pages.output}; include read_folder and read_links before it, or edit its inputs to what you have (an absent one is fine: it resolves to nothing)."
+  - "This stage reads ${steps.read_files.output} (from read_folder) and ${steps.links_pages.output} (from read_links); either or both may be present."

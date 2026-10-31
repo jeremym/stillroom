@@ -141,10 +141,12 @@ impl StageLibrary {
         {
             let steps = yaml.entry("steps").or_insert_with(|| Value::Array(Vec::new()));
             if let Some(arr) = steps.as_array_mut() {
+                let mut present: Vec<String> = arr.iter().filter_map(|x| x.get("id").and_then(Value::as_str).map(String::from)).collect();
+                present.extend(step_ids.iter().cloned());
                 for s in &def.steps {
                     let id = s.get("id").and_then(Value::as_str).unwrap_or("");
                     if !arr.iter().any(|x| x.get("id").and_then(Value::as_str) == Some(id)) {
-                        arr.push(s.clone());
+                        arr.push(resolve_optional_inputs(s.clone(), &present));
                     }
                 }
             }
@@ -212,6 +214,23 @@ impl StageLibrary {
         }
         problems
     }
+}
+
+/// A library step input written as `name?: ${steps.x...}` is optional: it is kept (as `name`)
+/// when step `x` exists in the recipe and dropped otherwise, so a stage can read from a sibling
+/// stage that may or may not have been used.
+fn resolve_optional_inputs(mut step: Value, present: &[String]) -> Value {
+    if let Some(inputs) = step.get_mut("inputs").and_then(Value::as_object_mut) {
+        let keys: Vec<String> = inputs.keys().filter(|k| k.ends_with('?')).cloned().collect();
+        for k in keys {
+            let v = inputs.remove(&k).unwrap_or(Value::Null);
+            let target = v.as_str().and_then(|s| s.strip_prefix("${steps.")).and_then(|s| s.split(['.', '}']).next()).map(String::from);
+            if target.as_ref().is_none_or(|t| present.contains(t)) {
+                inputs.insert(k.trim_end_matches('?').to_string(), v);
+            }
+        }
+    }
+    step
 }
 
 pub fn merge_permissions(into: &mut Value, from: &Value) {

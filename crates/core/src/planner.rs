@@ -47,6 +47,7 @@ pub fn planner_recipe() -> Recipe {
         steps: Vec::new(),
         outputs: IndexMap::new(),
         budget: None,
+        stages: Vec::new(),
     }
 }
 
@@ -109,7 +110,7 @@ pub fn answer_schema() -> Value {
         "properties": {
             "recipe": {
                 "type": "object",
-                "required": ["id", "name", "description", "inputs", "modelSlots", "steps", "outputs"],
+                "required": ["id", "name", "description", "inputs", "modelSlots", "steps", "outputs", "stages"],
                 "properties": {
                     "id": { "type": "string" },
                     "name": { "type": "string" },
@@ -118,7 +119,22 @@ pub fn answer_schema() -> Value {
                     "modelSlots": { "type": "object" },
                     "permissions": { "type": "object" },
                     "steps": { "type": "array", "items": { "type": "object" } },
-                    "outputs": { "type": "object" }
+                    "outputs": { "type": "object" },
+                    "stages": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "name", "why"],
+                            "properties": {
+                                "id": { "type": "string" },
+                                "name": { "type": "string" },
+                                "why": { "type": "string" },
+                                "inputs": { "type": "array", "items": { "type": "string" } },
+                                "steps": { "type": "array", "items": { "type": "string" } },
+                                "outputs": { "type": "array", "items": { "type": "string" } }
+                            }
+                        }
+                    }
                 }
             },
             "files": {

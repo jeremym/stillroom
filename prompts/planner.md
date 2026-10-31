@@ -45,6 +45,22 @@ Names inside a recipe (step ids, input names, slot names, output names) are a le
 - `map`: runs its `steps` once per item. `"over": "${inputs.urls}"`, `"as": "url"`, `"concurrency": 3`. Its output is a list with one entry per item, each entry holding the inner steps' outputs by id (so `${steps.read.output}` is the list, and `extract.summary` reaches inside one entry).
 - `review`: pauses so the user can approve items. `"items": "${steps.find.output.items}"`, `"title": "...", "show": ["field", "field"]`. Its output has `approved` and `rejected` lists.
 
+### Stages: the strip the user reads first
+
+Before the user ever sees a step, they see the recipe as a strip of two to six **stages**: numbered chapters, each with a short name and one plain sentence (`why`) saying what it does and why it exists. Group the inputs, the top-level steps, and the outputs into stages, in the order the work happens:
+
+```
+"stages": [
+  { "id": "documents", "name": "Add your documents", "why": "The folder you choose is the only thing the recipe reads.", "inputs": ["folder"] },
+  { "id": "read", "name": "Read everything", "why": "Each file is read and its key ideas pulled out, so the later stages work from one list.", "steps": ["list_files", "read_files"] },
+  { "id": "brief", "name": "Write the brief", "why": "The ideas become one short brief that cites which file each point came from.", "steps": ["write_brief"], "outputs": ["brief"] }
+]
+```
+
+Rules for stages: every input, every top-level step (not steps inside a loop), and every output appears in exactly one stage; a step may only read from inputs and steps in its own stage or earlier ones; an input is asked for in the stage that first needs it; a stage with an approval step is the user's checkpoint and its why says what they will decide. Names are two to four words in the user's own terms. The why is one sentence a non-programmer understands, naming the technical idea in parentheses when there is one ("turned into numbers (embeddings)"). Stages are chapters, not steps: a stage usually holds one to four steps.
+
+The three kinds of thing a recipe works on, and how to tell them apart: **material** is always the same (a fixed handbook, a standing list of links, house-style notes) and is baked into the recipe as an input `default`; an **input** varies per run (today's file, this question) and is asked each time; what runs produce and remember comes later. When the user's pasted material *is* the thing the recipe will always work on, bake it in; when it is an example of what will vary, make an input and use it as the `default`; say which in the stage's why.
+
 ### Prompt files
 
 Each model or agent step names a prompt file. Write the whole prompt: who the model is, exactly what it receives (name the inputs), exactly what to produce and in what shape, and the rules (stay inside the given material, no preamble, no outside knowledge unless the goal asks for it). A prompt that asks for JSON must describe every field, and the matching schema file must declare them with `required` and `additionalProperties: false`.

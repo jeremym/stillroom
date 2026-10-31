@@ -8,7 +8,7 @@ const step = (p: Partial<StepInfo> & { id: string; kind: string }): StepInfo => 
 
 /* A cut-down Inbox Triage: list → map(parse → classify → draft?, file) → table → review → outbox map. */
 const recipe: RecipeInfo = {
-  id: "t", name: "T", version: null, description: null, source: "builtin", path: "",
+  id: "t", name: "T", version: null, description: null, source: "builtin", path: "", stages: [],
   inputs: {
     inbox: { type: "directory", label: "Inbox folder" },
     about: { type: "text", label: "About you", required: false },

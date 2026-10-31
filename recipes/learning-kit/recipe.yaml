@@ -182,3 +182,24 @@ outputs:
     type: json
     label: Knowledge Spine
     description: Concepts, claims, and how they relate. Every other artifact is a view of this. Edit a concept and everything downstream is regenerated.
+
+stages:
+  - id: source
+    name: Choose what to learn
+    why: One document to learn from, and optionally what to focus on and which voice reads it aloud.
+    inputs: [file, focus, voice]
+  - id: spine
+    name: Build the Knowledge Spine
+    why: An AI step reads the document and lists its concepts, claims, and how they depend on each other (the spine); everything else is made from this, so a change here flows everywhere.
+    steps: [read, extract]
+    outputs: [spine]
+  - id: kit
+    name: Make the kit
+    why: From the spine, AI steps write short notes, flashcards, slides, and a process diagram, and a program draws the concept map; each is its own result.
+    steps: [notes, flashcards, slides, concept_map, diagram]
+    outputs: [notes, flashcards, slides, conceptMap, diagram]
+  - id: narrate
+    name: Narrate it
+    why: The notes become a spoken script, and the Mac's voice reads it into an audio lesson you can listen to.
+    steps: [script, narrate]
+    outputs: [script, narration]

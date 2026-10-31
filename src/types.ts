@@ -234,6 +234,18 @@ export interface RecipeInfo {
   permissions?: Permissions | null;
   steps: StepInfo[];
   outputs: Record<string, OutputSpec>;
+  /** The strip as drawn: declared stages with anything unassigned placed, or one implied "Make". */
+  stages: Stage[];
+}
+
+/** One chapter of a recipe, as the user reads it in the strip. */
+export interface Stage {
+  id: string;
+  name: string;
+  why?: string | null;
+  inputs?: string[];
+  steps?: string[];
+  outputs?: string[];
 }
 
 export interface RecipesResponse {
@@ -326,6 +338,7 @@ export interface RecipeDoc {
   permissions?: Permissions;
   steps: StepDoc[];
   outputs: Record<string, OutputSpec>;
+  stages?: Stage[];
   [extra: string]: unknown;
 }
 

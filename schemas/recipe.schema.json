@@ -120,6 +120,13 @@
       "items": {
         "type": "string"
       }
+    },
+    "stages": {
+      "type": "array",
+      "description": "The strip: ordered chapters of the recipe, each with a plain-language why, grouping the inputs it asks for, the steps it runs, and the outputs it makes. Optional; a recipe without stages is one stage, Make.",
+      "items": {
+        "$ref": "#/$defs/stage"
+      }
     }
   },
   "$defs": {
@@ -764,6 +771,52 @@
           ]
         }
       ]
+    },
+    "stage": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Two to four words the user reads in the strip."
+        },
+        "why": {
+          "type": "string",
+          "description": "One plain sentence: what this stage does and why it exists."
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "description": "Input names this stage asks for."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "description": "Top-level step ids this stage runs, in order."
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "description": "Output names this stage delivers."
+        }
+      }
     }
   }
 }

@@ -192,3 +192,22 @@ outputs:
     type: json
     label: Everything
     description: The full parsed email, classification, draft, and filing result for each message.
+
+stages:
+  - id: folders
+    name: Choose the folders
+    why: The inbox to read, where filed mail goes, where drafts are written, and a few words about what matters to you.
+    inputs: [inbox, archive, outbox, about]
+  - id: triage
+    name: Sort every email
+    why: Each email is parsed, an AI step classifies it and drafts a reply where one is due, and an AI agent files it; a table sums it up.
+    steps: [list, triage, table, with_drafts]
+  - id: review
+    name: Your approval
+    why: Nothing is written until you approve each draft reply; this is the checkpoint.
+    steps: [review]
+  - id: send
+    name: Write the drafts
+    why: Approved replies are written as draft files your mail app can open; nothing is sent.
+    steps: [outbox, sent]
+    outputs: [triage, sent, replies, details]

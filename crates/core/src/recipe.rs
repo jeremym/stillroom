@@ -47,7 +47,28 @@ pub struct Recipe {
     pub outputs: IndexMap<String, OutputSpec>,
     #[serde(default)]
     pub budget: Option<Value>,
+    /// The strip: ordered chapters, each grouping inputs, steps, and outputs with a why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<Stage>,
 }
+
+/// One chapter of a recipe, as the user reads it in the strip.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Stage {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<String>,
+}
+
+pub const IMPLIED_STAGE: &str = "make";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -411,6 +432,33 @@ impl Recipe {
 
     pub fn step(&self, id: &str) -> Option<&Step> {
         self.steps.iter().find(|s| s.id() == id)
+    }
+
+    /// The strip as it is drawn: the declared stages, with anything unassigned placed where it
+    /// belongs (inputs in the first stage, steps and outputs in a final "Make" stage). A recipe
+    /// with no stages is one stage, Make, holding everything.
+    pub fn stages_or_implied(&self) -> Vec<Stage> {
+        let mut stages = self.stages.clone();
+        let assigned = |f: &dyn Fn(&Stage) -> &Vec<String>, name: &str| stages.iter().any(|s| f(s).iter().any(|x| x == name));
+        let inputs: Vec<String> = self.inputs.keys().filter(|k| !assigned(&|s| &s.inputs, k)).cloned().collect();
+        let steps: Vec<String> = self.steps.iter().map(|s| s.id().to_string()).filter(|k| !assigned(&|s| &s.steps, k)).collect();
+        let outputs: Vec<String> = self.outputs.keys().filter(|k| !assigned(&|s| &s.outputs, k)).cloned().collect();
+        if stages.is_empty() {
+            return vec![Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs }];
+        }
+        if !inputs.is_empty() {
+            stages[0].inputs.extend(inputs);
+        }
+        if !steps.is_empty() || !outputs.is_empty() {
+            match stages.iter_mut().find(|s| s.id == IMPLIED_STAGE) {
+                Some(make) => {
+                    make.steps.extend(steps);
+                    make.outputs.extend(outputs);
+                }
+                None => stages.push(Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs: Vec::new(), steps, outputs }),
+            }
+        }
+        stages
     }
 
     /// Declared inputs a run can start without: optional ones (`required: false`, default or

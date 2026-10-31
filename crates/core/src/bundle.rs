@@ -53,6 +53,8 @@ pub struct RecipeInfo {
     pub permissions: Option<Value>,
     pub steps: Vec<StepInfo>,
     pub outputs: IndexMap<String, crate::recipe::OutputSpec>,
+    /// The strip as drawn: declared stages with anything unassigned placed, or one implied stage.
+    pub stages: Vec<crate::recipe::Stage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +206,7 @@ impl RecipeBundle {
             permissions: self.recipe.permissions.clone(),
             steps: self.recipe.steps.iter().map(step_info).collect(),
             outputs: self.recipe.outputs.clone(),
+            stages: self.recipe.stages_or_implied(),
         }
     }
 

@@ -104,3 +104,18 @@ outputs:
     type: json
     label: Everything
     description: The fetched text and the extracted findings for each page.
+
+stages:
+  - id: ask
+    name: Ask a question
+    why: One clear question and the pages allowed to answer it; the recipe reaches those sites and no others.
+    inputs: [question, urls]
+  - id: read
+    name: Read each page
+    why: Every page is fetched and an AI step pulls out what it says about the question, with exact quotes, so nothing is invented.
+    steps: [read]
+  - id: brief
+    name: Write the brief
+    why: The findings become one short brief that cites its sources by number, and a table shows every page and what was found in it.
+    steps: [brief, sources]
+    outputs: [brief, sources, findings]

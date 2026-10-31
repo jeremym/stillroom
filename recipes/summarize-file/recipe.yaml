@@ -49,3 +49,14 @@ outputs:
     from: ${steps.summarize.output}
     type: markdown
     label: Summary
+
+stages:
+  - id: pick
+    name: Pick a file
+    why: One text or Markdown file is all this recipe reads.
+    inputs: [file]
+  - id: summarize
+    name: Write the summary
+    why: The file is read in full and an AI step writes one sentence about it, then the main points in the file's own order.
+    steps: [read, summarize]
+    outputs: [summary]

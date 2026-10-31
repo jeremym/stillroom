@@ -102,6 +102,7 @@ impl Draft {
         if recipe.steps.is_empty() {
             problems.push("The recipe has no steps.".into());
         }
+        self.check_stages(&recipe, &top, &mut problems);
         for step in &recipe.steps {
             let others: Vec<&str> = top.iter().copied().filter(|s| *s != step.id()).collect();
             self.check_step(&recipe, step, &others, None, known_tools, &mut problems);
@@ -137,6 +138,66 @@ impl Draft {
             problems.push("The recipe has no results. Add at least one.".into());
         }
         problems
+    }
+
+    /// The strip must be honest: every stage names things that exist, nothing sits in two
+    /// stages, and a step reads only from its own stage or earlier ones.
+    fn check_stages(&self, recipe: &Recipe, top: &[&str], problems: &mut Vec<String>) {
+        use std::collections::HashMap;
+        let mut seen_stage = HashSet::new();
+        let mut place: HashMap<(&str, &str), (usize, &str)> = HashMap::new(); // (kind, name) -> (stage index, stage name)
+        for (i, st) in recipe.stages.iter().enumerate() {
+            if !seen_stage.insert(st.id.as_str()) {
+                problems.push(format!("Two stages share the id “{}”.", st.id));
+            }
+            for (kind, names, exists) in [
+                ("input", &st.inputs, recipe.inputs.keys().map(String::as_str).collect::<Vec<_>>()),
+                ("step", &st.steps, top.to_vec()),
+                ("output", &st.outputs, recipe.outputs.keys().map(String::as_str).collect::<Vec<_>>()),
+            ] {
+                for n in names {
+                    if !exists.contains(&n.as_str()) {
+                        problems.push(format!("Stage “{}” lists {kind} “{n}”, which does not exist.", st.name));
+                    } else if let Some((_, other)) = place.insert((kind, n.as_str()), (i, st.name.as_str())) {
+                        problems.push(format!("The {kind} “{n}” is in two stages: “{other}” and “{}”.", st.name));
+                    }
+                }
+            }
+        }
+        if recipe.stages.is_empty() {
+            return;
+        }
+        // Reading order: with unassigned inputs in the first stage and unassigned steps last.
+        let last = recipe.stages.len();
+        let stage_of_input = |n: &str| place.get(&("input", n)).map(|p| p.0).unwrap_or(0);
+        let stage_of_step = |n: &str| place.get(&("step", n)).map(|p| p.0).unwrap_or(last);
+        let name_of = |i: usize| recipe.stages.get(i).map(|s| s.name.clone()).unwrap_or_else(|| "Make".into());
+        for step in &recipe.steps {
+            let mine = stage_of_step(step.id());
+            let mut refs = Vec::new();
+            collect_refs(&Value::Object(step.inputs().clone().into_iter().collect()), &mut refs);
+            if let Step::Map(m) = step {
+                refs.push(m.over.clone());
+                for sub in &m.steps {
+                    collect_refs(&Value::Object(sub.inputs().clone().into_iter().collect()), &mut refs);
+                }
+            }
+            for r in refs {
+                let later = match parse_ref(&r) {
+                    Some(Ok(Ref::Input { name, .. })) => Some((stage_of_input(&name), format!("the input “{name}”"))),
+                    Some(Ok(Ref::Step { step: s, .. })) if top.contains(&s.as_str()) => Some((stage_of_step(&s), format!("the step “{s}”"))),
+                    _ => None,
+                };
+                if let Some((theirs, what)) = later {
+                    if theirs > mine {
+                        problems.push(format!(
+                            "“{}” (stage “{}”) reads {what}, which comes later, in stage “{}”. Stages run in order.",
+                            label(step), name_of(mine), name_of(theirs)
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     fn check_step(
@@ -390,6 +451,55 @@ fn find_cycle(steps: &[Step]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stages_are_checked_and_implied() {
+        let mut yaml = serde_json::json!({
+            "schemaVersion": "0", "id": "x", "name": "X",
+            "inputs": { "folder": { "type": "directory" }, "question": { "type": "text" } },
+            "modelSlots": { "writer": { "requires": ["text"] } },
+            "steps": [
+                { "id": "list", "kind": "tool", "tool": "fs.list", "inputs": { "path": "${inputs.folder}" } },
+                { "id": "answer", "kind": "model", "slot": "writer", "prompt": "prompts/a.md", "inputs": { "q": "${inputs.question}", "files": "${steps.list.output}" } }
+            ],
+            "outputs": { "answer": { "from": "${steps.answer.output}", "type": "markdown" } },
+            "stages": [
+                { "id": "docs", "name": "Add documents", "inputs": ["folder"], "steps": ["list"] },
+                { "id": "ask", "name": "Ask", "inputs": ["question"], "steps": ["answer"], "outputs": ["answer"] }
+            ]
+        });
+        let files = [("prompts/a.md".to_string(), "Answer.".to_string())].into_iter().collect();
+        let d = Draft { yaml: yaml.clone(), files };
+        let known = vec!["fs.list".to_string()];
+        assert!(d.check(&known).is_empty(), "{:?}", d.check(&known));
+        let r: Recipe = serde_json::from_value(yaml.clone()).unwrap();
+        assert_eq!(r.stages_or_implied().len(), 2);
+
+        // Reading forward, a missing step, and a double listing are all named.
+        yaml["stages"][0]["steps"] = serde_json::json!(["list", "answer", "ghost"]);
+        yaml["steps"][0]["inputs"]["q"] = serde_json::json!("${inputs.question}");
+        let d = Draft { yaml: yaml.clone(), files: d.files.clone() };
+        let text = d.check(&known).join("\n");
+        assert!(text.contains("lists step “ghost”, which does not exist"), "{text}");
+        assert!(text.contains("The step “answer” is in two stages"), "{text}");
+        assert!(text.contains("reads the input “question”, which comes later, in stage “Ask”"), "{text}");
+
+        // No stages: one implied stage holds everything. Partial stages: the rest lands in Make.
+        let mut plain = Draft::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../recipes/summarize-file")).unwrap().yaml;
+        plain.as_object_mut().unwrap().remove("stages");
+        let r: Recipe = serde_json::from_value(plain).unwrap();
+        let implied = r.stages_or_implied();
+        assert_eq!(implied.len(), 1);
+        assert_eq!(implied[0].id, crate::recipe::IMPLIED_STAGE);
+        assert_eq!(implied[0].steps.len(), r.steps.len());
+        yaml["stages"] = serde_json::json!([{ "id": "docs", "name": "Add documents", "steps": ["list"] }]);
+        let r: Recipe = serde_json::from_value(yaml).unwrap();
+        let st = r.stages_or_implied();
+        assert_eq!(st.len(), 2);
+        assert_eq!(st[0].inputs, vec!["folder", "question"]);
+        assert_eq!(st[1].steps, vec!["answer"]);
+        assert_eq!(st[1].outputs, vec!["answer"]);
+    }
 
     #[test]
     fn a_step_that_fails_the_format_is_explained_by_field() {

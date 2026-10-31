@@ -1016,9 +1016,9 @@ impl Tool for ListFilter {
 
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
-            description: "Keep only the items of a list where a field (a dot path inside each item) is present and truthy.".into(),
+            description: "Keep only the items of a list where a field (a dot path inside each item) is present and truthy; with `absent: true`, keep the items where it is missing or false instead.".into(),
             returns: "`{ items, kept, dropped }`; `items` is the filtered list.".into(),
-            parameters: json!({ "type": "object", "required": ["items", "path"], "properties": { "items": { "type": "array" }, "path": { "type": "string", "description": "Dot path inside each item, e.g. extract.keep" } } }),
+            parameters: json!({ "type": "object", "required": ["items", "path"], "properties": { "items": { "type": "array" }, "path": { "type": "string", "description": "Dot path inside each item, e.g. extract.keep" }, "absent": { "type": "boolean", "description": "Keep the items where the field is missing or false" } } }),
         })
     }
 
@@ -1031,7 +1031,8 @@ impl Tool for ListFilter {
             .get("path")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidInput("path (string) is required".into()))?;
-        let kept: Vec<Value> = items.iter().filter(|it| truthy(dig(it, path))).cloned().collect();
+        let absent = inputs.get("absent").and_then(Value::as_bool).unwrap_or(false);
+        let kept: Vec<Value> = items.iter().filter(|it| truthy(dig(it, path)) != absent).cloned().collect();
         let dropped = items.len() - kept.len();
         Ok(json!({ "items": kept, "kept": kept.len(), "dropped": dropped }))
     }

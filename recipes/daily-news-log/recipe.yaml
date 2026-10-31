@@ -1,0 +1,161 @@
+schemaVersion: "0"
+id: daily-news-log
+name: Daily News Log
+icon: news
+version: 0.1.0
+description: Reads the pages you follow about a topic, picks out the items that are new since last time, writes a short brief of just those, and keeps a running log of everything it has seen. Run it each morning; it never shows you the same item twice.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, news, keep]
+
+inputs:
+  topic:
+    type: text
+    label: What are you following?
+    description: One line, e.g. "local-first AI tools". The brief keeps to this.
+  urls:
+    type: urls
+    label: Pages to check
+    description: One link per line. News pages, blogs, release pages. The recipe reaches these sites and no others.
+
+modelSlots:
+  reader:
+    requires: [text, structured_output]
+    preference: accuracy
+    description: Reads each page and lists the items on it.
+  writer:
+    requires: [text]
+    preference: accuracy
+    description: Writes the brief from the new items.
+
+permissions:
+  network: [input]
+
+steps:
+  - id: read
+    kind: map
+    name: Read each page
+    over: ${inputs.urls}
+    as: url
+    concurrency: 3
+    steps:
+      - id: fetch
+        kind: tool
+        name: Fetch the page
+        tool: http.fetch
+        inputs:
+          url: ${url}
+          maxChars: 16000
+
+      - id: items
+        kind: model
+        name: List the items
+        slot: reader
+        prompt: prompts/items.md
+        inputs:
+          topic: ${inputs.topic}
+          page: ${steps.fetch.output}
+        outputSchema: schemas/items.json
+        params:
+          think: false
+          temperature: 0.1
+          contextLength: 16384
+
+  - id: flatten
+    kind: tool
+    name: One list of items
+    tool: list.table
+    inputs:
+      items: ${steps.read.output}
+      columns:
+        page: item
+        found: items.items
+
+  - id: seen
+    kind: tool
+    name: What earlier runs saw
+    tool: keep.query
+    inputs:
+      limit: 500
+
+  - id: remember
+    kind: map
+    name: Remember each page's items
+    over: ${steps.flatten.output.rows}
+    as: row
+    concurrency: 1
+    dependsOn: [seen]
+    steps:
+      - id: put
+        kind: tool
+        name: Keep the items
+        tool: keep.put
+        inputs:
+          id: ${row.page}
+          data: ${row}
+
+  - id: all
+    kind: tool
+    name: Everything seen, today included
+    tool: keep.query
+    inputs:
+      limit: 500
+    dependsOn: [remember]
+
+  - id: brief
+    kind: model
+    name: Write today's brief
+    slot: writer
+    prompt: prompts/brief.md
+    inputs:
+      topic: ${inputs.topic}
+      pages: ${steps.flatten.output.rows}
+      history: ${steps.seen.output.records}
+    params:
+      think: false
+      temperature: 0.3
+      contextLength: 32768
+
+  - id: log
+    kind: tool
+    name: The log as a table
+    tool: list.table
+    inputs:
+      items: ${steps.all.output.records}
+      columns:
+        Page: data.page
+        Items: data.found
+        Seen: writtenAt
+
+outputs:
+  brief:
+    from: ${steps.brief.output}
+    type: markdown
+    label: Today's brief
+    description: Only what is new since the last run, with links.
+  log:
+    from: ${steps.log.output.rows}
+    type: table
+    label: Everything seen
+    description: One row per page, as last read, from the recipe's run keep.
+
+stages:
+  - id: follow
+    name: What to follow
+    why: The topic and the pages to check; the recipe reaches those sites and no others.
+    inputs: [topic, urls]
+  - id: read
+    name: Read the pages
+    why: Each page is fetched and an AI step lists the items on it (title, link, one line), so the rest works from one tidy list.
+    steps: [read, flatten]
+  - id: remember
+    name: Remember what was seen
+    why: Each page's items are written to this recipe's run keep (what it remembers between runs), one record per page, so the next run can tell what is new.
+    keep: { refresh: always }
+    steps: [seen, remember, all]
+  - id: brief
+    name: Write the brief
+    why: Comparing today's items with what was already seen, an AI step writes a short brief of only the new ones; the log table shows everything the recipe has seen.
+    steps: [brief, log]
+    outputs: [brief, log]

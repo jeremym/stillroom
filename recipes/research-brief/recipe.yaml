@@ -112,7 +112,8 @@ stages:
     inputs: [question, urls]
   - id: read
     name: Read each page
-    why: Every page is fetched and an AI step pulls out what it says about the question, with exact quotes, so nothing is invented.
+    why: Every page is fetched and an AI step pulls out what it says about the question, with exact quotes, so nothing is invented. What it found is remembered, so the same links and question are not fetched twice.
+    keep: { refresh: when_sources_change }
     steps: [read]
   - id: brief
     name: Write the brief

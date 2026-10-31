@@ -1,0 +1,21 @@
+id: write_brief
+name: Write the brief
+summary: Turn the findings from read_folder and/or read_links into one brief that answers the focus and cites every point by file, page, or link. Requires read_folder or read_links earlier.
+why: The findings become one brief that answers your focus and cites each point by file and page or by link.
+requires: [read_folder, read_links]
+tags: [documents, web, brief]
+modelSlots:
+  writer: { requires: [text], preference: accuracy, description: Writes the brief from the findings. }
+steps:
+  - id: brief_write
+    kind: model
+    name: Write the brief
+    slot: writer
+    prompt: prompts/write_brief.md
+    inputs: { focus: "${inputs.focus}", files: "${steps.read_files.output}", pages: "${steps.links_pages.output}" }
+    params: { think: false, temperature: 0.3, contextLength: 32768 }
+outputs:
+  brief: { from: "${steps.brief_write.output}", type: markdown, label: Brief, description: "What the documents and pages say about your focus, cited by file and page." }
+returns:
+  - "${steps.brief_write.output}: the brief in Markdown"
+  - "This stage reads ${steps.read_files.output} and ${steps.links_pages.output}; include read_folder and read_links before it, or edit its inputs to what you have (an absent one is fine: it resolves to nothing)."

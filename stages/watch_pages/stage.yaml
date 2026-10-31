@@ -1,0 +1,36 @@
+id: watch_pages
+name: Read the pages
+summary: Fetch each page the user follows about a topic and list the items on it (title, link, one line, date), as one tidy list; the first half of a 'what is new' recipe, pair with remember_seen and brief_new.
+why: Each page is fetched and an AI step lists the items on it (title, link, one line), so the rest works from one tidy list.
+tags: [web, news]
+inputs:
+  topic: { type: text, label: What are you following?, description: "One line, e.g. 'local-first AI tools'." }
+  urls: { type: urls, label: Pages to check, description: "One link per line. The recipe reaches these sites and no others." }
+modelSlots:
+  reader: { requires: [text, structured_output], preference: accuracy, description: Reads each page and lists the items on it. }
+permissions:
+  network: [input]
+steps:
+  - id: watch_read
+    kind: map
+    name: Read each page
+    over: "${inputs.urls}"
+    as: url
+    concurrency: 3
+    steps:
+      - { id: fetch, kind: tool, name: Fetch the page, tool: http.fetch, inputs: { url: "${url}", maxChars: 16000 } }
+      - id: items
+        kind: model
+        name: List the items
+        slot: reader
+        prompt: prompts/watch_pages_items.md
+        inputs: { topic: "${inputs.topic}", page: "${steps.fetch.output}" }
+        outputSchema: schemas/watch_pages_items.json
+        params: { think: false, temperature: 0.1, contextLength: 16384 }
+  - id: watch_flatten
+    kind: tool
+    name: One list of items
+    tool: list.table
+    inputs: { items: "${steps.watch_read.output}", columns: { page: url, found: items.items } }
+returns:
+  - "${steps.watch_flatten.output.rows}: one row per page { page, found: [{ title, url, line, date }] }"

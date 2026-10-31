@@ -1,0 +1,37 @@
+id: answer_from_index
+name: Ask and answer
+summary: Take a question, find the passages that match it in the index built by index_folder, and write an answer that cites them by file and page. Requires index_folder earlier in the recipe.
+why: Your question is turned into numbers the same way and matched against the index; only the eight closest passages go to the model, and the answer is written from those alone and cites them by number, so you can check every claim against its file and page.
+requires: [index_folder]
+tags: [documents, answer]
+inputs:
+  question: { type: text, label: Your question, description: Ask in plain words. The answer uses only what the documents say. }
+modelSlots:
+  answerer: { requires: [text], preference: accuracy, description: Writes the answer from the passages found. }
+steps:
+  - id: answer_search
+    kind: tool
+    name: Find the passages that match
+    tool: keep.search
+    inputs: { slot: embedder, query: "${inputs.question}", limit: 8, stage: index_folder }
+    dependsOn: [index_files]
+  - id: answer_write
+    kind: model
+    name: Write the answer
+    slot: answerer
+    prompt: prompts/answer_from_index.md
+    inputs: { question: "${inputs.question}", passages: "${steps.answer_search.output.passages}" }
+    params: { temperature: 0.2, contextLength: 16384 }
+  - id: answer_sources
+    kind: tool
+    name: The passages used
+    tool: list.table
+    inputs:
+      items: "${steps.answer_search.output.passages}"
+      columns: { File: name, Page: page, Match: score, Passage: text, Path: source }
+outputs:
+  answer: { from: "${steps.answer_write.output}", type: markdown, label: Answer, description: "The answer, citing passages by number." }
+  sources: { from: "${steps.answer_sources.output.rows}", type: table, label: Passages used, description: "Every passage the answer could draw on, with its file and page." }
+returns:
+  - "${steps.answer_write.output}: the answer in Markdown"
+  - "${steps.answer_search.output.passages}: the matching passages [{ id, text, name, source, page, score }]"

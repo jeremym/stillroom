@@ -37,6 +37,8 @@ pub(crate) struct AppState {
     artifacts_dir: PathBuf,
     /// Where run keeps live: `<data>/recipe-data/<recipe id>/<stage id>`.
     keep_base: PathBuf,
+    /// Ready-made stages the planner may use.
+    stage_library: Arc<stillroom_core::StageLibrary>,
     /// One run at a time: a watch firing while the user runs something waits its turn.
     run_gate: tokio::sync::Mutex<()>,
 }
@@ -687,6 +689,7 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
     let cancel = Cancel::new();
     *state.current_cancel.lock().map_err(err)? = Some(cancel.clone());
     let planner = Planner {
+        library: Some(state.stage_library.clone()),
         models: router,
         model_id,
         tools: state.tools.catalog(),
@@ -1108,6 +1111,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     MenuBuilder::new(app).items(&[&app_menu, &file, &edit, &view, &run, &window, &help]).build()
 }
 
+fn builtin_stages_dir(app: &AppHandle) -> PathBuf {
+    if cfg!(debug_assertions) {
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stages");
+        dev.canonicalize().unwrap_or(dev)
+    } else {
+        app.path().resource_dir().map(|r| r.join("stages")).unwrap_or_default()
+    }
+}
+
 fn builtin_recipes_dir(app: &AppHandle) -> PathBuf {
     if cfg!(debug_assertions) {
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../recipes");
@@ -1152,6 +1164,7 @@ pub fn run() {
                 db_path: db_path.to_string_lossy().into_owned(),
                 artifacts_dir,
                 keep_base,
+                stage_library: Arc::new(stillroom_core::StageLibrary::load(&builtin_stages_dir(app.handle())).unwrap_or_default()),
                 run_gate: tokio::sync::Mutex::new(()),
             });
             app.manage(WatchRuntime::default());

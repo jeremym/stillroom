@@ -1,0 +1,31 @@
+id: read_links
+name: Read the pages
+summary: Fetch each link the user gives and pull out what each page says about a focus, with exact quotes; a page that fails to load is reported, not fatal.
+why: Each link is fetched and an AI step pulls out what the page says about your focus, with exact quotes, so nothing is invented; a page that fails to load is reported, not fatal.
+tags: [web, findings]
+inputs:
+  urls: { type: urls, label: Pages to read, description: "One link per line. The recipe reaches these sites and no others." }
+  focus: { type: text, label: What do you need to know?, description: A question or a sentence about what matters. }
+modelSlots:
+  reader: { requires: [text, structured_output], preference: accuracy, description: Reads each page and pulls out what it says about the focus. }
+permissions:
+  network: [input]
+steps:
+  - id: links_pages
+    kind: map
+    name: Read each page
+    over: "${inputs.urls}"
+    as: url
+    concurrency: 3
+    steps:
+      - { id: fetch, kind: tool, name: Fetch the page, tool: http.fetch, inputs: { url: "${url}", maxChars: 14000 } }
+      - id: findings
+        kind: model
+        name: Pull out what it says
+        slot: reader
+        prompt: prompts/read_links_findings.md
+        inputs: { focus: "${inputs.focus}", source: "${url}", text: "${steps.fetch.output.text}" }
+        outputSchema: schemas/read_links_findings.json
+        params: { think: false, temperature: 0.1, contextLength: 16384 }
+returns:
+  - "${steps.links_pages.output}: one entry per link with url, fetch { ok, title, text }, and findings { summary, relevance, findings: [{ claim, quote, where }] }"

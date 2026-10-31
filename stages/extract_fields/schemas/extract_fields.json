@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "required": [
+    "values",
+    "missing"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "values": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "field",
+          "value",
+          "where"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "where": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

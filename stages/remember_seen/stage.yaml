@@ -1,0 +1,22 @@
+id: remember_seen
+name: Remember what was seen
+summary: Keep one record per page of the items it showed, between runs (a keep that runs every time), and hand later stages both what earlier runs saw and everything seen now. Requires watch_pages before it.
+why: Each page's items are written to this recipe's run keep (what it remembers between runs), one record per page, so the next run can tell what is new.
+requires: [watch_pages]
+tags: [news, keep]
+keep: { refresh: always }
+steps:
+  - { id: seen_before, kind: tool, name: What earlier runs saw, tool: keep.query, inputs: { limit: 500 } }
+  - id: seen_remember
+    kind: map
+    name: Remember each page's items
+    over: "${steps.watch_flatten.output.rows}"
+    as: row
+    concurrency: 1
+    dependsOn: [seen_before]
+    steps:
+      - { id: put, kind: tool, name: Keep the items, tool: keep.put, inputs: { id: "${row.page}", data: "${row}" } }
+  - { id: seen_all, kind: tool, name: Everything seen, today included, tool: keep.query, inputs: { limit: 500 }, dependsOn: [seen_remember] }
+returns:
+  - "${steps.seen_before.output.records}: what earlier runs saw, [{ id, data: { page, found }, writtenAt }], empty on the first run"
+  - "${steps.seen_all.output.records}: everything seen, today included"

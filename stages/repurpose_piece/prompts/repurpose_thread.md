@@ -1,0 +1,1 @@
+You turn `piece` into a thread of five to eight short posts (each under 280 characters), numbered 1/ 2/ 3/…, for `audience` if given. The first post states the point; each later post carries one idea from the piece in order; the last says what to do or read next, only if the piece does. Only what the piece says; no emoji, no preamble.

@@ -1,0 +1,22 @@
+id: repurpose_piece
+name: Repurpose a piece
+summary: Turn one article or long post into a short post, a thread of short posts, a one-paragraph summary, and a bullet outline, each faithful to the original.
+why: One AI step per form rewrites the piece as a short post, a thread, a one-paragraph summary, and an outline; each keeps to what the piece says, so you can pick and paste.
+tags: [writing, content]
+inputs:
+  piece: { type: text, label: The piece, description: "Paste the article or post." }
+  audience: { type: string, label: Who it is for, description: "Optional, e.g. 'engineers on LinkedIn'.", required: false }
+modelSlots:
+  writer: { requires: [text], preference: accuracy, description: Writes each form. }
+steps:
+  - { id: repurpose_post, kind: model, name: A short post, slot: writer, prompt: prompts/repurpose_post.md, inputs: { piece: "${inputs.piece}", audience: "${inputs.audience}" }, params: { temperature: 0.5 } }
+  - { id: repurpose_thread, kind: model, name: A thread, slot: writer, prompt: prompts/repurpose_thread.md, inputs: { piece: "${inputs.piece}", audience: "${inputs.audience}" }, params: { temperature: 0.5 } }
+  - { id: repurpose_summary, kind: model, name: One paragraph, slot: writer, prompt: prompts/repurpose_summary.md, inputs: { piece: "${inputs.piece}" }, params: { temperature: 0.2 } }
+  - { id: repurpose_outline, kind: model, name: An outline, slot: writer, prompt: prompts/repurpose_outline.md, inputs: { piece: "${inputs.piece}" }, params: { temperature: 0.2 } }
+outputs:
+  post: { from: "${steps.repurpose_post.output}", type: markdown, label: Short post }
+  thread: { from: "${steps.repurpose_thread.output}", type: markdown, label: Thread }
+  summary: { from: "${steps.repurpose_summary.output}", type: markdown, label: One paragraph }
+  outline: { from: "${steps.repurpose_outline.output}", type: markdown, label: Outline }
+returns:
+  - "${steps.repurpose_summary.output}: the one-paragraph summary"

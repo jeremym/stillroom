@@ -124,7 +124,6 @@ pub fn answer_schema() -> Value {
                         "type": "array",
                         "items": {
                             "type": "object",
-                            "required": ["id", "name", "why"],
                             "properties": {
                                 "id": { "type": "string" },
                                 "name": { "type": "string" },
@@ -132,7 +131,8 @@ pub fn answer_schema() -> Value {
                                 "inputs": { "type": "array", "items": { "type": "string" } },
                                 "steps": { "type": "array", "items": { "type": "string" } },
                                 "outputs": { "type": "array", "items": { "type": "string" } },
-                                "keep": { "type": "object", "properties": { "refresh": { "type": "string", "enum": ["always", "when_sources_change", "manual"] } } }
+                                "keep": { "type": "object", "properties": { "refresh": { "type": "string", "enum": ["always", "when_sources_change", "manual"] } } },
+                                "use": { "type": "string", "description": "The id of a ready-made stage to use instead of steps" }
                             }
                         }
                     }
@@ -150,9 +150,18 @@ pub fn answer_schema() -> Value {
     })
 }
 
-/// The planner prompt with the live tool list appended, so adding a tool teaches the planner.
+/// The planner prompt with the live tool list and the stage library appended, so adding a tool or
+/// a ready-made stage teaches the planner.
 pub fn assemble_system(prompt: &str, tools: &[ToolInfo]) -> String {
+    assemble_system_with(prompt, tools, None)
+}
+
+pub fn assemble_system_with(prompt: &str, tools: &[ToolInfo], library: Option<&crate::stagelib::StageLibrary>) -> String {
     let mut s = String::from(prompt.trim_end());
+    if let Some(lib) = library.filter(|l| !l.stages.is_empty()) {
+        s.push_str("\n\n## Ready-made stages\n\nThese stages are already built and tested. When one does what a stage of the recipe should do, use it instead of composing steps: write the stage as `{ \"use\": \"<id>\" }` (optionally with your own `name` and `why`) and nothing else; its inputs, steps, prompts, and outputs are added to the recipe for you, and the recipe may declare inputs with the same names. Reference what it returns from later stages exactly as listed. Do not list its steps or inputs yourself.\n");
+        s.push_str(&lib.describe());
+    }
     s.push_str("\n\n## Tools available\n\nThese are the only tools. Use the parameter names exactly.\n");
     for t in tools {
         s.push_str(&format!("\n### `{}`\n\n{}\n", t.id, t.description));
@@ -288,6 +297,8 @@ fn declare_keeps(yaml: &mut serde_json::Map<String, Value>) {
 }
 
 pub struct Planner {
+    /// Ready-made stages the model may pick with `"use": "<id>"`.
+    pub library: Option<Arc<crate::stagelib::StageLibrary>>,
     pub models: Arc<dyn ModelClient>,
     pub model_id: String,
     pub tools: Vec<ToolInfo>,
@@ -331,7 +342,7 @@ impl Planner {
             }
         };
         let mut messages = vec![
-            ChatMessage::new("system", assemble_system(&self.prompt, &self.tools)),
+            ChatMessage::new("system", assemble_system_with(&self.prompt, &self.tools, self.library.as_deref())),
             ChatMessage::new("user", user_message(req)),
         ];
         let max = self.max_attempts.max(1);
@@ -357,8 +368,9 @@ impl Planner {
             completion_tokens += resp.completion_tokens.unwrap_or(0);
             emit(PlanEvent::Checking { attempt });
             let problems = match parse_answer(&resp.content, req) {
-                Ok(draft) => {
-                    let problems = draft.check(&known_tools);
+                Ok(mut draft) => {
+                    let mut problems = self.library.as_ref().map(|l| l.expand_all(&mut draft)).unwrap_or_default();
+                    problems.extend(draft.check(&known_tools));
                     let better = best.as_ref().map(|(_, p)| problems.len() < p.len()).unwrap_or(true);
                     if better {
                         best = Some((draft, problems.clone()));
@@ -444,6 +456,7 @@ mod tests {
     fn planner(answers: Vec<String>) -> (Planner, Arc<Script>) {
         let script = Arc::new(Script { answers: Mutex::new(answers), seen: Mutex::new(vec![]) });
         let p = Planner {
+            library: None,
             models: script.clone(),
             model_id: "ollama:test".into(),
             tools: ToolRegistry::builtin().catalog(),
@@ -492,6 +505,40 @@ mod tests {
         assert_eq!(d.yaml["stages"][1]["keep"]["refresh"], "always");
         let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
         assert!(d.check(&known).is_empty(), "{:?}", d.check(&known));
+    }
+
+    #[tokio::test]
+    async fn a_ready_made_stage_is_expanded_into_the_draft() {
+        let lib = Arc::new(crate::stagelib::StageLibrary::load(&crate::stagelib::repo_stages_dir()).unwrap());
+        let answer = json!({
+            "recipe": {
+                "id": "x", "name": "X", "description": "Summarize then make cards.",
+                "inputs": {}, "modelSlots": {},
+                "steps": [
+                    { "id": "cards", "kind": "model", "slot": "writer", "prompt": "prompts/cards.md", "inputs": { "text": "${steps.summary_write.output}" } }
+                ],
+                "outputs": { "cards": { "from": "${steps.cards.output}", "type": "markdown" } },
+                "stages": [
+                    { "use": "summarize_file", "name": "Read it" },
+                    { "id": "cards", "name": "Cards", "why": "w", "steps": ["cards"], "outputs": ["cards"] }
+                ]
+            },
+            "files": [ { "path": "prompts/cards.md", "text": "Make cards." } ]
+        })
+        .to_string();
+        let (mut p, _) = planner(vec![answer]);
+        p.library = Some(lib.clone());
+        let out = p.plan(&req(), None).await.unwrap();
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        let y = &out.draft.yaml;
+        assert_eq!(y["stages"][0]["id"], "summarize_file");
+        assert_eq!(y["stages"][0]["name"], "Read it");
+        assert_eq!(y["stages"][0]["steps"], json!(["summary_read", "summary_write"]));
+        assert!(y["inputs"].get("file").is_some(), "the stage brought its input");
+        assert!(y["modelSlots"].get("writer").is_some());
+        assert!(out.draft.files.contains_key("prompts/summarize_file.md"));
+        let s = assemble_system_with("P", &ToolRegistry::builtin().catalog(), Some(&lib));
+        assert!(s.contains("### `summarize_file`") && s.contains("Use after: `index_folder`"));
     }
 
     #[test]

@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "required": [
+    "cards"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "cards": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": [
+          "front",
+          "back",
+          "topic"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "front": {
+            "type": "string"
+          },
+          "back": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

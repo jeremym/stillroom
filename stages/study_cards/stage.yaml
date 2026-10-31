@@ -1,0 +1,30 @@
+id: study_cards
+name: Make study cards
+summary: Turn a text (a document's text, notes, or an answer) into flashcards and a short quiz with answers, for learning it.
+why: An AI step pulls the concepts out of the text and writes a flashcard for each (question on the front, answer on the back), then a short quiz with answers, so you can test yourself.
+tags: [learning]
+inputs:
+  material: { type: text, label: What to learn, description: "Paste the notes or text to learn from." }
+modelSlots:
+  writer: { requires: [text, structured_output], preference: accuracy, description: Writes the cards and the quiz. }
+steps:
+  - id: cards_write
+    kind: model
+    name: Write the flashcards
+    slot: writer
+    prompt: prompts/study_cards.md
+    inputs: { material: "${inputs.material}" }
+    outputSchema: schemas/study_cards.json
+    params: { think: false, temperature: 0.3, contextLength: 16384 }
+  - id: cards_quiz
+    kind: model
+    name: Write the quiz
+    slot: writer
+    prompt: prompts/study_quiz.md
+    inputs: { material: "${inputs.material}", cards: "${steps.cards_write.output}" }
+    params: { think: false, temperature: 0.3, contextLength: 16384 }
+outputs:
+  flashcards: { from: "${steps.cards_write.output}", type: json, label: Flashcards }
+  quiz: { from: "${steps.cards_quiz.output}", type: markdown, label: Quiz }
+returns:
+  - "${steps.cards_write.output}: { cards: [{ front, back, topic }] }"

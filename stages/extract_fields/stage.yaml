@@ -1,0 +1,47 @@
+id: extract_fields
+name: Pull out the fields
+summary: Read every PDF, Word, Markdown, or text file in a folder and pull out the same fields from each (dates, amounts, names, whatever the user lists) into one table; kept between runs.
+why: Each file is read and an AI step fills in the fields you asked for, exactly as the file states them; the rows become one table you can save as a spreadsheet. Unchanged files are not read again next time.
+tags: [documents, table, extract]
+inputs:
+  folder: { type: directory, label: The files, description: "A folder of .pdf, .docx, .md, or .txt files (receipts, invoices, letters, forms). Subfolders are read too." }
+  fields: { type: text, label: Fields to pull out, description: "One per line, with a word on what each means, e.g. 'date: when it was issued', 'total: the amount including tax'." }
+modelSlots:
+  reader: { requires: [text, structured_output], preference: accuracy, description: Reads each file and fills in the fields. }
+permissions:
+  filesystem: { read: [input] }
+keep: { refresh: when_sources_change }
+steps:
+  - id: fields_list
+    kind: tool
+    name: List the files
+    tool: fs.list
+    inputs: { path: "${inputs.folder}", extensions: [pdf, docx, md, markdown, txt], recursive: true }
+  - id: fields_files
+    kind: map
+    name: Read each file
+    over: "${steps.fields_list.output.entries}"
+    as: file
+    concurrency: 2
+    steps:
+      - { id: text, kind: tool, name: Read the file, tool: doc.text, inputs: { path: "${file.path}" } }
+      - id: values
+        kind: model
+        name: Fill in the fields
+        slot: reader
+        prompt: prompts/extract_fields.md
+        inputs: { fields: "${inputs.fields}", source: "${file.path}", text: "${steps.text.output.text}" }
+        outputSchema: schemas/extract_fields.json
+        params: { think: false, temperature: 0.0, contextLength: 32768 }
+  - id: fields_table
+    kind: tool
+    name: One row per file
+    tool: list.table
+    inputs:
+      items: "${steps.fields_files.output}"
+      columns: { File: file.path, Values: values.values, Missing: values.missing, Note: text.note }
+outputs:
+  table: { from: "${steps.fields_table.output.rows}", type: table, label: The fields, description: "One row per file: the values found and the fields that were missing." }
+returns:
+  - "${steps.fields_files.output}: one entry per file with file.path and values { values: [{ field, value, where }], missing: [field] }"
+  - "${steps.fields_table.output.rows}: the table rows"

@@ -1,0 +1,40 @@
+id: index_folder
+name: Build the index
+summary: Read every PDF, Word, Markdown, or text file in a folder, split them into passages, and index the passages by meaning (embeddings), kept between runs. Pair with answer_from_index.
+why: Each file is read, split into passages, and each passage turned into numbers (embeddings) and remembered, so a question can find the passages that match it. Built once; rebuilt only when the files change, and only new or changed passages are embedded again.
+tags: [documents, index]
+inputs:
+  folder: { type: directory, label: Your documents, description: "A folder of .pdf, .docx, .md, or .txt files. Subfolders are read too." }
+modelSlots:
+  embedder: { requires: [embedding], description: Turns passages into numbers (embeddings) so a question can find the passages that match it. }
+permissions:
+  filesystem: { read: [input] }
+keep: { refresh: when_sources_change }
+steps:
+  - id: index_list
+    kind: tool
+    name: List the files
+    tool: fs.list
+    inputs: { path: "${inputs.folder}", extensions: [pdf, docx, md, markdown, txt], recursive: true }
+  - id: index_files
+    kind: map
+    name: Read and index each file
+    over: "${steps.index_list.output.entries}"
+    as: file
+    concurrency: 2
+    steps:
+      - { id: text, kind: tool, name: Read the file, tool: doc.text, inputs: { path: "${file.path}" } }
+      - { id: chunks, kind: tool, name: Split into passages, tool: text.chunk, inputs: { pages: "${steps.text.output.pages}", size: 1500, overlap: 200 } }
+      - { id: store, kind: tool, name: Index the passages, tool: keep.index, inputs: { slot: embedder, chunks: "${steps.chunks.output.chunks}", source: "${file.path}" } }
+  - id: index_table
+    kind: tool
+    name: What the index holds
+    tool: list.table
+    inputs:
+      items: "${steps.index_files.output}"
+      columns: { File: file.path, Kind: text.kind, Characters: text.chars, Passages: chunks.count, Indexed: store.indexed, Unchanged: store.skipped, Note: text.note }
+outputs:
+  files: { from: "${steps.index_table.output.rows}", type: table, label: Files in the index, description: "Each file read, how many passages it became, and how many were new this run." }
+returns:
+  - "the index itself: search it with keep.search { slot: embedder, query: ..., stage: index_folder }"
+  - "${steps.index_table.output.rows}: one row per file (File, Kind, Characters, Passages, Indexed, Unchanged, Note)"

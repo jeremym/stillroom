@@ -1,0 +1,31 @@
+id: rewrite_in_voice
+name: Rewrite in my voice
+summary: Rewrite a piece of text so it reads like the user's own writing, from a few samples they paste, keeping every fact; outputs the rewrite and a short note on what changed.
+why: An AI step studies the samples for tone, rhythm, and word choice, then rewrites the text to match while keeping every fact and the original order; a second note says what it changed, so nothing is hidden.
+tags: [writing]
+inputs:
+  text: { type: text, label: The text to rewrite, description: "Paste the draft." }
+  samples: { type: text, label: Samples of your writing, description: "Two or three paragraphs you wrote. The more, the closer the match." }
+  notes: { type: text, label: Anything to keep or avoid, description: "Optional: words to keep, phrases to avoid, the audience.", required: false }
+modelSlots:
+  writer: { requires: [text], preference: accuracy, description: Rewrites in the user's voice. }
+steps:
+  - id: voice_rewrite
+    kind: model
+    name: Rewrite it
+    slot: writer
+    prompt: prompts/rewrite_in_voice.md
+    inputs: { text: "${inputs.text}", samples: "${inputs.samples}", notes: "${inputs.notes}" }
+    params: { temperature: 0.5, contextLength: 16384 }
+  - id: voice_changes
+    kind: model
+    name: Say what changed
+    slot: writer
+    prompt: prompts/rewrite_in_voice_changes.md
+    inputs: { before: "${inputs.text}", after: "${steps.voice_rewrite.output}" }
+    params: { think: false, temperature: 0.2 }
+outputs:
+  rewrite: { from: "${steps.voice_rewrite.output}", type: markdown, label: Rewritten }
+  changes: { from: "${steps.voice_changes.output}", type: markdown, label: What changed }
+returns:
+  - "${steps.voice_rewrite.output}: the rewritten text"

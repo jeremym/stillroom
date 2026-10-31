@@ -1,0 +1,25 @@
+id: summarize_file
+name: Summarize a file
+summary: "Read one text or Markdown file and write a short summary: one sentence about what it is, then the main points in the file's own order."
+why: The file is read in full and an AI step writes one sentence about it, then the main points in the file's own order.
+tags: [text, summary]
+inputs:
+  file: { type: file, label: File to summarize, description: "A plain-text or Markdown file.", accept: [".txt", ".md", ".markdown"] }
+modelSlots:
+  writer: { requires: [text], preference: accuracy, description: Reads the file and writes the summary. }
+permissions:
+  filesystem: { read: [input] }
+steps:
+  - { id: summary_read, kind: tool, name: Read the file, tool: file.read, inputs: { path: "${inputs.file}" } }
+  - id: summary_write
+    kind: model
+    name: Write the summary
+    slot: writer
+    prompt: prompts/summarize_file.md
+    inputs: { text: "${steps.summary_read.output.text}" }
+    params: { temperature: 0.2 }
+outputs:
+  summary: { from: "${steps.summary_write.output}", type: markdown, label: Summary }
+returns:
+  - "${steps.summary_read.output.text}: the file's text"
+  - "${steps.summary_write.output}: the summary in Markdown"

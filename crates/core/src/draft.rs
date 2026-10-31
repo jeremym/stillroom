@@ -183,7 +183,7 @@ impl Draft {
             }
             for (tool, named) in tools {
                 let own_kept = stage_id_of(step.id()).is_some_and(|id| kept.contains(id));
-                let reads_other = matches!(tool.as_str(), "keep.get" | "keep.query" | "keep.list") && named.as_deref().is_some_and(|n| kept.contains(n));
+                let reads_other = matches!(tool.as_str(), "keep.get" | "keep.query" | "keep.list" | "keep.search") && named.as_deref().is_some_and(|n| kept.contains(n));
                 if !own_kept && !reads_other {
                     let where_ = stage_name_of(step.id()).map(|n| format!("its stage “{n}”")).unwrap_or_else(|| "its stage".into());
                     problems.push(match named.as_deref() {

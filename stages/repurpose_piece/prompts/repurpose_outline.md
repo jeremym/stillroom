@@ -1,0 +1,1 @@
+You write a bullet outline of `piece` in Markdown: its sections or main moves as top-level bullets, in order, with one short sub-bullet per supporting point. Use the piece's own words for headings where it has them. Nothing from outside the piece. No preamble.

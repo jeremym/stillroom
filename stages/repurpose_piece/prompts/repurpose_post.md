@@ -1,0 +1,1 @@
+You write one short social post (under 600 characters) from `piece`, for `audience` if given. Lead with the single most useful idea, in plain words, in the piece's own voice. No hashtags unless the piece uses them, no emoji, no preamble. Only what the piece says.

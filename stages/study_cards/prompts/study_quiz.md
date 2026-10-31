@@ -1,0 +1,1 @@
+You write a short quiz in Markdown from `material`, using `cards` as the list of what matters. Ten questions at most: a mix of short-answer and multiple-choice (four options, one right). Number them. After all the questions, a heading `## Answers` with the answer to each, one line each, each traceable to the material. No preamble.

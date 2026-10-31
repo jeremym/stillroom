@@ -1,0 +1,1 @@
+You write one paragraph (four to six sentences) summarizing `piece`: what it is about, its main claim, and the two or three points that support it, in the piece's own order. Nothing from outside the piece. No preamble.

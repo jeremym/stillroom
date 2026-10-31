@@ -1,0 +1,26 @@
+id: brief_new
+name: Write the brief
+summary: Compare today's items with what earlier runs saw and write a short brief of only the new ones, plus a table of everything seen. Requires watch_pages and remember_seen before it.
+why: Comparing today's items with what was already seen, an AI step writes a short brief of only the new ones; the log table shows everything the recipe has seen.
+requires: [watch_pages, remember_seen]
+tags: [news, brief]
+modelSlots:
+  writer: { requires: [text], preference: accuracy, description: Writes the brief from the new items. }
+steps:
+  - id: new_brief
+    kind: model
+    name: Write today's brief
+    slot: writer
+    prompt: prompts/brief_new.md
+    inputs: { topic: "${inputs.topic}", pages: "${steps.watch_flatten.output.rows}", history: "${steps.seen_before.output.records}" }
+    params: { think: false, temperature: 0.3, contextLength: 32768 }
+  - id: new_log
+    kind: tool
+    name: The log as a table
+    tool: list.table
+    inputs: { items: "${steps.seen_all.output.records}", columns: { Page: data.page, Items: data.found, Seen: writtenAt } }
+outputs:
+  brief: { from: "${steps.new_brief.output}", type: markdown, label: Today's brief, description: "Only what is new since the last run, with links." }
+  log: { from: "${steps.new_log.output.rows}", type: table, label: Everything seen }
+returns:
+  - "${steps.new_brief.output}: the brief in Markdown"

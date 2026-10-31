@@ -40,7 +40,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../recipes/": "recipes/"
+      "../recipes/": "recipes/",
+      "../stages/": "stages/"
     }
   }
 }

@@ -143,3 +143,8 @@ Phase 1 starts now. Phases 2 and 3 are what Ask Your Documents, the news log, Re
 - **Keeps grow without bound** (`always` logs). Mitigation: `keep.list` shows size in the strip; Rebuild empties; a per-keep cap can come later.
 - **PDF text quality.** Mitigation: page-level chunks, a "no text layer" result instead of garbage, vision later.
 - **No embedding model installed.** Mitigation: the strip says `needs an embedding model · pull one in Settings` on that stage; the Pull zone suggests one.
+
+## 10. Status
+
+- **2026-10-31, phase 1 slice 1 shipped** on the `stages` branch: the format, the checker, the implied stage, the four built-ins with whys, the planner writing stages (live: four stages on the first try), the kit `Strip`, status words from Set up and the run, the strip on Recipe, Set up, Running, and Results, inputs and result tabs grouped by stage, teletype stage headings, the Recipe page listing stages with whys, a planned recipe opening strip-first. Screenshots in `docs/screenshots/stages-*.png`. Remaining in phase 1: stage bands on the card and a Stages panel in the editor.
+

@@ -694,6 +694,7 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
         model_id,
         tools: state.tools.catalog(),
         prompt: state.prompts.current_text("planner").map_err(err)?,
+        strip_prompt: state.prompts.current_text("strip").map_err(err)?,
         timeout: state.model_timeout(),
         cancel: Some(cancel),
         model_defaults: state.model_defaults(),

@@ -68,6 +68,8 @@ pub struct PlanRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum PlanEvent {
+    /// The first call: choosing the stages.
+    Choosing,
     /// A model call is in flight.
     Thinking { attempt: u32, of: u32 },
     /// The answer is being checked.
@@ -259,37 +261,41 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
     Ok(Draft { yaml: Value::Object(yaml), files })
 }
 
-/// A stage whose steps write a keep (`keep.put`, `keep.remove`) gets `keep: { refresh: always }`
-/// when the model left it out. Models reach for the tools and forget the declaration; a log is
-/// the common case, and `always` is its right refresh rule. The checker still guards recipes
+/// A stage whose steps touch a keep without naming another stage's gets a keep declared when
+/// the model left it out: `when_sources_change` when it indexes, `always` otherwise (a log).
+/// Models reach for the tools and forget the declaration. The checker still guards recipes
 /// written by hand.
 fn declare_keeps(yaml: &mut serde_json::Map<String, Value>) {
-    let writers: Vec<String> = yaml
-        .get("steps")
-        .and_then(Value::as_array)
-        .map(|steps| {
-            steps
-                .iter()
-                .filter(|s| {
-                    let direct = s.get("tool").and_then(Value::as_str).is_some_and(|t| t == "keep.put" || t == "keep.remove");
-                    let inner = s.get("steps").and_then(Value::as_array).is_some_and(|inner| {
-                        inner.iter().any(|x| x.get("tool").and_then(Value::as_str).is_some_and(|t| t == "keep.put" || t == "keep.remove"))
-                    });
-                    direct || inner
-                })
-                .filter_map(|s| s.get("id").and_then(Value::as_str).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    if writers.is_empty() {
+    fn own_keep_tool(s: &Value) -> Option<&str> {
+        let t = s.get("tool").and_then(Value::as_str)?;
+        let names_other = s.get("inputs").and_then(|i| i.get("stage")).and_then(Value::as_str).is_some();
+        (t.starts_with("keep.") && !(names_other && matches!(t, "keep.get" | "keep.query" | "keep.list" | "keep.search"))).then_some(t)
+    }
+    let mut users: Vec<(String, bool)> = Vec::new(); // (step id, indexes)
+    if let Some(steps) = yaml.get("steps").and_then(Value::as_array) {
+        for s in steps {
+            let mut tools: Vec<&str> = own_keep_tool(s).into_iter().collect();
+            if let Some(inner) = s.get("steps").and_then(Value::as_array) {
+                tools.extend(inner.iter().filter_map(own_keep_tool));
+            }
+            if !tools.is_empty() {
+                if let Some(id) = s.get("id").and_then(Value::as_str) {
+                    users.push((id.to_string(), tools.contains(&"keep.index")));
+                }
+            }
+        }
+    }
+    if users.is_empty() {
         return;
     }
     if let Some(stages) = yaml.get_mut("stages").and_then(Value::as_array_mut) {
         for st in stages.iter_mut() {
-            let uses = st.get("steps").and_then(Value::as_array).is_some_and(|ids| ids.iter().filter_map(Value::as_str).any(|id| writers.iter().any(|w| w == id)));
-            if uses && !st.get("keep").is_some_and(Value::is_object) {
+            let ids: Vec<&str> = st.get("steps").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let mine: Vec<&(String, bool)> = users.iter().filter(|(id, _)| ids.contains(&id.as_str())).collect();
+            if !mine.is_empty() && !st.get("keep").is_some_and(Value::is_object) {
+                let refresh = if mine.iter().any(|(_, idx)| *idx) { "when_sources_change" } else { "always" };
                 if let Some(o) = st.as_object_mut() {
-                    o.insert("keep".into(), json!({ "refresh": "always" }));
+                    o.insert("keep".into(), json!({ "refresh": refresh }));
                 }
             }
         }
@@ -304,14 +310,167 @@ pub struct Planner {
     pub tools: Vec<ToolInfo>,
     /// The planner prompt in use (original or the user's revision).
     pub prompt: String,
+    /// The strip prompt in use: the first, short call that only picks the stages.
+    pub strip_prompt: String,
     pub timeout: Option<Duration>,
     pub cancel: Option<Cancel>,
     pub model_defaults: ModelDefaults,
-    /// Model calls at most, counting the fixes. Default 3.
+    /// Model calls at most for the composing call, counting the fixes. Default 3.
     pub max_attempts: u32,
 }
 
 pub type PlanObserver = Arc<dyn Fn(PlanEvent) + Send + Sync>;
+
+/// What the first call answers: the strip only.
+#[derive(Debug, Deserialize)]
+struct StripAnswer {
+    #[serde(default)]
+    stages: Vec<StripStage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripStage {
+    #[serde(default, rename = "use")]
+    use_: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    why: Option<String>,
+}
+
+fn strip_schema(lib: &crate::stagelib::StageLibrary) -> Value {
+    let ids: Vec<Value> = lib.stages.iter().map(|s| Value::String(s.id.clone())).collect();
+    json!({
+        "type": "object",
+        "required": ["stages"],
+        "properties": {
+            "stages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "use": { "type": "string", "enum": ids },
+                        "id": { "type": "string" },
+                        "name": { "type": "string" },
+                        "why": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn slug_id(name: &str, taken: &[String]) -> String {
+    let mut base: String = name.to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    base = base.trim_matches('_').to_string();
+    while base.contains("__") {
+        base = base.replace("__", "_");
+    }
+    if base.is_empty() || !base.chars().next().unwrap().is_ascii_alphabetic() {
+        base = format!("stage_{base}");
+    }
+    let mut id = base.clone();
+    let mut n = 2;
+    while taken.iter().any(|t| t == &id) {
+        id = format!("{base}_{n}");
+        n += 1;
+    }
+    id
+}
+
+/// The already-built part of a draft, in words, for the composing call.
+fn already_built(draft: &Draft, lib: &crate::stagelib::StageLibrary) -> String {
+    let mut s = String::new();
+    let Some(stages) = draft.yaml.get("stages").and_then(Value::as_array) else { return s };
+    for (i, st) in stages.iter().enumerate() {
+        let id = st.get("id").and_then(Value::as_str).unwrap_or("");
+        let Some(def) = lib.get(id) else { continue };
+        s.push_str(&format!("\n{}. **{}** (`{}`): {}\n", i + 1, st.get("name").and_then(Value::as_str).unwrap_or(&def.name), id, def.summary));
+        if !def.inputs.is_empty() {
+            s.push_str(&format!("   Inputs it already asks for: {}.\n", def.inputs.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
+        }
+        if !def.model_slots.is_empty() {
+            s.push_str(&format!("   Model slots already declared: {}.\n", def.model_slots.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
+        }
+        for r in &def.returns {
+            s.push_str(&format!("   - returns {r}\n"));
+        }
+    }
+    s
+}
+
+/// Fold the model's answer for the custom stages into the skeleton that already holds the
+/// ready-made ones: inputs, slots, outputs, and files are added when missing; steps are appended
+/// by id; a custom stage takes the model's entry with the same id or name.
+fn merge_partial(skeleton: &mut Draft, partial: &Draft, lib: &crate::stagelib::StageLibrary) {
+    let Some(base) = skeleton.yaml.as_object_mut() else { return };
+    let Some(part) = partial.yaml.as_object() else { return };
+    if base.get("description").and_then(Value::as_str).unwrap_or("").is_empty() {
+        if let Some(d) = part.get("description") {
+            base.insert("description".into(), d.clone());
+        }
+    }
+    for section in ["inputs", "modelSlots", "outputs"] {
+        let entry = base.entry(section).or_insert_with(|| Value::Object(Default::default()));
+        if let (Some(map), Some(from)) = (entry.as_object_mut(), part.get(section).and_then(Value::as_object)) {
+            for (k, v) in from {
+                map.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+    }
+    if let Some(p) = part.get("permissions") {
+        crate::stagelib::merge_permissions(base.entry("permissions").or_insert_with(|| Value::Object(Default::default())), p);
+    }
+    {
+        let steps = base.entry("steps").or_insert_with(|| Value::Array(Vec::new()));
+        if let (Some(arr), Some(from)) = (steps.as_array_mut(), part.get("steps").and_then(Value::as_array)) {
+            for s in from {
+                let id = s.get("id").and_then(Value::as_str).unwrap_or("");
+                if !arr.iter().any(|x| x.get("id").and_then(Value::as_str) == Some(id)) {
+                    arr.push(s.clone());
+                }
+            }
+        }
+    }
+    let part_stages: Vec<Value> = part.get("stages").and_then(Value::as_array).cloned().unwrap_or_default();
+    let lower = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(|s| s.trim().to_ascii_lowercase()).unwrap_or_default();
+    let mut used: Vec<usize> = Vec::new();
+    if let Some(stages) = base.get_mut("stages").and_then(Value::as_array_mut) {
+        for st in stages.iter_mut() {
+            let id = st.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            if lib.get(&id).is_some() {
+                continue;
+            }
+            let found = part_stages.iter().enumerate().find(|(i, p)| {
+                !used.contains(i) && p.get("use").is_none() && (lower(p, "id") == id.to_ascii_lowercase() || (!lower(p, "name").is_empty() && lower(p, "name") == lower(st, "name")))
+            });
+            if let Some((i, p)) = found {
+                used.push(i);
+                if let (Some(o), Some(po)) = (st.as_object_mut(), p.as_object()) {
+                    for k in ["why", "inputs", "steps", "outputs", "keep"] {
+                        if let Some(v) = po.get(k) {
+                            o.insert(k.into(), v.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for (i, p) in part_stages.iter().enumerate() {
+            if used.contains(&i) || p.get("use").is_some() || p.get("id").and_then(Value::as_str).is_some_and(|id| lib.get(id).is_some()) {
+                continue;
+            }
+            if p.get("id").and_then(Value::as_str).is_some() {
+                stages.push(p.clone());
+            }
+        }
+    }
+    for (path, text) in &partial.files {
+        skeleton.files.entry(path.clone()).or_insert_with(|| text.clone());
+    }
+    declare_keeps(base);
+}
 
 impl Planner {
     async fn call(&self, req: ChatRequest) -> Result<crate::model::ChatResponse, PlanError> {
@@ -333,6 +492,75 @@ impl Planner {
         }
     }
 
+    fn chat(&self, messages: Vec<ChatMessage>, schema: Value) -> ChatRequest {
+        ChatRequest {
+            messages,
+            tools: Vec::new(),
+            json_schema: Some(schema),
+            temperature: Some(0.2),
+            max_tokens: None,
+            context_length: self.model_defaults.context_length.or(Some(32768)),
+            think: self.model_defaults.think.clone(),
+        }
+    }
+
+    /// The first call: pick the strip. Returns the skeleton draft (ready-made stages expanded,
+    /// custom ones named with their why and no steps yet) and how many custom stages there are.
+    async fn pick_strip(&self, req: &PlanRequest, lib: &crate::stagelib::StageLibrary) -> Result<(Draft, usize, u64, u64), PlanError> {
+        let system = format!("{}\n\n## Ready-made stages\n{}", self.strip_prompt.trim_end(), lib.describe());
+        let resp = self.call(self.chat(vec![ChatMessage::new("system", system), ChatMessage::new("user", user_message(req))], strip_schema(lib))).await?;
+        let answer: StripAnswer = serde_json::from_value(extract_json(&resp.content).map_err(PlanError::Unusable)?).map_err(|e| PlanError::Unusable(e.to_string()))?;
+        let mut yaml = serde_json::Map::new();
+        yaml.insert("schemaVersion".into(), Value::String("0".into()));
+        yaml.insert("id".into(), Value::String(req.id.clone()));
+        yaml.insert("name".into(), Value::String(req.name.clone()));
+        if let Some(i) = &req.icon {
+            yaml.insert("icon".into(), Value::String(i.clone()));
+        }
+        yaml.insert("version".into(), Value::String("0.1.0".into()));
+        yaml.insert("description".into(), Value::String(String::new()));
+        yaml.insert("inputs".into(), Value::Object(Default::default()));
+        yaml.insert("modelSlots".into(), Value::Object(Default::default()));
+        yaml.insert("steps".into(), Value::Array(Vec::new()));
+        yaml.insert("outputs".into(), Value::Object(Default::default()));
+        let mut stages = Vec::new();
+        let mut taken: Vec<String> = Vec::new();
+        let mut custom = 0usize;
+        for st in answer.stages {
+            match st.use_.as_deref().filter(|u| lib.get(u).is_some()) {
+                Some(u) => {
+                    let mut o = serde_json::Map::new();
+                    o.insert("use".into(), Value::String(u.into()));
+                    if let Some(n) = st.name.filter(|n| !n.trim().is_empty()) {
+                        o.insert("name".into(), Value::String(n));
+                    }
+                    if let Some(w) = st.why.filter(|w| !w.trim().is_empty()) {
+                        o.insert("why".into(), Value::String(w));
+                    }
+                    taken.push(u.to_string());
+                    stages.push(Value::Object(o));
+                }
+                None => {
+                    let name = st.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Make".into());
+                    let id = st.id.filter(|i| !i.trim().is_empty() && !taken.contains(i)).unwrap_or_else(|| slug_id(&name, &taken));
+                    taken.push(id.clone());
+                    let mut o = serde_json::Map::new();
+                    o.insert("id".into(), Value::String(id));
+                    o.insert("name".into(), Value::String(name));
+                    if let Some(w) = st.why {
+                        o.insert("why".into(), Value::String(w));
+                    }
+                    custom += 1;
+                    stages.push(Value::Object(o));
+                }
+            }
+        }
+        yaml.insert("stages".into(), Value::Array(stages));
+        let mut draft = Draft { yaml: Value::Object(yaml), files: BTreeMap::new() };
+        let _ = lib.expand_all(&mut draft);
+        Ok((draft, custom, resp.prompt_tokens.unwrap_or(0), resp.completion_tokens.unwrap_or(0)))
+    }
+
     pub async fn plan(&self, req: &PlanRequest, observer: Option<PlanObserver>) -> Result<PlanOutcome, PlanError> {
         let started = std::time::Instant::now();
         let known_tools: Vec<String> = self.tools.iter().map(|t| t.id.clone()).collect();
@@ -341,35 +569,70 @@ impl Planner {
                 o(e);
             }
         };
-        let mut messages = vec![
-            ChatMessage::new("system", assemble_system_with(&self.prompt, &self.tools, self.library.as_deref())),
-            ChatMessage::new("user", user_message(req)),
-        ];
-        let max = self.max_attempts.max(1);
         let (mut prompt_tokens, mut completion_tokens) = (0u64, 0u64);
+        let lib = self.library.as_deref().filter(|l| !l.stages.is_empty());
+
+        // First call, when there is a library: the strip. Ready-made stages come fully built;
+        // custom ones are named with their why. All ready-made: nothing left to compose.
+        let mut skeleton: Option<Draft> = None;
+        if let Some(lib) = lib {
+            emit(PlanEvent::Choosing);
+            match self.pick_strip(req, lib).await {
+                Ok((draft, custom, pt, ct)) => {
+                    prompt_tokens += pt;
+                    completion_tokens += ct;
+                    if custom == 0 && draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
+                        let problems = draft.check(&known_tools);
+                        return Ok(PlanOutcome { draft, problems, attempts: 1, model_id: self.model_id.clone(), prompt_tokens, completion_tokens, duration_ms: started.elapsed().as_millis() as u64 });
+                    }
+                    if draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
+                        skeleton = Some(draft);
+                    }
+                }
+                Err(PlanError::Cancelled) => return Err(PlanError::Cancelled),
+                Err(PlanError::Timeout(s)) => return Err(PlanError::Timeout(s)),
+                Err(_) => {} // fall back to composing everything in one call
+            }
+        }
+
+        // The composing call. With a skeleton, the model writes only the custom stages and may
+        // reference what the ready-made ones return.
+        let mut system = assemble_system_with(&self.prompt, &self.tools, if skeleton.is_some() { None } else { lib });
+        let mut user = user_message(req);
+        if let (Some(sk), Some(lib)) = (&skeleton, lib) {
+            system.push_str("\n\n## Already built\n\nThe recipe already contains these stages, in this order, fully built with their inputs, model slots, steps, prompts, and outputs. Do not write them again; reference what they return.\n");
+            system.push_str(&already_built(sk, lib));
+            let custom: Vec<String> = sk
+                .yaml
+                .get("stages")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter(|s| s.get("id").and_then(Value::as_str).is_some_and(|id| lib.get(id).is_none())).map(|s| format!("- `{}` **{}**{}", s.get("id").and_then(Value::as_str).unwrap_or(""), s.get("name").and_then(Value::as_str).unwrap_or(""), s.get("why").and_then(Value::as_str).map(|w| format!(": {w}")).unwrap_or_default())).collect())
+                .unwrap_or_default();
+            user.push_str(&format!(
+                "\n## Your part\n\nWrite only these stages, keeping their ids and names:\n{}\n\nAnswer with the JSON object: the inputs, model slots, steps, outputs, and files they need (reuse inputs and slots the built stages already declare rather than adding more), and `stages` containing only these stages, each with its id, name, why, and the inputs, steps, and outputs it holds.\n",
+                custom.join("\n")
+            ));
+        }
+        let mut messages = vec![ChatMessage::new("system", system), ChatMessage::new("user", user)];
+        let max = self.max_attempts.max(1);
         let mut best: Option<(Draft, Vec<String>)> = None;
         let mut last_error = String::new();
         let mut attempts = 0;
         for attempt in 1..=max {
             attempts = attempt;
             emit(PlanEvent::Thinking { attempt, of: max });
-            let resp = self
-                .call(ChatRequest {
-                    messages: messages.clone(),
-                    tools: Vec::new(),
-                    json_schema: Some(answer_schema()),
-                    temperature: Some(0.2),
-                    max_tokens: None,
-                    context_length: self.model_defaults.context_length.or(Some(32768)),
-                    think: self.model_defaults.think.clone(),
-                })
-                .await?;
+            let resp = self.call(self.chat(messages.clone(), answer_schema())).await?;
             prompt_tokens += resp.prompt_tokens.unwrap_or(0);
             completion_tokens += resp.completion_tokens.unwrap_or(0);
             emit(PlanEvent::Checking { attempt });
             let problems = match parse_answer(&resp.content, req) {
                 Ok(mut draft) => {
-                    let mut problems = self.library.as_ref().map(|l| l.expand_all(&mut draft)).unwrap_or_default();
+                    if let (Some(sk), Some(lib)) = (&skeleton, lib) {
+                        let mut merged = sk.clone();
+                        merge_partial(&mut merged, &draft, lib);
+                        draft = merged;
+                    }
+                    let mut problems = lib.map(|l| l.expand_all(&mut draft)).unwrap_or_default();
                     problems.extend(draft.check(&known_tools));
                     let better = best.as_ref().map(|(_, p)| problems.len() < p.len()).unwrap_or(true);
                     if better {
@@ -399,7 +662,7 @@ impl Planner {
         Ok(PlanOutcome {
             draft,
             problems,
-            attempts,
+            attempts: attempts + if skeleton.is_some() { 1 } else { 0 },
             model_id: self.model_id.clone(),
             prompt_tokens,
             completion_tokens,
@@ -457,6 +720,7 @@ mod tests {
         let script = Arc::new(Script { answers: Mutex::new(answers), seen: Mutex::new(vec![]) });
         let p = Planner {
             library: None,
+            strip_prompt: crate::prompts::STRIP_PROMPT.into(),
             models: script.clone(),
             model_id: "ollama:test".into(),
             tools: ToolRegistry::builtin().catalog(),
@@ -526,17 +790,36 @@ mod tests {
             "files": [ { "path": "prompts/cards.md", "text": "Make cards." } ]
         })
         .to_string();
-        let (mut p, _) = planner(vec![answer]);
+        let strip = json!({ "stages": [ { "use": "summarize_file", "name": "Read it" }, { "name": "Cards", "why": "Cards from the summary." } ] }).to_string();
+        let (mut p, script) = planner(vec![strip, answer]);
         p.library = Some(lib.clone());
         let out = p.plan(&req(), None).await.unwrap();
         assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert_eq!(out.attempts, 2, "one strip call, one composing call");
         let y = &out.draft.yaml;
         assert_eq!(y["stages"][0]["id"], "summarize_file");
         assert_eq!(y["stages"][0]["name"], "Read it");
         assert_eq!(y["stages"][0]["steps"], json!(["summary_read", "summary_write"]));
+        assert_eq!(y["stages"][1]["id"], "cards");
+        assert_eq!(y["stages"][1]["steps"], json!(["cards"]));
+        assert_eq!(y["stages"][1]["why"], "w", "the composing answer's why wins");
         assert!(y["inputs"].get("file").is_some(), "the stage brought its input");
         assert!(y["modelSlots"].get("writer").is_some());
         assert!(out.draft.files.contains_key("prompts/summarize_file.md"));
+        assert!(out.draft.files.contains_key("prompts/cards.md"));
+        let seen = script.seen.lock().unwrap();
+        assert!(seen[0].json_schema.as_ref().unwrap()["properties"]["stages"]["items"]["properties"]["use"]["enum"].as_array().unwrap().len() >= 10);
+        assert!(seen[1].messages[0].content.contains("## Already built") && seen[1].messages[1].content.contains("`cards` **Cards**"));
+
+        // All ready-made: one call, nothing to compose.
+        let strip = json!({ "stages": [ { "use": "index_folder" }, { "use": "answer_from_index" } ] }).to_string();
+        let (mut p, _) = planner(vec![strip]);
+        p.library = Some(lib.clone());
+        let out = p.plan(&req(), None).await.unwrap();
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert_eq!(out.attempts, 1);
+        assert_eq!(out.draft.yaml["stages"].as_array().unwrap().len(), 2);
+        assert!(out.draft.yaml["outputs"].get("answer").is_some());
         let s = assemble_system_with("P", &ToolRegistry::builtin().catalog(), Some(&lib));
         assert!(s.contains("- `summarize_file`:") && s.contains("use after `index_folder`"));
     }

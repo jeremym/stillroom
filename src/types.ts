@@ -430,6 +430,7 @@ export interface PlannerPreview {
 }
 
 export type PlanEvent =
+  | { kind: "choosing" }
   | { kind: "thinking"; attempt: number; of: number }
   | { kind: "checking"; attempt: number }
   | { kind: "fixing"; attempt: number; problems: string[] };

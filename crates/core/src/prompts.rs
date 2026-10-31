@@ -20,12 +20,23 @@ pub struct BuiltinPrompt {
     pub original: &'static str,
 }
 
-pub const BUILTIN_PROMPTS: &[BuiltinPrompt] = &[BuiltinPrompt {
-    name: "planner",
-    title: "Planner",
-    purpose: "Turns the goal you type into a draft recipe: inputs, steps, prompts, outputs. The list of tools and the answer format are appended at run time.",
-    original: PLANNER_PROMPT,
-}];
+/// The strip prompt as shipped (`prompts/strip.md`): the first, short planning call.
+pub static STRIP_PROMPT: &str = include_str!("../../../prompts/strip.md");
+
+pub const BUILTIN_PROMPTS: &[BuiltinPrompt] = &[
+    BuiltinPrompt {
+        name: "strip",
+        title: "Strip",
+        purpose: "The first planning call: picks the stages of the recipe, ready-made ones by id and custom ones by name and why. The list of ready-made stages is appended at run time.",
+        original: STRIP_PROMPT,
+    },
+    BuiltinPrompt {
+        name: "planner",
+        title: "Planner",
+        purpose: "The second planning call: writes the steps, prompts, and outputs for the stages that are not ready-made. The list of tools and the answer format are appended at run time.",
+        original: PLANNER_PROMPT,
+    },
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

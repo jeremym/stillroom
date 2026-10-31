@@ -435,7 +435,9 @@ export default function SettingsApp() {
         {section === "prompts" && (
           <Zone title="Prompts" sub="the words the app itself runs on">
             <p>These are the instructions (system prompts) Stillroom gives a model for its own jobs. A recipe's prompts live in the recipe; these sit underneath. Read them, change them, keep every revision, go back to the original whenever you like.</p>
-            <h3>Planner</h3>
+            <h3>Strip <span className="muted">(the first planning call: which stages)</span></h3>
+            <PromptEditor name="strip" onError={(m) => setError(m)} />
+            <h3>Planner <span className="muted">(the second call: the steps of custom stages)</span></h3>
             <PromptEditor name="planner" onError={(m) => setError(m)} />
           </Zone>
         )}

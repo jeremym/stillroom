@@ -214,7 +214,7 @@ impl StageLibrary {
     }
 }
 
-fn merge_permissions(into: &mut Value, from: &Value) {
+pub fn merge_permissions(into: &mut Value, from: &Value) {
     let (Some(a), Some(b)) = (into.as_object_mut(), from.as_object()) else { return };
     for (k, v) in b {
         match (a.get_mut(k), v) {

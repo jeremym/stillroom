@@ -210,7 +210,8 @@ function App() {
     const unlistenPlan = listen<PlanEvent>("plan:progress", (ev) => {
       const e = ev.payload;
       setPlanProgress(
-        e.kind === "thinking" ? (e.attempt === 1 ? "Thinking about the steps…" : `Fixing the draft (try ${e.attempt} of ${e.of})…`)
+        e.kind === "choosing" ? "Choosing the stages…"
+          : e.kind === "thinking" ? (e.attempt === 1 ? "Thinking about the steps…" : `Fixing the draft (try ${e.attempt} of ${e.of})…`)
           : e.kind === "checking" ? "Checking the draft…"
           : `Found ${e.problems.length} problem${e.problems.length === 1 ? "" : "s"}; asking for a fix…`,
       );

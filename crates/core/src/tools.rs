@@ -170,6 +170,8 @@ pub struct ToolDescription {
     pub description: String,
     /// JSON Schema for the inputs object.
     pub parameters: Value,
+    /// What the output looks like, in words, for the planner and for recipe authors.
+    pub returns: String,
 }
 
 #[async_trait::async_trait]
@@ -241,6 +243,7 @@ impl ToolRegistry {
                 ToolInfo {
                     id: t.id().to_string(),
                     description: d.as_ref().map(|d| d.description.clone()).unwrap_or_default(),
+                    returns: d.as_ref().map(|d| d.returns.clone()).unwrap_or_default(),
                     parameters: d.map(|d| d.parameters),
                     cacheable: t.cacheable(),
                 }
@@ -257,6 +260,8 @@ pub struct ToolInfo {
     pub id: String,
     pub description: String,
     pub parameters: Option<Value>,
+    /// What the output looks like, in words.
+    pub returns: String,
     pub cacheable: bool,
 }
 
@@ -284,6 +289,7 @@ impl Tool for FileRead {
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
             description: "Read a UTF-8 text file. Returns its text.".into(),
+            returns: "`{ path, text, bytes }`; `text` is the file's contents.".into(),
             parameters: json!({ "type": "object", "required": ["path"], "properties": { "path": { "type": "string", "description": "Absolute path of the file" } } }),
         })
     }
@@ -328,6 +334,14 @@ fn mermaid_label(raw: &str) -> String {
 impl Tool for ConceptMap {
     fn id(&self) -> &str {
         "spine.concept_map"
+    }
+
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Draw a Knowledge Spine (a list of concepts with prerequisites and related concepts) as a Mermaid flowchart.".into(),
+            returns: "`{ format: \"mermaid\", title, source, nodes, edges }`; `source` is the Mermaid text, which the `diagram` output type draws.".into(),
+            parameters: json!({ "type": "object", "required": ["spine"], "properties": { "spine": { "type": "object", "description": "A spine: { title, concepts: [{ id, name, prerequisites: [id], related: [id] }] }" } } }),
+        })
     }
 
     async fn call(&self, _ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
@@ -419,6 +433,14 @@ impl Tool for Speak {
         "speech.synthesize"
     }
 
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Read text aloud into an audio file with the Mac's built-in voice.".into(),
+            returns: "`{ path, format, durationSeconds, voice, chars }`; pair with the `audio` output type.".into(),
+            parameters: json!({ "type": "object", "properties": { "text": { "type": "string", "description": "Plain text to read" }, "script": { "type": "object", "description": "Or a script: { chapters: [{ title, text }] }" }, "voice": { "type": "string" }, "rate": { "type": "number", "description": "Words per minute" }, "name": { "type": "string", "description": "File name without extension" } } }),
+        })
+    }
+
     async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
         if !cfg!(target_os = "macos") {
             return Err(ToolError::Failed("speech.synthesize currently requires macOS".into()));
@@ -486,6 +508,7 @@ impl Tool for FsList {
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
             description: "List the files and folders inside a directory.".into(),
+            returns: "`{ path, entries: [{ path, name, isDir, bytes, modified }] }`.".into(),
             parameters: json!({
                 "type": "object",
                 "required": ["path"],
@@ -578,6 +601,7 @@ impl Tool for FsWrite {
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
             description: "Write a text file. Give either a full path, or a directory plus a file name. Parent folders are created.".into(),
+            returns: "`{ path, bytes }`.".into(),
             parameters: json!({
                 "type": "object",
                 "required": ["text"],
@@ -682,6 +706,7 @@ impl Tool for EmailParse {
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
             description: "Parse a saved email (.eml) into sender, recipients, subject, date, and plain-text body.".into(),
+            returns: "`{ path, from, to, cc, subject, date, messageId, inReplyTo, text }`.".into(),
             parameters: json!({ "type": "object", "required": ["path"], "properties": { "path": { "type": "string" } } }),
         })
     }
@@ -733,6 +758,14 @@ impl Tool for EmailWriteDraft {
 
     fn has_side_effects(&self) -> bool {
         true
+    }
+
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Write a reply as an email draft file (.eml) that a mail app can open. Nothing is sent.".into(),
+            returns: "`{ path, bytes }`.".into(),
+            parameters: json!({ "type": "object", "required": ["dir", "to", "subject", "body"], "properties": { "dir": { "type": "string", "description": "Folder to write into" }, "to": { "type": "string" }, "subject": { "type": "string" }, "body": { "type": "string" }, "inReplyTo": { "type": "string" }, "from": { "type": "string" } } }),
+        })
     }
 
     async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
@@ -812,6 +845,14 @@ impl Tool for ListFilter {
         "list.filter"
     }
 
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Keep only the items of a list where a field (a dot path inside each item) is present and truthy.".into(),
+            returns: "`{ items, kept, dropped }`; `items` is the filtered list.".into(),
+            parameters: json!({ "type": "object", "required": ["items", "path"], "properties": { "items": { "type": "array" }, "path": { "type": "string", "description": "Dot path inside each item, e.g. extract.keep" } } }),
+        })
+    }
+
     async fn call(&self, _ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
         let items = inputs
             .get("items")
@@ -836,6 +877,14 @@ pub struct ListTable;
 impl Tool for ListTable {
     fn id(&self) -> &str {
         "list.table"
+    }
+
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Turn a list of nested objects into rows with named columns, for a table output.".into(),
+            returns: "`{ rows: [...], count }`; point a `table` output at `.rows`.".into(),
+            parameters: json!({ "type": "object", "required": ["items", "columns"], "properties": { "items": { "type": "array" }, "columns": { "type": "object", "description": "{ \"Column name\": \"dot.path\" } in display order" } } }),
+        })
     }
 
     async fn call(&self, _ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
@@ -974,6 +1023,7 @@ impl Tool for HttpFetch {
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
             description: "Fetch one web page (http or https) and return its readable text. Only hosts the recipe may reach.".into(),
+            returns: "`{ url, finalUrl, ok, status, contentType, title, text, chars, error }`; a page that fails to load has `ok: false` and the step still succeeds.".into(),
             parameters: json!({
                 "type": "object",
                 "required": ["url"],

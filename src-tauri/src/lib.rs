@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex};
 use stillroom_core::store::{ModelUsage, RunEstimate};
 use stillroom_core::tools::{ToolInfo, ToolRegistry};
 use stillroom_core::trace::RunSummary;
+use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots_with, validate_edit, Cancel, Draft, Executor, ModelDefaults, RecipeInfo, RecipeLibrary, RecipeSource,
-    ResolveDefaults, Run,
-    RunTrigger, StepEdit, StepRecord, Store, Watch,
+    edits_for_rerun, pins_from_run, resolve_slots_with, validate_edit, Cancel, Draft, Executor, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
+    PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
@@ -30,6 +30,8 @@ pub(crate) struct AppState {
     current_cancel: Mutex<Option<Cancel>>,
     tools: Arc<ToolRegistry>,
     library: RecipeLibrary,
+    /// The engine's own prompts (the planner), with the user's revisions on disk.
+    prompts: SystemPrompts,
     db_path: String,
     artifacts_dir: PathBuf,
     /// One run at a time: a watch firing while the user runs something waits its turn.
@@ -591,6 +593,108 @@ struct DraftResponse {
     draft: Draft,
 }
 
+/// Every system prompt with its revisions.
+#[tauri::command]
+fn list_system_prompts(state: State<'_, AppState>) -> CmdResult<Vec<PromptState>> {
+    Ok(state.prompts.states())
+}
+
+#[tauri::command]
+fn read_system_prompt(state: State<'_, AppState>, name: String) -> CmdResult<PromptState> {
+    state.prompts.state(&name).map_err(err)
+}
+
+/// Save the text as a new revision and use it from now on.
+#[tauri::command]
+fn save_system_prompt(app: AppHandle, state: State<'_, AppState>, name: String, text: String) -> CmdResult<PromptState> {
+    let s = state.prompts.save(&name, &text).map_err(err)?;
+    let _ = app.emit("prompts:changed", &name);
+    Ok(s)
+}
+
+/// Use revision `n`; 0 is the original (reset). Nothing is deleted.
+#[tauri::command]
+fn use_system_prompt_version(app: AppHandle, state: State<'_, AppState>, name: String, n: u32) -> CmdResult<PromptState> {
+    let s = state.prompts.use_version(&name, n).map_err(err)?;
+    let _ = app.emit("prompts:changed", &name);
+    Ok(s)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlannerPreview {
+    /// The model a plan started now would use, and how it was chosen.
+    resolution: Option<stillroom_core::Resolution>,
+    problem: Option<String>,
+    /// Installed models that could do the job, for the picker.
+    candidates: Vec<InstalledModel>,
+}
+
+impl AppState {
+    /// The planner's pin from Settings (`planner.model`), unless the caller names one.
+    fn planner_pins(&self, model: Option<String>) -> BTreeMap<String, String> {
+        let pin = model.or_else(|| {
+            self.settings().ok().and_then(|s| s.get("planner").and_then(|p| p.get("model")).and_then(Value::as_str).map(String::from))
+        });
+        pin.filter(|m| !m.trim().is_empty()).map(|m| [(PLANNER_SLOT.to_string(), m)].into_iter().collect()).unwrap_or_default()
+    }
+}
+
+/// Which model would plan right now: the pin you pass, else Settings, else Auto (local only).
+#[tauri::command]
+async fn preview_planner(state: State<'_, AppState>, model: Option<String>) -> CmdResult<PlannerPreview> {
+    let installed = state.router().list_all().await;
+    let slot = stillroom_core::planner::planner_slot();
+    let candidates = installed.iter().filter(|m| slot.requires.iter().all(|c| m.capabilities.contains(c))).cloned().collect();
+    let pins = state.planner_pins(model);
+    Ok(match resolve_slots_with(&planner_recipe(), &installed, &pins, &state.resolve_defaults()) {
+        Ok(mut r) => PlannerPreview { resolution: r.remove(PLANNER_SLOT), problem: None, candidates },
+        Err(e) => PlannerPreview { resolution: None, problem: Some(e.to_string()), candidates },
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanArgs {
+    #[serde(flatten)]
+    request: PlanRequest,
+    /// A model to plan with this time; otherwise Settings, then Auto.
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// Draft a recipe from a goal. Progress arrives as `plan:progress` events; Stop cancels it.
+/// Nothing is written: the draft comes back for the user to save.
+#[tauri::command]
+async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs) -> CmdResult<PlanOutcome> {
+    let router = state.router();
+    let installed = router.list_all().await;
+    let pins = state.planner_pins(args.model);
+    let resolutions = resolve_slots_with(&planner_recipe(), &installed, &pins, &state.resolve_defaults()).map_err(err)?;
+    let model_id = resolutions.get(PLANNER_SLOT).map(|r| r.model_id.clone()).ok_or("no model for the planner")?;
+    let cancel = Cancel::new();
+    *state.current_cancel.lock().map_err(err)? = Some(cancel.clone());
+    let planner = Planner {
+        models: router,
+        model_id,
+        tools: state.tools.catalog(),
+        prompt: state.prompts.current_text("planner").map_err(err)?,
+        timeout: state.model_timeout(),
+        cancel: Some(cancel),
+        model_defaults: state.model_defaults(),
+        max_attempts: 3,
+    };
+    let observer = {
+        let app = app.clone();
+        Arc::new(move |e: PlanEvent| {
+            let _ = app.emit("plan:progress", e);
+        })
+    };
+    let out = planner.plan(&args.request, Some(observer)).await;
+    *state.current_cancel.lock().map_err(err)? = None;
+    out.map_err(err)
+}
+
 /// The recipe as it is on disk, for editing.
 #[tauri::command]
 fn read_recipe_draft(state: State<'_, AppState>, recipe_id: String) -> CmdResult<DraftResponse> {
@@ -955,6 +1059,7 @@ pub fn run() {
                 current_cancel: Mutex::new(None),
                 tools: Arc::new(ToolRegistry::builtin()),
                 library,
+                prompts: SystemPrompts::new(data_dir.join("prompts")),
                 db_path: db_path.to_string_lossy().into_owned(),
                 artifacts_dir,
                 run_gate: tokio::sync::Mutex::new(()),
@@ -988,6 +1093,12 @@ pub fn run() {
             read_recipe_draft,
             check_recipe_draft,
             save_recipe_draft,
+            list_system_prompts,
+            read_system_prompt,
+            save_system_prompt,
+            use_system_prompt_version,
+            preview_planner,
+            plan_recipe,
             list_watches,
             add_watch,
             set_watch_enabled,

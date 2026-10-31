@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
-import type { ModelsResponse, ModelUsage, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
+import type { ModelsResponse, ModelUsage, PlanEvent, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
 import { Teletype } from "./components/Teletype";
@@ -15,7 +15,7 @@ import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
 import { Welcome } from "./components/Welcome";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
 import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
-import { isLocalModel, rememberProviders, whereWord } from "./models";
+import { isLocalModel, rememberProviders, shortModel, whereWord } from "./models";
 import { Dial, Empty, Pill, Rail, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
 import "./App.css";
 
@@ -65,6 +65,10 @@ function App() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [freshId, setFreshId] = useState<string | null>(null);
+  // The planner at work: what it is doing, what its draft still got wrong, and a note for the card.
+  const [planProgress, setPlanProgress] = useState<string | null>(null);
+  const [planProblems, setPlanProblems] = useState<string[] | null>(null);
+  const [planNote, setPlanNote] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   // The welcome shows until it has been finished or skipped once (firstRun absent means never shown).
@@ -193,6 +197,14 @@ function App() {
       refreshWatches();
     });
     const unlistenWatches = listen("watch:changed", () => refreshWatches());
+    const unlistenPlan = listen<PlanEvent>("plan:progress", (ev) => {
+      const e = ev.payload;
+      setPlanProgress(
+        e.kind === "thinking" ? (e.attempt === 1 ? "Thinking about the steps…" : `Fixing the draft (try ${e.attempt} of ${e.of})…`)
+          : e.kind === "checking" ? "Checking the draft…"
+          : `Found ${e.problems.length} problem${e.problems.length === 1 ? "" : "s"}; asking for a fix…`,
+      );
+    });
     // Settings change in the Settings window too; the model list changes when Ollama's address does.
     const unlistenSettings = listen<Settings>("settings:changed", (ev) => {
       const before = settingsRef.current.ollama?.baseUrl;
@@ -203,6 +215,7 @@ function App() {
       unlisten.then((f) => f());
       unlistenWatchRun.then((f) => f());
       unlistenWatches.then((f) => f());
+      unlistenPlan.then((f) => f());
       unlistenSettings.then((f) => f());
     };
   }, [refreshModels, refreshRuns, refreshWatches, refreshRecipes, openRun]);
@@ -315,9 +328,22 @@ function App() {
   async function createRecipe(req: NewRecipeRequest) {
     setCreating(true);
     setCreateError(null);
+    setPlanProblems(null);
+    setPlanNote(null);
     try {
       let draft;
-      if (req.mode === "copy" && req.sourceId) {
+      let note: string | null = null;
+      if (req.mode === "goal" && req.goal) {
+        setPlanProgress("Thinking about the steps…");
+        const out = await api.planRecipe({ goal: req.goal, material: req.material ?? null, id: req.id, name: req.name, icon: req.icon, model: req.model ?? null });
+        if (out.problems.length > 0) {
+          setPlanProblems(out.problems);
+          return;
+        }
+        draft = out.draft;
+        const tries = out.attempts === 1 ? "first try" : `${out.attempts} tries`;
+        note = `Drafted by ${shortModel(out.modelId)} (${whereWord(out.modelId)}) on the ${tries} in ${fmtElapsed(out.durationMs)}. Walk the steps and their prompts, then Save; nothing has run yet.`;
+      } else if (req.mode === "copy" && req.sourceId) {
         const src = await api.readRecipeDraft(req.sourceId);
         draft = copyRecipe(src.draft, req.id, req.name, req.icon, src.source === "builtin");
       } else {
@@ -327,11 +353,13 @@ function App() {
       await refreshRecipes();
       setRecipeId(saved.recipe.id);
       setFreshId(saved.recipe.id);
+      setPlanNote(note);
       setPlace("door");
     } catch (e) {
       setCreateError(String(e));
     } finally {
       setCreating(false);
+      setPlanProgress(null);
     }
   }
 
@@ -541,8 +569,8 @@ function App() {
           )}
 
           {place === "new" && recipes && (
-            <NewRecipe recipes={recipes.recipes} busy={creating} error={createError} onCreate={createRecipe}
-              onCancel={() => setPlace(recipe ? "recipe" : "library")} />
+            <NewRecipe recipes={recipes.recipes} busy={creating} error={createError} progress={planProgress} problems={planProblems} onCreate={createRecipe}
+              onCancel={() => setPlace(recipe ? "recipe" : "library")} onStop={() => api.stopRun().catch((e) => setError(String(e)))} />
           )}
 
           {place === "recipe" && recipe && (
@@ -670,6 +698,9 @@ function App() {
             )
           )}
 
+          {place === "door" && planNote && freshId === recipe?.id && (
+            <p className="result-line hint-line"><Glyph name="sparkles" /> {planNote}</p>
+          )}
           {place === "door" && flowFor(recipe)}
 
           {error && <pre className="error">{error}</pre>}

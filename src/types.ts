@@ -262,6 +262,8 @@ export interface ToolInfo {
   description: string;
   /** JSON Schema of the inputs object, when the tool describes itself. */
   parameters: { properties?: Record<string, { type?: string; description?: string }>; required?: string[] } | null;
+  /** What the output looks like, in words. */
+  returns: string;
   cacheable: boolean;
 }
 
@@ -347,6 +349,8 @@ export interface Settings {
   openai?: { enabled?: boolean; baseUrl?: string; models?: string[] };
   /** Model pins per recipe: recipe id → slot → model id. */
   pins?: Record<string, Record<string, string>>;
+  /** The planner: a pinned model, or none for Auto (local only). */
+  planner?: { model?: string };
   firstRun?: boolean;
 }
 
@@ -371,4 +375,41 @@ export interface PermissionEntry {
   need: "required" | "optional" | "not_needed";
   status: "granted" | "denied" | "unknown" | "not_needed" | "in_use" | "not_in_use";
   pane: string | null;
+}
+
+/** One of the engine's own prompts (the planner), with the user's revisions. */
+export interface PromptVersion { n: number; savedAt: string | null }
+export interface PromptState {
+  name: string;
+  title: string;
+  purpose: string;
+  /** The text in use right now. */
+  text: string;
+  /** The revision in use; 0 is the original. */
+  current: number;
+  original: string;
+  versions: PromptVersion[];
+}
+
+export interface PlannerPreview {
+  resolution: { slot: string; modelId: string; via: "pinned" | "default" | "recommended" | "capability" } | null;
+  problem: string | null;
+  /** Installed models that could plan, for the picker. */
+  candidates: InstalledModel[];
+}
+
+export type PlanEvent =
+  | { kind: "thinking"; attempt: number; of: number }
+  | { kind: "checking"; attempt: number }
+  | { kind: "fixing"; attempt: number; problems: string[] };
+
+export interface PlanOutcome {
+  draft: Draft;
+  /** Problems the checker still finds; empty means the draft can be saved. */
+  problems: string[];
+  attempts: number;
+  modelId: string;
+  promptTokens: number;
+  completionTokens: number;
+  durationMs: number;
 }

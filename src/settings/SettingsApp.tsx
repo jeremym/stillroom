@@ -6,15 +6,17 @@ import { Glyph, Logo, type GlyphName } from "../brand";
 import { Toggle, Zone, applyLook, loadLook, type Look } from "@overtone-foundry/app-kit";
 import { rememberProviders, whereWord } from "../models";
 import { PullModel } from "../components/PullModel";
+import { PromptEditor } from "../components/PromptEditor";
 import type { CodexStatus, ModelsResponse, PermissionEntry, RecipesResponse, RuntimeStatus, Settings, TryResult, WatchView } from "../types";
 
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
 
-type Section = "look" | "models" | "folders" | "watches" | "permissions" | "privacy" | "about";
+type Section = "look" | "models" | "prompts" | "folders" | "watches" | "permissions" | "privacy" | "about";
 const SECTIONS: { id: Section; label: string; glyph: GlyphName }[] = [
   { id: "look", label: "Look", glyph: "image" },
   { id: "models", label: "Models", glyph: "models" },
+  { id: "prompts", label: "Prompts", glyph: "chat" },
   { id: "folders", label: "Folders", glyph: "folder" },
   { id: "watches", label: "Watches", glyph: "watch" },
   { id: "permissions", label: "Permissions", glyph: "checklist" },
@@ -428,6 +430,14 @@ export default function SettingsApp() {
               )}
             </Zone>
           </>
+        )}
+
+        {section === "prompts" && (
+          <Zone title="Prompts" sub="the words the app itself runs on">
+            <p>These are the instructions (system prompts) Stillroom gives a model for its own jobs. A recipe's prompts live in the recipe; these sit underneath. Read them, change them, keep every revision, go back to the original whenever you like.</p>
+            <h3>Planner</h3>
+            <PromptEditor name="planner" onError={(m) => setError(m)} />
+          </Zone>
         )}
 
         {section === "folders" && (

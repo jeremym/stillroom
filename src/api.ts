@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CodexStatus, Draft, DraftResponse, ModelsResponse, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -32,6 +32,18 @@ export const api = {
   readRecipeDraft: (recipeId: string) => invoke<DraftResponse>("read_recipe_draft", { recipeId }),
   checkRecipeDraft: (draft: Draft) => invoke<string[]>("check_recipe_draft", { draft }),
   saveRecipeDraft: (draft: Draft) => invoke<SaveResponse>("save_recipe_draft", { draft }),
+  /** The engine's own prompts (the planner) with their revisions. */
+  listSystemPrompts: () => invoke<PromptState[]>("list_system_prompts"),
+  readSystemPrompt: (name: string) => invoke<PromptState>("read_system_prompt", { name }),
+  /** Save as a new revision and use it. Every window hears `prompts:changed`. */
+  saveSystemPrompt: (name: string, text: string) => invoke<PromptState>("save_system_prompt", { name, text }),
+  /** Use revision `n`; 0 is the original (reset). Nothing is deleted. */
+  useSystemPromptVersion: (name: string, n: number) => invoke<PromptState>("use_system_prompt_version", { name, n }),
+  /** Which model would plan right now, and which could. Nothing runs. */
+  previewPlanner: (model?: string | null) => invoke<PlannerPreview>("preview_planner", { model: model ?? null }),
+  /** Draft a recipe from a goal. Progress arrives as `plan:progress` events; Stop cancels. Nothing is saved. */
+  planRecipe: (args: { goal: string; material?: string | null; id: string; name: string; icon?: string | null; model?: string | null }) =>
+    invoke<PlanOutcome>("plan_recipe", { args }),
   /** Delete one of your recipes and the watches bound to it. Built-ins refuse. */
   deleteRecipe: (recipeId: string) => invoke<void>("delete_recipe", { recipeId }),
   revealRecipesFolder: () => invoke<void>("reveal_recipes_folder"),

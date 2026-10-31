@@ -235,3 +235,10 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .settings-head .nav-toggle { margin: 0 0 0 auto; padding: 4px 6px; color: var(--phos-dim); }
 .settings-shell.collapsed .settings-head .nav-toggle { margin: 6px 0 0; }
 .try-cell .red { color: var(--red); }
+
+/* The planner's prompt and the engine's other prompts: a wide text box, controls above and below. */
+.prompt-editor textarea { width: 100%; margin: 4px 0; font-family: var(--body); font-size: 0.92em; line-height: 1.4; resize: vertical; }
+.prompt-editor .prompt-bar { align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.plan-problems { border: 1px solid var(--bezel); border-radius: 6px; padding: 8px 12px; }
+.plan-problems ul { margin: 4px 0 0; padding-left: 18px; }
+.field textarea { width: 100%; margin: 4px 0; resize: vertical; }

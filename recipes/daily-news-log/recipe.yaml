@@ -69,7 +69,7 @@ steps:
     inputs:
       items: ${steps.read.output}
       columns:
-        page: item
+        page: url
         found: items.items
 
   - id: seen

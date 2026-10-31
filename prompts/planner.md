@@ -42,7 +42,7 @@ Names inside a recipe (step ids, input names, slot names, output names) are a le
 - `tool`: runs one of the tools listed below. `"tool": "file.read"`, `"inputs"` as the tool's parameters.
 - `model`: one prompt, one answer, no tools. `"slot": "<slot>"`, `"prompt": "prompts/<file>.md"`, `"inputs"` become the message the model receives (each input is a titled section). Optional `"outputSchema": "schemas/<file>.json"` makes the answer JSON that matches the schema (the slot then needs `structured_output`). Optional `"params": { "temperature": 0.2, "think": false, "contextLength": 16384 }`.
 - `agent`: like `model` but may call tools from `"allowedTools": ["fs.list"]` in a loop; `"maxTurns"` and `"maxToolCalls"` bound it. Use only when the step must decide what to look at; prefer `tool` and `model` steps otherwise.
-- `map`: runs its `steps` once per item. `"over": "${inputs.urls}"`, `"as": "url"`, `"concurrency": 3`. Its output is a list with one entry per item, each entry holding the inner steps' outputs by id (so `${steps.read.output}` is the list, and `extract.summary` reaches inside one entry).
+- `map`: runs its `steps` once per item. `"over": "${inputs.urls}"`, `"as": "url"`, `"concurrency": 3`. Its output is a list with one entry per item; each entry holds the item under its name (`item`, or what `as` says, e.g. `url`) and the inner steps' outputs by id (so `${steps.read.output}` is the list, and inside one entry `url` is the link and `extract.summary` the extraction).
 - `review`: pauses so the user can approve items. `"items": "${steps.find.output.items}"`, `"title": "...", "show": ["field", "field"]`. Its output has `approved` and `rejected` lists.
 
 ### Stages: the strip the user reads first

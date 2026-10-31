@@ -82,7 +82,7 @@ steps:
     inputs:
       items: ${steps.read.output}
       columns:
-        Page: item
+        Page: url
         Title: fetch.title
         Fetched: fetch.ok
         About: extract.summary

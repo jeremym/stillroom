@@ -164,6 +164,35 @@ impl Draft {
                 }
             }
         }
+        // Keep tools write to the step's own stage's keep, so that stage must declare one; a read
+        // may name an earlier kept stage instead.
+        let kept: HashSet<&str> = recipe.stages.iter().filter(|s| s.keep.is_some()).map(|s| s.id.as_str()).collect();
+        let stage_name_of = |step_id: &str| place.get(&("step", step_id)).map(|p| p.1.to_string());
+        let stage_id_of = |step_id: &str| place.get(&("step", step_id)).and_then(|p| recipe.stages.get(p.0)).map(|s| s.id.as_str());
+        let uses_keep = |tool: &str| tool.starts_with("keep.");
+        for step in &recipe.steps {
+            let mut tools: Vec<(String, Option<String>)> = Vec::new();
+            let mut collect = |s: &Step| match s {
+                Step::Tool(t) if uses_keep(&t.tool) => tools.push((t.tool.clone(), t.inputs.get("stage").and_then(Value::as_str).map(String::from))),
+                Step::Agent(a) => tools.extend(a.allowed_tools.iter().filter(|t| uses_keep(t)).map(|t| (t.clone(), None))),
+                _ => {}
+            };
+            collect(step);
+            if let Step::Map(m) = step {
+                m.steps.iter().for_each(&mut collect);
+            }
+            for (tool, named) in tools {
+                let own_kept = stage_id_of(step.id()).is_some_and(|id| kept.contains(id));
+                let reads_other = matches!(tool.as_str(), "keep.get" | "keep.query" | "keep.list") && named.as_deref().is_some_and(|n| kept.contains(n));
+                if !own_kept && !reads_other {
+                    let where_ = stage_name_of(step.id()).map(|n| format!("its stage “{n}”")).unwrap_or_else(|| "its stage".into());
+                    problems.push(match named.as_deref() {
+                        Some(n) if !kept.contains(n) => format!("“{}” reads the keep of stage “{n}”, which has no run keep.", label(step)),
+                        _ => format!("“{}” uses {tool}, but {where_} has no run keep. Give the stage keep: {{ refresh: when_sources_change }} (or always, or manual).", label(step)),
+                    });
+                }
+            }
+        }
         if recipe.stages.is_empty() {
             return;
         }
@@ -483,6 +512,25 @@ mod tests {
         assert!(text.contains("lists step “ghost”, which does not exist"), "{text}");
         assert!(text.contains("The step “answer” is in two stages"), "{text}");
         assert!(text.contains("reads the input “question”, which comes later, in stage “Ask”"), "{text}");
+
+        // Keep tools need a kept stage.
+        let mut bad = yaml.clone();
+        bad["stages"] = serde_json::json!([
+            { "id": "docs", "name": "Add documents", "inputs": ["folder"], "steps": ["list"] },
+            { "id": "ask", "name": "Ask", "inputs": ["question"], "steps": ["answer"], "outputs": ["answer"] }
+        ]);
+        bad["steps"][0] = serde_json::json!({ "id": "list", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${inputs.folder}" } });
+        let d = Draft { yaml: bad.clone(), files: d.files.clone() };
+        let text = d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
+        assert!(text.contains("uses keep.put, but its stage “Add documents” has no run keep"), "{text}");
+        bad["stages"][0]["keep"] = serde_json::json!({ "refresh": "always" });
+        let d = Draft { yaml: bad.clone(), files: d.files.clone() };
+        assert!(d.check(&vec!["keep.put".to_string()]).is_empty(), "{:?}", d.check(&vec!["keep.put".to_string()]));
+        bad["steps"][1]["inputs"]["files"] = serde_json::json!("${steps.list.output}");
+        bad["steps"][1] = serde_json::json!({ "id": "answer", "kind": "tool", "tool": "keep.query", "inputs": { "stage": "nope" } });
+        let d = Draft { yaml: bad.clone(), files: d.files.clone() };
+        let text = d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
+        assert!(text.contains("reads the keep of stage “nope”, which has no run keep"), "{text}");
 
         // No stages: one implied stage holds everything. Partial stages: the rest lands in Make.
         let mut plain = Draft::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../recipes/summarize-file")).unwrap().yaml;

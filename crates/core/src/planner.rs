@@ -225,6 +225,7 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
     for (k, val) in recipe {
         yaml.insert(k, val);
     }
+    declare_keeps(&mut yaml);
     let mut files = BTreeMap::new();
     match v.get("files") {
         Some(Value::Array(items)) => {
@@ -247,6 +248,43 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
         _ => {}
     }
     Ok(Draft { yaml: Value::Object(yaml), files })
+}
+
+/// A stage whose steps write a keep (`keep.put`, `keep.remove`) gets `keep: { refresh: always }`
+/// when the model left it out. Models reach for the tools and forget the declaration; a log is
+/// the common case, and `always` is its right refresh rule. The checker still guards recipes
+/// written by hand.
+fn declare_keeps(yaml: &mut serde_json::Map<String, Value>) {
+    let writers: Vec<String> = yaml
+        .get("steps")
+        .and_then(Value::as_array)
+        .map(|steps| {
+            steps
+                .iter()
+                .filter(|s| {
+                    let direct = s.get("tool").and_then(Value::as_str).is_some_and(|t| t == "keep.put" || t == "keep.remove");
+                    let inner = s.get("steps").and_then(Value::as_array).is_some_and(|inner| {
+                        inner.iter().any(|x| x.get("tool").and_then(Value::as_str).is_some_and(|t| t == "keep.put" || t == "keep.remove"))
+                    });
+                    direct || inner
+                })
+                .filter_map(|s| s.get("id").and_then(Value::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if writers.is_empty() {
+        return;
+    }
+    if let Some(stages) = yaml.get_mut("stages").and_then(Value::as_array_mut) {
+        for st in stages.iter_mut() {
+            let uses = st.get("steps").and_then(Value::as_array).is_some_and(|ids| ids.iter().filter_map(Value::as_str).any(|id| writers.iter().any(|w| w == id)));
+            if uses && !st.get("keep").is_some_and(Value::is_object) {
+                if let Some(o) = st.as_object_mut() {
+                    o.insert("keep".into(), json!({ "refresh": "always" }));
+                }
+            }
+        }
+    }
 }
 
 pub struct Planner {
@@ -427,6 +465,33 @@ mod tests {
         assert_eq!(d.yaml["schemaVersion"], "0");
         assert_eq!(d.files.keys().collect::<Vec<_>>(), vec!["prompts/sum.md"]);
         assert!(parse_answer("nothing here", &req()).is_err());
+    }
+
+    #[test]
+    fn a_stage_that_writes_a_keep_gets_one_declared() {
+        let content = json!({
+            "recipe": {
+                "id": "x", "name": "X", "description": "d",
+                "inputs": { "urls": { "type": "urls" } },
+                "modelSlots": {},
+                "steps": [
+                    { "id": "fetch", "kind": "map", "over": "${inputs.urls}", "steps": [ { "id": "get", "kind": "tool", "tool": "http.fetch", "inputs": { "url": "${item}" } } ] },
+                    { "id": "log", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${steps.fetch.output}" } }
+                ],
+                "outputs": { "all": { "from": "${steps.log.output}", "type": "json" } },
+                "stages": [
+                    { "id": "read", "name": "Read", "why": "w", "inputs": ["urls"], "steps": ["fetch"] },
+                    { "id": "remember", "name": "Remember", "why": "w", "steps": ["log"], "outputs": ["all"] }
+                ]
+            },
+            "files": []
+        })
+        .to_string();
+        let d = parse_answer(&content, &req()).unwrap();
+        assert_eq!(d.yaml["stages"][0].get("keep"), None);
+        assert_eq!(d.yaml["stages"][1]["keep"]["refresh"], "always");
+        let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
+        assert!(d.check(&known).is_empty(), "{:?}", d.check(&known));
     }
 
     #[test]

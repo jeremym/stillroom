@@ -281,7 +281,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
   const shownRecords = edit ? [] : records;
   const shownProgress = edit ? false : inProgress;
 
-  const { nodes, edges, width, height, lanes, bands } = useMemo(
+  const { nodes, edges, width, height, lanes, bands, gutter } = useMemo(
     () => {
       const g = buildGraph({ recipe: shownRecipe, run: shownRun, records: shownRecords, inProgress: shownProgress, modelFor, providerFor, selectedId });
       if (selectedEdge) g.edges = g.edges.map((e) => (e.id === selectedEdge.id ? { ...e, selected: true, className: `${e.className} selected` } : e));
@@ -350,7 +350,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
         <div className="flow-canvas" ref={wrapRef} style={{ height: canvasH }}>
           {bands.length > 1 && bands.map((b) => (
             <div key={b.id} className="stage-band" style={{ top: viewport.y + b.y * zoom, height: b.h * zoom }}>
-              <span className="stage-band-label">{b.index + 1} · {b.name}</span>
+              <span className="stage-band-label" style={{ left: viewport.x + 6, maxWidth: Math.max(60, gutter * zoom - 12) }}>{b.index + 1} · {b.name}</span>
             </div>
           ))}
           {lanes.in && (

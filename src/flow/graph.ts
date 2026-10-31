@@ -45,6 +45,8 @@ const ROW_GAP = 56;
 const COL_GAP = 40;
 const LANE_GAP = 56;
 const BAND_PAD = 10;
+/** Width of the column on the far left that carries stage labels, when the recipe has more than one stage. */
+const GUTTER_W = 150;
 const STACK_GAP = 14;
 const INNER_GAP_X = 44;
 const INNER_GAP_Y = 24;
@@ -201,6 +203,8 @@ export interface Graph {
   lanes: { in?: { x: number; w: number }; out?: { x: number; w: number } };
   /** Horizontal bands, one per stage that has steps on the drawing, in drawing coordinates. */
   bands: { id: string; name: string; index: number; y: number; h: number }[];
+  /** Width of the stage-label column at the left, 0 when there are no bands. */
+  gutter: number;
 }
 
 /* Layout: steps flow top to bottom, one row per depth (a step sits one row below the deepest
@@ -358,7 +362,8 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, provide
   const centerW = Math.max(NODE_W, ...Array.from({ length: maxDepth }, (_, i) => rowW(inRow("center", i + 1))));
   const hasIn = placed.some((p) => p.lane === "in");
   const hasOut = placed.some((p) => p.lane === "out");
-  const centerX = hasIn ? IO_W + LANE_GAP : 0;
+  const gutter = (recipe.stages ?? []).filter((st) => (st.steps ?? []).length > 0).length > 1 ? GUTTER_W : 0;
+  const centerX = gutter + (hasIn ? IO_W + LANE_GAP : 0);
   const outX = centerX + centerW + LANE_GAP;
   // Where each top-level step sits in its row, for routing result lines around siblings.
   const rowOf = new Map<string, { bottom: number; index: number; count: number }>();
@@ -376,7 +381,7 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, provide
     });
     let sy = y + (rowH - stackH(ins)) / 2;
     for (const p of ins) {
-      p.node.position = { x: 0, y: sy };
+      p.node.position = { x: gutter, y: sy };
       sy += p.h + STACK_GAP;
     }
     sy = y + (rowH - stackH(outs)) / 2;
@@ -413,8 +418,8 @@ export function buildGraph({ recipe, run, records, inProgress, modelFor, provide
     return [{ id: st.id, name: st.name, index, y: top - BAND_PAD, h: bottom - top + BAND_PAD * 2 }];
   });
   return {
-    nodes, edges: dedupe(edges), width: hasOut ? outX + IO_W : centerX + centerW, height: Math.max(0, y - ROW_GAP), bands,
-    lanes: { ...(hasIn ? { in: { x: 0, w: IO_W } } : {}), ...(hasOut ? { out: { x: outX, w: IO_W } } : {}) },
+    nodes, edges: dedupe(edges), width: hasOut ? outX + IO_W : centerX + centerW, height: Math.max(0, y - ROW_GAP), bands, gutter,
+    lanes: { ...(hasIn ? { in: { x: gutter, w: IO_W } } : {}), ...(hasOut ? { out: { x: outX, w: IO_W } } : {}) },
   };
 }
 

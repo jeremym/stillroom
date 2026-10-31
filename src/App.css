@@ -254,5 +254,5 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .tty .head { color: var(--phos-dim); font-family: var(--display); letter-spacing: 0.1em; margin-top: 6px; }
 
 /* Stage bands on the card: one translucent band per stage, labelled at the left edge. */
-.stage-band { position: absolute; left: 0; right: 0; z-index: 0; pointer-events: none; border-top: 1px dashed var(--phos-faint); background: color-mix(in srgb, var(--phos) 2%, transparent); }
-.stage-band-label { position: absolute; top: 4px; left: 8px; font-family: var(--display); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--phos-dim); white-space: nowrap; }
+.stage-band { position: absolute; left: 0; right: 0; z-index: 1; pointer-events: none; border-top: 1px dashed var(--phos-faint); background: color-mix(in srgb, var(--phos) 2%, transparent); }
+.stage-band-label { position: absolute; top: 6px; font-family: var(--display); font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--phos-dim); line-height: 1.25; }

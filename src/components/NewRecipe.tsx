@@ -40,7 +40,7 @@ interface Props {
 const VIA_WORD: Record<string, string> = { pinned: "your pick", default: "your default", recommended: "recommended", capability: "Auto" };
 
 export function NewRecipe({ recipes, busy, error, progress, problems, onCreate, onCancel, onStop }: Props) {
-  const [mode, setMode] = useState<NewRecipeMode>("blank");
+  const [mode, setMode] = useState<NewRecipeMode>("goal");
   const [sourceId, setSourceId] = useState(recipes[0]?.id ?? "");
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<GlyphName>("recipe");

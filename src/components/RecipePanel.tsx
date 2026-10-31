@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, fmtMs, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
+import { defaultInputs } from "../recipes/defaults";
 import type { InputSpec, InstalledModel, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
 import { Glyph } from "../brand";
 import { isLocalModel, whereWord } from "../models";
@@ -87,7 +88,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
   const [watchInput, setWatchInput] = useState<string>("");
 
   useEffect(() => {
-    setInputs({});
+    setInputs(defaultInputs(recipe.inputs));
     setWatchInput(folderInputs[0] ?? "");
     api.estimate(recipe.id).then(setEstimate).catch(() => setEstimate(null));
   }, [recipe.id]);

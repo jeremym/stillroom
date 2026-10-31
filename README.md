@@ -17,7 +17,7 @@ Pre-alpha, macOS, developed in the open on a private repository. What works toda
 - **Flow View.** The recipe as a readable top-down map with the run's state on it, and an edit mode with forms per step, drag-to-wire, live checks from the runtime, and save as a copy or in place.
 - **Folder watches.** Point a recipe at a folder and it runs whenever something lands there, while the app is open. Each run continues the last, so files handled before are not handled again and reviews only ask about what is new.
 
-Not yet: a planner that drafts a recipe from a goal, sharing, MCP and Agent Skills, voices other than the system one. The API-key provider is verified only against a local OpenAI-compatible server. The design and roadmap are in [PLAN.md](PLAN.md).
+Not yet: sharing, MCP and Agent Skills, voices other than the system one. The API-key provider is verified only against a local OpenAI-compatible server. The design and roadmap are in [PLAN.md](PLAN.md).
 
 ## Layout
 

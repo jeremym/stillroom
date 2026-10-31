@@ -413,11 +413,13 @@ impl Recipe {
         self.steps.iter().find(|s| s.id() == id)
     }
 
-    /// Declared inputs that are optional (`required: false`), with their defaults.
+    /// Declared inputs a run can start without: optional ones (`required: false`, default or
+    /// null) and any input with a `default`, which a planned recipe uses to carry the links or
+    /// notes the recipe was made from.
     pub fn optional_inputs(&self) -> Vec<(String, Value)> {
         self.inputs
             .iter()
-            .filter(|(_, spec)| spec.get("required").and_then(Value::as_bool) == Some(false))
+            .filter(|(_, spec)| spec.get("required").and_then(Value::as_bool) == Some(false) || spec.get("default").is_some())
             .map(|(k, spec)| (k.clone(), spec.get("default").cloned().unwrap_or(Value::Null)))
             .collect()
     }

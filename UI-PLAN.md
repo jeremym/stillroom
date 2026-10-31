@@ -411,7 +411,7 @@ Left for later, by agreement: map concurrency and the schema-only permissions an
 - Permissions backlog above (true Files and Folders status, Local Network on macOS 15+, folders in the welcome, a LAN Ollama test, notifications for watches).
 - Audit items deferred by agreement: map concurrency and schema-only permissions and budget (5), watch settle time and frozen inputs (7), movable folders and retention (8).
 - A pull through Settings › Models was never exercised on screen; the access key path was tested only against a local Ollama.
-- "From a goal" in New recipe stays disabled until the planner. Cloud providers are explained but none exists.
+- "From a goal" in New recipe shipped with the planner (2026-10-31): a goal and optional material, the real Auto pick, and the planner's prompt inline (Settings › Prompts has the same editor). Cloud providers are explained but none exists.
 - A review with zero items on a first run still pauses for a Continue click (engine wart from before the redesign).
 - Mermaid and pptxgenjs still load with the main bundle (about 2 MB).
 

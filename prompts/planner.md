@@ -37,7 +37,7 @@ Output types: `markdown`, `text`, `json`, `table`, `html`, `slides`, `diagram`, 
 
 ### Steps
 
-Every step has `id` (kebab-case, unique), `kind`, a short `name` the user sees, and `inputs` (a map of names to values or references). Steps run as soon as what they reference is done; `dependsOn: ["id"]` adds an ordering with no data link.
+Names inside a recipe (step ids, input names, slot names, output names) are a letter followed by letters, digits, or underscores: `read_file`, `writer`, `study_path`. No hyphens or spaces, because references are written with dots and word characters only. Every step has `id` (unique), `kind`, a short `name` the user sees, and `inputs` (a map of names to values or references). Steps run as soon as what they reference is done; `dependsOn: ["id"]` adds an ordering with no data link.
 
 - `tool`: runs one of the tools listed below. `"tool": "file.read"`, `"inputs"` as the tool's parameters.
 - `model`: one prompt, one answer, no tools. `"slot": "<slot>"`, `"prompt": "prompts/<file>.md"`, `"inputs"` become the message the model receives (each input is a titled section). Optional `"outputSchema": "schemas/<file>.json"` makes the answer JSON that matches the schema (the slot then needs `structured_output`). Optional `"params": { "temperature": 0.2, "think": false, "contextLength": 16384 }`.

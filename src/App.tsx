@@ -342,7 +342,7 @@ function App() {
         }
         draft = out.draft;
         const tries = out.attempts === 1 ? "first try" : `${out.attempts} tries`;
-        note = `Drafted by ${shortModel(out.modelId)} (${whereWord(out.modelId)}) on the ${tries} in ${fmtElapsed(out.durationMs)}. Walk the steps and their prompts, then Save; nothing has run yet.`;
+        note = `Drafted by ${shortModel(out.modelId)} (${whereWord(out.modelId)}) on the ${tries} in ${fmtElapsed(Math.round(out.durationMs / 1000))}. Walk the steps and their prompts, then Save; nothing has run yet.`;
       } else if (req.mode === "copy" && req.sourceId) {
         const src = await api.readRecipeDraft(req.sourceId);
         draft = copyRecipe(src.draft, req.id, req.name, req.icon, src.source === "builtin");

@@ -84,13 +84,8 @@ impl Draft {
     /// Everything wrong with the draft, in words a recipe author can act on. Empty means it
     /// loads, every reference points at something that exists, and nothing depends on itself.
     pub fn check(&self, known_tools: &[String]) -> Vec<String> {
-        let mut problems = Vec::new();
-        if let Err(e) = Recipe::validate_value(&self.yaml) {
-            let msg = e.to_string();
-            problems.extend(msg.lines().filter(|l| l.starts_with("- ")).map(|l| format!("Format: {}", &l[2..])));
-            if problems.is_empty() {
-                problems.push(format!("Format: {msg}"));
-            }
+        let mut problems = format_problems(&self.yaml);
+        if !problems.is_empty() {
             return problems;
         }
         let recipe: Recipe = match serde_json::from_value(self.yaml.clone()) {
@@ -275,6 +270,74 @@ impl Draft {
     }
 }
 
+/// Schema problems in words. A step that fails the format is checked again against the schema
+/// for its own kind, so the message names the field instead of saying "not valid under any of
+/// the schemas" (what a `oneOf` over the step kinds reports).
+fn format_problems(yaml: &Value) -> Vec<String> {
+    let schema: Value = match serde_json::from_str(crate::recipe::RECIPE_SCHEMA) {
+        Ok(s) => s,
+        Err(e) => return vec![format!("Format: {e}")],
+    };
+    let validator = match jsonschema::validator_for(&schema) {
+        Ok(v) => v,
+        Err(e) => return vec![format!("Format: {e}")],
+    };
+    let mut out = Vec::new();
+    for e in validator.iter_errors(yaml) {
+        let path = e.instance_path.to_string();
+        let is_step = {
+            let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+            !parts.is_empty() && parts.len() % 2 == 0 && parts.chunks(2).all(|c| c[0] == "steps" && c[1].parse::<usize>().is_ok())
+        };
+        if is_step && matches!(e.kind, jsonschema::error::ValidationErrorKind::OneOfNotValid | jsonschema::error::ValidationErrorKind::OneOfMultipleValid) {
+            if let Some(step) = yaml.pointer(&path) {
+                out.extend(explain_step(&schema, step, &path));
+                continue;
+            }
+        }
+        out.push(format!("Format: {} at {}", e, path));
+    }
+    out
+}
+
+fn explain_step(schema: &Value, step: &Value, path: &str) -> Vec<String> {
+    let who = step
+        .get("name")
+        .or_else(|| step.get("id"))
+        .and_then(Value::as_str)
+        .map(|s| format!("“{s}”"))
+        .unwrap_or_else(|| format!("the step at {path}"));
+    let kinds = ["tool", "model", "agent", "recipe", "branch", "map", "review"];
+    let kind = step.get("kind").and_then(Value::as_str).unwrap_or("");
+    if !kinds.contains(&kind) {
+        return vec![format!(
+            "Format: {who} has {}. Kinds are tool, model, agent, map, review.",
+            if kind.is_empty() { "no kind".to_string() } else { format!("an unknown kind “{kind}”") }
+        )];
+    }
+    let sub = serde_json::json!({ "$ref": format!("#/$defs/{kind}Step"), "$defs": schema.get("$defs").cloned().unwrap_or(Value::Null) });
+    let Ok(validator) = jsonschema::validator_for(&sub) else { return vec![format!("Format: {who} is not a valid {kind} step.")] };
+    let mut out: Vec<String> = validator
+        .iter_errors(step)
+        .map(|e| {
+            let at = e.instance_path.to_string();
+            match &e.kind {
+                jsonschema::error::ValidationErrorKind::Pattern { .. } if at == "/id" => {
+                    format!("{who}: a step id is a letter followed by letters, digits, or underscores (no hyphens or spaces), like read_file.")
+                }
+                jsonschema::error::ValidationErrorKind::Required { property } => {
+                    format!("{who} is missing {} (a {kind} step needs it).", property.as_str().map(String::from).unwrap_or_else(|| property.to_string()))
+                }
+                _ => format!("{who}: {} at {}.", e, if at.is_empty() { "the step".to_string() } else { at }),
+            }
+        })
+        .collect();
+    if out.is_empty() {
+        out.push(format!("Format: {who} is not a valid {kind} step."));
+    }
+    out
+}
+
 fn label(step: &Step) -> String {
     step.name().map(String::from).unwrap_or_else(|| step.id().to_string())
 }
@@ -327,6 +390,28 @@ fn find_cycle(steps: &[Step]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_step_that_fails_the_format_is_explained_by_field() {
+        let yaml = serde_json::json!({
+            "schemaVersion": "0", "id": "x", "name": "X",
+            "inputs": { "file": { "type": "file" } },
+            "modelSlots": { "writer": { "requires": ["text"] } },
+            "steps": [
+                { "id": "read-file", "kind": "tool", "tool": "file.read", "inputs": { "path": "${inputs.file}" } },
+                { "id": "sum", "kind": "model", "slot": "writer", "inputs": { "text": "${steps.read-file.output.text}" } },
+                { "id": "odd", "kind": "sparkle" }
+            ],
+            "outputs": { "summary": { "from": "${steps.sum.output}", "type": "markdown" } }
+        });
+        let d = Draft { yaml, files: Default::default() };
+        let p = d.check(&["file.read".into()]);
+        let joined = p.join("\n");
+        assert!(joined.contains("“read-file”: a step id is a letter followed by"), "{joined}");
+        assert!(joined.contains("“sum” is missing prompt (a model step needs it)"), "{joined}");
+        assert!(joined.contains("“odd” has an unknown kind “sparkle”"), "{joined}");
+        assert!(!joined.contains("oneOf"), "{joined}");
+    }
 
     fn repo_recipes() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../recipes")
@@ -397,7 +482,7 @@ mod tests {
 
         d.yaml["steps"][0]["kind"] = Value::String("spell".into());
         let text = d.check(&tools()).join("\n");
-        assert!(text.starts_with("Format:"), "{text}");
+        assert!(text.contains("has an unknown kind “spell”"), "{text}");
     }
 
     #[test]

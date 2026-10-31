@@ -119,8 +119,9 @@ steps:
     inputs:
       items: ${steps.search.output.passages}
       columns:
-        File: source
+        File: name
         Page: page
+        Path: source
         Match: score
         Passage: text
 

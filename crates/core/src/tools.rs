@@ -335,7 +335,7 @@ impl Tool for KeepSearch {
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
             description: "Find the passages nearest in meaning to a question, from a run keep built with keep.index: this stage's, or an earlier stage's named by `stage`. Needs the same embedding slot the index was built with.".into(),
-            returns: "`{ passages: [{ id, text, source, page, score }], count }`, best first.".into(),
+            returns: "`{ passages: [{ id, text, source, name, page, score }], count }`, best first; `name` is the file name, `source` its full path.".into(),
             parameters: json!({ "type": "object", "required": ["slot", "query"], "properties": { "slot": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer", "description": "Default 8" }, "stage": { "type": "string", "description": "An earlier stage whose keep to search" } } }),
         })
     }
@@ -349,7 +349,11 @@ impl Tool for KeepSearch {
         let hits = keep.search(&q, limit).map_err(keep_err)?;
         let passages: Vec<Value> = hits
             .into_iter()
-            .map(|(r, score)| json!({ "id": r.id, "text": r.data.get("text").cloned().unwrap_or(Value::Null), "source": r.data.get("source").cloned().unwrap_or(Value::Null), "page": r.data.get("page").cloned().unwrap_or(Value::Null), "score": score }))
+            .map(|(r, score)| {
+                let source = r.data.get("source").cloned().unwrap_or(Value::Null);
+                let name = source.as_str().map(|s| std::path::Path::new(s).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.to_string()));
+                json!({ "id": r.id, "text": r.data.get("text").cloned().unwrap_or(Value::Null), "source": source, "name": name, "page": r.data.get("page").cloned().unwrap_or(Value::Null), "score": score })
+            })
             .collect();
         Ok(json!({ "count": passages.len(), "passages": passages }))
     }

@@ -584,6 +584,7 @@ impl Planner {
                 lib.stages.iter().map(|d| d.id.clone()).find(|id| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == id))
             });
             match hinted.as_deref() {
+                Some(u) if taken.iter().any(|t| t == u) => continue, // a ready-made stage once; a repeat is a slip
                 Some(u) => {
                     let mut o = serde_json::Map::new();
                     o.insert("use".into(), Value::String(u.into()));
@@ -901,6 +902,11 @@ mod tests {
         assert_eq!(out.draft.yaml["stages"][0]["id"], "read_links");
         assert_eq!(out.draft.yaml["stages"][1]["id"], "write_brief");
         assert_eq!(out.draft.yaml["stages"][0]["name"], "Read the pages", "the model's name stays");
+        let strip = json!({ "stages": [ { "use": "read_links" }, { "name": "Again", "why": "the same (read_links)" }, { "use": "write_brief" } ] }).to_string();
+        let (mut p, _) = planner(vec![strip]);
+        p.library = Some(lib.clone());
+        let out = p.plan(&req(), None).await.unwrap();
+        assert_eq!(out.draft.yaml["stages"].as_array().unwrap().len(), 2, "a repeated ready-made stage is dropped");
 
         // All ready-made: one call, nothing to compose.
         let strip = json!({ "stages": [ { "use": "index_folder" }, { "use": "answer_from_index" } ] }).to_string();

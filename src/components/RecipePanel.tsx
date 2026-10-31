@@ -43,7 +43,7 @@ interface Props {
   onRebuild?: (stage: string) => void;
 }
 
-function InputField({
+export function InputField({
   name, spec, value, onChange,
 }: { name: string; spec: InputSpec; value: unknown; onChange: (v: unknown) => void }) {
   const label = spec.label ?? name;

@@ -12,6 +12,7 @@ import { WatchPanel } from "./components/WatchPanel";
 import { UsagePanel } from "./components/UsagePanel";
 import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
+import { AskAgain } from "./components/AskAgain";
 import { Welcome } from "./components/Welcome";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
 import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
@@ -700,6 +701,9 @@ function App() {
                   <ReviewPanel run={run} steps={runRecipe?.steps ?? []} busy={running} onDecide={editAndRerun} />
                 )}
                 <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} steps={runRecipe?.steps ?? []} busy={running} onEdit={editAndRerun} groups={runRecipe ? outputsByStage(runRecipe).map((g) => ({ label: g.stage?.name ?? null, names: g.names })) : undefined} />
+                {runRecipe && run.status === "succeeded" && (
+                  <AskAgain recipe={runRecipe} run={run} running={running} onRun={(inputs) => startRun(runRecipe, inputs, pins, true)} />
+                )}
                 {firstRunHint && (
                   <p className="result-line hint-line"><Glyph name="sparkles" /> That was your first run. The <button className="link" onClick={() => setPlace("door")}>Recipe card</button> shows how it was made and lets you change it; <strong>Set up</strong> runs it again on something else.</p>
                 )}

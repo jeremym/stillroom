@@ -262,3 +262,5 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .keep-line .tag { align-self: center; }
 .journal { margin: 6px 0 0; padding-left: 18px; font-size: var(--size-small); }
 .journal li { margin: 2px 0; }
+
+.ask-again h3 { margin-top: 0; }

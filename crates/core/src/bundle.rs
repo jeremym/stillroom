@@ -212,6 +212,8 @@ impl RecipeBundle {
 
     pub fn request(&self, inputs: IndexMap<String, Value>, resolutions: BTreeMap<String, Resolution>) -> RunRequest {
         RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
             recipe: self.recipe.clone(),
             prompts: self.prompts.clone(),
             inputs,

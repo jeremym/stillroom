@@ -197,6 +197,7 @@ async fn run_once(app: &AppHandle, id: &str, changed: Vec<String>) {
         app,
         &state,
         ExecArgs {
+            rebuild: Vec::new(),
             recipe_id: watch.recipe_id.clone(),
             inputs: watch.inputs.clone(),
             pins: watch.pins.clone(),

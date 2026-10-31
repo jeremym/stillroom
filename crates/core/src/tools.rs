@@ -40,6 +40,170 @@ pub struct ToolContext {
     pub artifact_dir: PathBuf,
     pub fs: FsPolicy,
     pub net: NetPolicy,
+    /// The run keeps this step may reach: its own stage's to write, earlier stages' to read.
+    pub keeps: KeepAccess,
+}
+
+/// Which run keeps a step can see. `own` is the stage the step belongs to (writable when that
+/// stage has a keep); `all` holds every keep opened for the run, by stage id.
+#[derive(Debug, Clone, Default)]
+pub struct KeepAccess {
+    pub own: Option<String>,
+    pub all: HashMap<String, Arc<crate::keep::Keep>>,
+}
+
+impl KeepAccess {
+    /// The keep a step reads: its own stage's by default, or an earlier stage's by name.
+    fn reading(&self, stage: Option<&str>) -> Result<Arc<crate::keep::Keep>, ToolError> {
+        let id = stage.map(String::from).or_else(|| self.own.clone()).ok_or_else(|| ToolError::Failed("this step's stage has no run keep; give the stage a keep, or name a stage that has one".into()))?;
+        self.all.get(&id).cloned().ok_or_else(|| ToolError::Failed(format!("stage “{id}” has no run keep")))
+    }
+    /// The keep a step writes: only its own stage's.
+    fn writing(&self) -> Result<Arc<crate::keep::Keep>, ToolError> {
+        let id = self.own.clone().ok_or_else(|| ToolError::Failed("this step's stage has no run keep to write to".into()))?;
+        self.all.get(&id).cloned().ok_or_else(|| ToolError::Failed(format!("stage “{id}” has no run keep")))
+    }
+}
+
+fn keep_err(e: crate::keep::KeepError) -> ToolError {
+    ToolError::Failed(e.to_string())
+}
+
+/// `keep.put`: write or replace one record in this stage's run keep. Inputs `data` (any JSON),
+/// optional `id` (default: a new id). Output `{ id, replaced }`.
+pub struct KeepPut;
+
+#[async_trait::async_trait]
+impl Tool for KeepPut {
+    fn id(&self) -> &str {
+        "keep.put"
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+    fn has_side_effects(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Write or replace one record in this stage's run keep (what the stage remembers between runs). Give an id to replace a record later; leave it out for a new one.".into(),
+            returns: "`{ id, replaced }`; `replaced` is true when a record with that id already existed.".into(),
+            parameters: json!({ "type": "object", "required": ["data"], "properties": { "id": { "type": "string" }, "data": { "description": "Any JSON: an object with the fields you will query by" } } }),
+        })
+    }
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let keep = ctx.keeps.writing()?;
+        let id = inputs.get("id").and_then(Value::as_str).map(String::from).unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+        let data = inputs.get("data").cloned().unwrap_or(Value::Null);
+        let replaced = keep.put(&id, &data, &ctx.run_id).map_err(keep_err)?;
+        Ok(json!({ "id": id, "replaced": replaced }))
+    }
+}
+
+/// `keep.get`: one record by id from this stage's keep (or an earlier stage's, by `stage`).
+pub struct KeepGet;
+
+#[async_trait::async_trait]
+impl Tool for KeepGet {
+    fn id(&self) -> &str {
+        "keep.get"
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Read one record by id from a run keep: this stage's, or an earlier stage's named by `stage`.".into(),
+            returns: "`{ found, record }`; `record` is `{ id, data, runId, writtenAt }` or null.".into(),
+            parameters: json!({ "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "stage": { "type": "string", "description": "An earlier stage whose keep to read" } } }),
+        })
+    }
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let keep = ctx.keeps.reading(inputs.get("stage").and_then(Value::as_str))?;
+        let id = inputs.get("id").and_then(Value::as_str).ok_or_else(|| ToolError::Failed("keep.get needs an id".into()))?;
+        let rec = keep.get(id).map_err(keep_err)?;
+        Ok(json!({ "found": rec.is_some(), "record": rec }))
+    }
+}
+
+/// `keep.query`: records from a keep, newest first, optionally filtered by equal top-level fields.
+pub struct KeepQuery;
+
+#[async_trait::async_trait]
+impl Tool for KeepQuery {
+    fn id(&self) -> &str {
+        "keep.query"
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "List records from a run keep, newest first: this stage's, or an earlier stage's named by `stage`. `where` keeps records whose top-level fields equal the given values.".into(),
+            returns: "`{ records: [{ id, data, runId, writtenAt }], count }`.".into(),
+            parameters: json!({ "type": "object", "properties": { "stage": { "type": "string" }, "where": { "type": "object", "description": "Field values to match, e.g. { \"kind\": \"news\" }" }, "limit": { "type": "integer", "description": "Default 200" }, "oldestFirst": { "type": "boolean" } } }),
+        })
+    }
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let keep = ctx.keeps.reading(inputs.get("stage").and_then(Value::as_str))?;
+        let filter = inputs.get("where").and_then(Value::as_object);
+        let limit = inputs.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
+        let newest = !inputs.get("oldestFirst").and_then(Value::as_bool).unwrap_or(false);
+        let records = keep.query(filter, newest, limit).map_err(keep_err)?;
+        Ok(json!({ "count": records.len(), "records": records }))
+    }
+}
+
+/// `keep.list`: how much a keep holds and when it was built.
+pub struct KeepList;
+
+#[async_trait::async_trait]
+impl Tool for KeepList {
+    fn id(&self) -> &str {
+        "keep.list"
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "How many records a run keep holds and when it was last built: this stage's, or an earlier stage's named by `stage`.".into(),
+            returns: "`{ records, builtAt, last: { runId, at, added, replaced, removed, reason } }`.".into(),
+            parameters: json!({ "type": "object", "properties": { "stage": { "type": "string" } } }),
+        })
+    }
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let keep = ctx.keeps.reading(inputs.get("stage").and_then(Value::as_str))?;
+        Ok(serde_json::to_value(keep.summary().map_err(keep_err)?).unwrap_or(Value::Null))
+    }
+}
+
+/// `keep.remove`: delete one record from this stage's keep.
+pub struct KeepRemove;
+
+#[async_trait::async_trait]
+impl Tool for KeepRemove {
+    fn id(&self) -> &str {
+        "keep.remove"
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+    fn has_side_effects(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "Remove one record from this stage's run keep by id.".into(),
+            returns: "`{ removed }`.".into(),
+            parameters: json!({ "type": "object", "required": ["id"], "properties": { "id": { "type": "string" } } }),
+        })
+    }
+    async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
+        let keep = ctx.keeps.writing()?;
+        let id = inputs.get("id").and_then(Value::as_str).ok_or_else(|| ToolError::Failed("keep.remove needs an id".into()))?;
+        Ok(json!({ "removed": keep.remove(id).map_err(keep_err)? }))
+    }
 }
 
 /// Which hosts a recipe may reach over the network. Built from `permissions.network`.
@@ -218,6 +382,11 @@ impl ToolRegistry {
         r.register(Arc::new(ListFilter));
         r.register(Arc::new(ListTable));
         r.register(Arc::new(HttpFetch::default()));
+        r.register(Arc::new(KeepPut));
+        r.register(Arc::new(KeepGet));
+        r.register(Arc::new(KeepQuery));
+        r.register(Arc::new(KeepList));
+        r.register(Arc::new(KeepRemove));
         r
     }
 
@@ -1118,6 +1287,7 @@ mod tests {
             artifact_dir: std::env::temp_dir().join(format!("stillroom-tools-{}", uuid::Uuid::now_v7())),
             fs: FsPolicy::open(),
             net: NetPolicy::none(),
+            keeps: KeepAccess::default(),
         }
     }
 

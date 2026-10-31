@@ -10,7 +10,9 @@ use crate::propagate::{dependencies, dependents, inputs_fingerprint, StepEdit};
 use crate::recipe::{AgentStep, MapStep, Recipe, Step};
 use crate::refs::{self, Context};
 use crate::resolve::Resolution;
-use crate::tools::{NetPolicy, normalize_path, FsPolicy, ToolContext, ToolRegistry};
+use crate::keep::{keep_dir, JournalEntry, Keep, KeepManifest};
+use crate::recipe::{Refresh, Stage};
+use crate::tools::{KeepAccess, NetPolicy, normalize_path, FsPolicy, ToolContext, ToolRegistry};
 use crate::trace::{Run, RunStatus, RunTrigger, StepRecord, StepStatus, ToolCallRecord};
 use chrono::Utc;
 use serde_json::Value;
@@ -38,6 +40,8 @@ pub enum ExecError {
     Model { step: String, message: String },
     #[error("step {step}: the answer did not fit the output shape (schema): {message}")]
     BadStructuredOutput { step: String, message: String },
+    #[error("stage {stage}: its run keep could not be opened: {message}")]
+    Keep { stage: String, message: String },
     #[error("step {step}: {kind} steps are not supported yet")]
     Unsupported { step: String, kind: &'static str },
     #[error("output {name}: {source}")]
@@ -120,6 +124,86 @@ pub struct RunRequest {
     pub model_timeout: Option<std::time::Duration>,
     /// Context length and thinking for steps whose recipe leaves them unset.
     pub model_defaults: ModelDefaults,
+    /// Where run keeps live (`<base>/<recipe id>/<stage id>`). None means a stage with a keep
+    /// runs every time and remembers nothing.
+    pub keep_base: Option<std::path::PathBuf>,
+    /// Stages whose keep is emptied before this run (Rebuild).
+    pub rebuild: Vec<String>,
+}
+
+struct KeepPlan {
+    keep: Arc<Keep>,
+    fingerprint: String,
+    reason: String,
+    done: bool,
+}
+
+/// What a stage with a keep is built from: the inputs its steps read (their values, and for
+/// paths the files behind them), its step definitions, and its prompts. Same fingerprint, same
+/// sources, so the stage can be skipped.
+pub fn stage_fingerprint(recipe: &Recipe, prompts: &HashMap<String, String>, stage: &Stage, inputs: &IndexMap<String, Value>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut names = BTreeSet::new();
+    for step in recipe.steps.iter().filter(|s| stage.steps.iter().any(|id| id == s.id())) {
+        refs::input_refs(&Value::Object(step.inputs().clone().into_iter().collect()), &mut names);
+        if let Step::Map(m) = step {
+            refs::input_refs(&Value::String(m.over.clone()), &mut names);
+            for sub in &m.steps {
+                refs::input_refs(&Value::Object(sub.inputs().clone().into_iter().collect()), &mut names);
+            }
+        }
+        parts.push(serde_json::to_string(step).unwrap_or_default());
+        let prompt = match step {
+            Step::Model(m) => Some(&m.prompt),
+            Step::Agent(a) => Some(&a.prompt),
+            _ => None,
+        };
+        if let Some(p) = prompt {
+            parts.push(prompts.get(p).cloned().unwrap_or_default());
+        }
+    }
+    names.extend(stage.inputs.iter().cloned());
+    for name in names {
+        let v = inputs.get(&name).cloned().unwrap_or(Value::Null);
+        parts.push(format!("{name}={v}"));
+        let kind = recipe.inputs.get(&name).and_then(|s| s.get("type")).and_then(Value::as_str).unwrap_or("");
+        if matches!(kind, "file" | "files" | "directory") {
+            for p in paths_in(&v) {
+                let mut n = 0;
+                file_meta(&p, &mut parts, &mut n);
+            }
+        }
+    }
+    fingerprint(&parts.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn paths_in(v: &Value) -> Vec<std::path::PathBuf> {
+    match v {
+        Value::String(s) => vec![std::path::PathBuf::from(s)],
+        Value::Array(a) => a.iter().flat_map(paths_in).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Path, size, and modification time of a file, or of every file under a folder (sorted,
+/// at most 5000 entries), so a changed file changes the fingerprint.
+fn file_meta(p: &std::path::Path, parts: &mut Vec<String>, n: &mut usize) {
+    if *n >= 5000 {
+        return;
+    }
+    let Ok(meta) = std::fs::metadata(p) else { parts.push(format!("{}:missing", p.display())); return };
+    if meta.is_dir() {
+        let Ok(entries) = std::fs::read_dir(p) else { return };
+        let mut children: Vec<_> = entries.flatten().map(|e| e.path()).filter(|c| !c.file_name().map(|f| f.to_string_lossy().starts_with('.')).unwrap_or(false)).collect();
+        children.sort();
+        for c in children {
+            file_meta(&c, parts, n);
+        }
+    } else {
+        *n += 1;
+        let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+        parts.push(format!("{}:{}:{}", p.display(), meta.len(), mtime));
+    }
 }
 
 /// Called after each step record changes, so a UI can show live progress.
@@ -384,6 +468,7 @@ impl Executor {
             fs: fs_policy(&req.recipe, &req.inputs, &artifact_dir),
             net: net_policy(&req.recipe, &req.inputs),
             artifact_dir,
+            keeps: KeepAccess::default(),
         };
 
         let mut state = RunState {
@@ -398,15 +483,114 @@ impl Executor {
             needs_review: false,
         };
 
+        // Run keeps: open each stage's keep, empty the ones being rebuilt, and decide which
+        // stages are fresh enough to skip (their outputs come from the keep's manifest).
+        let stage_of: HashMap<String, String> =
+            req.recipe.stages.iter().flat_map(|st| st.steps.iter().map(move |s| (s.clone(), st.id.clone()))).collect();
+        let mut kept: HashMap<String, Value> = HashMap::new();
+        let mut keep_plans: HashMap<String, KeepPlan> = HashMap::new();
+        if let Some(base) = &req.keep_base {
+            for st in req.recipe.stages.iter().filter(|s| s.keep.is_some()) {
+                let keep = match Keep::open(keep_dir(base, &req.recipe.id, &st.id)) {
+                    Ok(k) => Arc::new(k),
+                    Err(e) => return finish(run, Err(ExecError::Keep { stage: st.id.clone(), message: e.to_string() })),
+                };
+                let rebuilding = req.rebuild.contains(&st.id);
+                if rebuilding {
+                    let _ = keep.clear(&run_id);
+                }
+                let fp = stage_fingerprint(&req.recipe, &req.prompts, st, &req.inputs);
+                let manifest = keep.manifest().unwrap_or_default();
+                let built = manifest.built_at.is_some() && st.steps.iter().all(|s| manifest.outputs.contains_key(s));
+                let refresh = st.keep.as_ref().map(|k| k.refresh).unwrap_or_default();
+                let fresh = built
+                    && match refresh {
+                        Refresh::Always => false,
+                        Refresh::WhenSourcesChange => manifest.source_fingerprint.as_deref() == Some(fp.as_str()),
+                        Refresh::Manual => true,
+                    };
+                let reason = if rebuilding { "rebuilt" } else if !built { "first build" } else if refresh == Refresh::Always { "runs every time" } else { "sources changed" };
+                if fresh {
+                    for s in &st.steps {
+                        if let Some(v) = manifest.outputs.get(s) {
+                            kept.insert(s.clone(), v.clone());
+                        }
+                    }
+                }
+                keep_plans.insert(st.id.clone(), KeepPlan { keep: keep.clone(), fingerprint: fp, reason: reason.into(), done: false });
+                state.tool_ctx.keeps.all.insert(st.id.clone(), keep);
+            }
+        }
+
         let empty_vars = HashMap::new();
         let empty_local = HashMap::new();
         let mut failure = None;
         for &i in &order {
             let step = &req.recipe.steps[i];
+            let sid = step.id().to_string();
+            state.tool_ctx.keeps.own = stage_of.get(&sid).cloned();
+            if let Some(out) = kept.get(&sid) {
+                // The stage is fresh: its output comes from the keep, nothing runs.
+                let now = Utc::now();
+                let rec = StepRecord {
+                    run_id: state.run_id.clone(),
+                    step_id: sid.clone(),
+                    kind: step.kind_name().to_string(),
+                    name: step.name().map(str::to_string),
+                    position: state.position,
+                    status: StepStatus::Succeeded,
+                    started_at: Some(now),
+                    finished_at: Some(now),
+                    duration_ms: Some(0),
+                    model: None,
+                    prompt_path: None,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    inputs: Value::Null,
+                    output: Some(out.clone()),
+                    error: None,
+                    reused_from: Some(format!("keep:{}", stage_of.get(&sid).cloned().unwrap_or_default())),
+                    edited: false,
+                    parent: None,
+                    skip_reason: None,
+                    tool_calls: Vec::new(),
+                };
+                state.position += 1;
+                if let Some(o) = &state.observe {
+                    o(&rec);
+                }
+                state.records.push(rec);
+                state.outputs.insert(sid, out.clone());
+                continue;
+            }
             let scope = Scope { vars: &empty_vars, local: &empty_local, parent: None };
-            match self.run_one(step, step.id().to_string(), &scope, &mut state).await {
+            match self.run_one(step, sid.clone(), &scope, &mut state).await {
                 Ok(out) => {
-                    state.outputs.insert(step.id().to_string(), out);
+                    state.outputs.insert(sid.clone(), out);
+                    // A stage with a keep is finished when every one of its steps has an output:
+                    // remember what it was built from and journal what this run changed.
+                    if let Some(plan) = stage_of.get(&sid).and_then(|id| keep_plans.get_mut(id)) {
+                        let st = req.recipe.stages.iter().find(|s| stage_of.get(&sid) == Some(&s.id));
+                        if let Some(st) = st.filter(|st| !plan.done && st.steps.iter().all(|s| state.outputs.contains_key(s))) {
+                            plan.done = true;
+                            let outputs = st.steps.iter().filter_map(|s| state.outputs.get(s).map(|v| (s.clone(), v.clone()))).collect();
+                            let _ = plan.keep.set_manifest(&KeepManifest {
+                                source_fingerprint: Some(plan.fingerprint.clone()),
+                                built_at: Some(Utc::now()),
+                                run_id: Some(state.run_id.clone()),
+                                outputs,
+                            });
+                            let t = plan.keep.take_tally();
+                            let _ = plan.keep.append_journal(&JournalEntry {
+                                run_id: state.run_id.clone(),
+                                at: Utc::now(),
+                                added: t.added,
+                                replaced: t.replaced,
+                                removed: t.removed,
+                                reason: plan.reason.clone(),
+                            });
+                        }
+                    }
                 }
                 Err(e) => {
                     failure = Some(e);
@@ -1041,6 +1225,8 @@ outputs:
         let cancel = Cancel::new();
         cancel.cancel();
         let req = RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
             recipe,
             prompts: HashMap::new(),
             inputs: IndexMap::new(),
@@ -1099,6 +1285,8 @@ outputs:
         writeln!(std::fs::File::create(&file).unwrap(), "hello world").unwrap();
 
         let req = RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
             recipe,
             prompts: HashMap::from([("prompts/summarize.md".to_string(), prompt.to_string())]),
             inputs: IndexMap::from([("file".to_string(), Value::String(file.to_string_lossy().into()))]),
@@ -1127,6 +1315,93 @@ outputs:
     }
 
     #[tokio::test]
+    async fn a_kept_stage_is_skipped_while_fresh_and_journaled_when_it_runs() {
+        let yaml = r#"
+schemaVersion: "0"
+id: kept
+name: Kept
+inputs:
+  text: { type: text }
+steps:
+  - id: remember
+    kind: tool
+    tool: keep.put
+    inputs: { id: latest, data: { text: "${inputs.text}" } }
+  - id: tally
+    kind: tool
+    tool: keep.list
+  - id: echo
+    kind: tool
+    tool: keep.get
+    inputs: { id: latest, stage: memory }
+outputs:
+  saw: { from: "${steps.echo.output.record.data.text}", type: text }
+stages:
+  - { id: ask, name: Ask, inputs: [text] }
+  - { id: memory, name: Remember, steps: [remember, tally], keep: { refresh: when_sources_change } }
+  - { id: out, name: Answer, steps: [echo], outputs: [saw] }
+"#;
+        let base = std::env::temp_dir().join(format!("stillroom-keeps-{}", uuid::Uuid::now_v7()));
+        let make = |text: &str, rebuild: Vec<String>| RunRequest {
+            keep_base: Some(base.clone()),
+            rebuild,
+            recipe: Recipe::from_yaml(yaml).unwrap(),
+            prompts: HashMap::new(),
+            inputs: IndexMap::from([("text".to_string(), Value::String(text.into()))]),
+            resolutions: BTreeMap::new(),
+            artifact_base: Some(base.clone()),
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
+        };
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        let first = exec.run(make("one", vec![]), None).await;
+        assert_eq!(first.status, RunStatus::Succeeded, "{:?}", first.error);
+        assert_eq!(first.outputs["saw"], Value::String("one".into()));
+        assert!(first.steps.iter().all(|s| s.reused_from.is_none()));
+        let keep = Keep::open(keep_dir(&base, "kept", "memory")).unwrap();
+        assert_eq!(keep.count().unwrap(), 1);
+        let j = keep.journal(5).unwrap();
+        assert_eq!((j[0].reason.as_str(), j[0].added), ("first build", 1));
+
+        // Same text: the stage is fresh, its two steps come from the keep, the later stage still runs.
+        let second = exec.run(make("one", vec![]), None).await;
+        assert_eq!(second.status, RunStatus::Succeeded, "{:?}", second.error);
+        let by = |r: &Run, id: &str| r.steps.iter().find(|s| s.step_id == id).unwrap().reused_from.clone();
+        assert_eq!(by(&second, "remember").as_deref(), Some("keep:memory"));
+        assert_eq!(by(&second, "tally").as_deref(), Some("keep:memory"));
+        assert!(by(&second, "echo").is_none());
+        assert_eq!(keep.journal(5).unwrap().len(), 1, "a skipped stage writes no journal entry");
+
+        // New text: sources changed, the stage runs and replaces its record.
+        let third = exec.run(make("two", vec![]), None).await;
+        assert_eq!(third.outputs["saw"], Value::String("two".into()));
+        assert!(by(&third, "remember").is_none());
+        let j = keep.journal(5).unwrap();
+        assert_eq!((j[0].reason.as_str(), j[0].replaced), ("sources changed", 1));
+
+        // Rebuild empties the keep first, then the stage builds again.
+        let fourth = exec.run(make("two", vec!["memory".into()]), None).await;
+        assert_eq!(fourth.status, RunStatus::Succeeded, "{:?}", fourth.error);
+        let j = keep.journal(5).unwrap();
+        assert_eq!(j[0].reason, "rebuilt");
+        assert_eq!(j[1].reason, "rebuilt");
+        assert_eq!(j[1].removed, 1);
+        assert_eq!(keep.count().unwrap(), 1);
+
+        // Without a keep base, a kept stage just runs and remembers nothing.
+        let mut plain = make("two", vec![]);
+        plain.keep_base = None;
+        let r = exec.run(plain, None).await;
+        assert_eq!(r.status, RunStatus::Failed, "keep.put without a keep base has nowhere to write");
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[tokio::test]
     async fn second_run_reuses_unchanged_model_steps() {
         use crate::cache::MemoryCache;
         let yaml = include_str!("../../../recipes/summarize-file/recipe.yaml");
@@ -1136,6 +1411,8 @@ outputs:
         let file = dir.join("notes.txt");
         std::fs::write(&file, "same text").unwrap();
         let make = || RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
             recipe: Recipe::from_yaml(yaml).unwrap(),
             prompts: HashMap::from([("prompts/summarize.md".to_string(), prompt.to_string())]),
             inputs: IndexMap::from([("file".to_string(), Value::String(file.to_string_lossy().into()))]),
@@ -1204,6 +1481,8 @@ outputs:
 
     fn fan_request(file: &std::path::Path, dir: &std::path::Path) -> RunRequest {
         RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
             recipe: Recipe::from_yaml(FAN_YAML).unwrap(),
             prompts: HashMap::from([
                 ("prompts/a.md".to_string(), "A".to_string()),
@@ -1389,6 +1668,8 @@ outputs:
 
     fn triage_request(dir: &std::path::Path) -> RunRequest {
         RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
             recipe: Recipe::from_yaml(TRIAGE_YAML).unwrap(),
             prompts: HashMap::from([
                 ("prompts/classify.md".to_string(), "CLASSIFY".to_string()),
@@ -1560,6 +1841,8 @@ outputs:
   result: { from: "${steps.look.output}", type: json }
 "#;
         let req = RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
             recipe: Recipe::from_yaml(yaml).unwrap(),
             prompts: HashMap::from([("prompts/agent.md".to_string(), "AGENT".to_string())]),
             inputs: IndexMap::from([("archive".to_string(), Value::String(dir.join("archive").to_string_lossy().into()))]),

@@ -131,7 +131,8 @@ pub fn answer_schema() -> Value {
                                 "why": { "type": "string" },
                                 "inputs": { "type": "array", "items": { "type": "string" } },
                                 "steps": { "type": "array", "items": { "type": "string" } },
-                                "outputs": { "type": "array", "items": { "type": "string" } }
+                                "outputs": { "type": "array", "items": { "type": "string" } },
+                                "keep": { "type": "object", "properties": { "refresh": { "type": "string", "enum": ["always", "when_sources_change", "manual"] } } }
                             }
                         }
                     }

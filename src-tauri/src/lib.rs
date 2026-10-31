@@ -10,9 +10,10 @@ use std::sync::{Arc, Mutex};
 use stillroom_core::store::{ModelUsage, RunEstimate};
 use stillroom_core::tools::{ToolInfo, ToolRegistry};
 use stillroom_core::trace::RunSummary;
+use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots_with, validate_edit, Cancel, Draft, Executor, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
+    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, validate_edit, Cancel, Draft, Executor, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
     PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
@@ -34,6 +35,8 @@ pub(crate) struct AppState {
     prompts: SystemPrompts,
     db_path: String,
     artifacts_dir: PathBuf,
+    /// Where run keeps live: `<data>/recipe-data/<recipe id>/<stage id>`.
+    keep_base: PathBuf,
     /// One run at a time: a watch firing while the user runs something waits its turn.
     run_gate: tokio::sync::Mutex<()>,
 }
@@ -188,6 +191,8 @@ pub(crate) struct ExecArgs {
     pub edits: BTreeMap<String, StepEdit>,
     pub resume_from: Option<Run>,
     pub trigger: Option<RunTrigger>,
+    /// Stages whose run keep is emptied before the run (Rebuild).
+    pub rebuild: Vec<String>,
 }
 
 /// Resolve models, run the recipe with live step events, save the run, announce it.
@@ -210,6 +215,8 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
     let executor = Executor::new(state.tools.clone(), router).with_cache(state.store.clone());
     let mut request = bundle.request(args.inputs, resolutions);
     request.artifact_base = Some(state.artifacts_dir.clone());
+    request.keep_base = Some(state.keep_base.clone());
+    request.rebuild = args.rebuild;
     request.reuse = args.reuse;
     request.edits = args.edits;
     request.resume_from = args.resume_from.map(Box::new);
@@ -479,6 +486,9 @@ struct RunArgs {
     /// Reuse outputs of unchanged steps from earlier runs (selective rerun). Default true.
     #[serde(default = "default_true")]
     reuse: bool,
+    /// Stages whose run keep is emptied first (Rebuild).
+    #[serde(default)]
+    rebuild: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -498,6 +508,7 @@ async fn run_recipe(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -
             edits: BTreeMap::new(),
             resume_from: None,
             trigger: None,
+            rebuild: args.rebuild,
         },
     )
     .await
@@ -539,6 +550,7 @@ async fn rerun_with_edit(app: AppHandle, state: State<'_, AppState>, args: EditA
         &app,
         &state,
         ExecArgs {
+            rebuild: Vec::new(),
             recipe_id: prior.recipe_id.clone(),
             inputs: prior.inputs.clone(),
             pins: pins_from_run(&prior),
@@ -693,6 +705,81 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
     let out = planner.plan(&args.request, Some(observer)).await;
     *state.current_cancel.lock().map_err(err)? = None;
     out.map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeepState {
+    stage: String,
+    records: u64,
+    built_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether a run started now with these inputs would skip the stage. None when it is not built.
+    fresh: Option<bool>,
+    refresh: String,
+    last: Option<JournalEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeepStateArgs {
+    recipe_id: String,
+    #[serde(default)]
+    inputs: indexmap::IndexMap<String, Value>,
+}
+
+/// What each kept stage of a recipe holds and whether it is fresh for these inputs.
+#[tauri::command]
+fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResult<Vec<KeepState>> {
+    let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    let mut inputs = args.inputs;
+    for (name, default) in bundle.recipe.optional_inputs() {
+        inputs.entry(name).or_insert(default);
+    }
+    let mut out = Vec::new();
+    for st in bundle.recipe.stages.iter().filter(|s| s.keep.is_some()) {
+        let keep = Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, &st.id)).map_err(err)?;
+        let manifest = keep.manifest().map_err(err)?;
+        let built = manifest.built_at.is_some() && st.steps.iter().all(|s| manifest.outputs.contains_key(s));
+        let refresh = st.keep.as_ref().map(|k| k.refresh).unwrap_or_default();
+        let fresh = built.then(|| match refresh {
+            stillroom_core::recipe::Refresh::Always => false,
+            stillroom_core::recipe::Refresh::Manual => true,
+            stillroom_core::recipe::Refresh::WhenSourcesChange => {
+                manifest.source_fingerprint.as_deref() == Some(stage_fingerprint(&bundle.recipe, &bundle.prompts, st, &inputs).as_str())
+            }
+        });
+        out.push(KeepState {
+            stage: st.id.clone(),
+            records: keep.count().map_err(err)?,
+            built_at: manifest.built_at,
+            fresh,
+            refresh: serde_json::to_value(refresh).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
+            last: keep.journal(1).map_err(err)?.into_iter().next(),
+        });
+    }
+    Ok(out)
+}
+
+/// Empty a stage's run keep now; the next run builds it again from scratch.
+#[tauri::command]
+fn rebuild_keep(state: State<'_, AppState>, recipe_id: String, stage: String) -> CmdResult<()> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    let keep = Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, &stage)).map_err(err)?;
+    keep.clear("you").map_err(err)
+}
+
+/// The journal of a stage's keep, newest first.
+#[tauri::command]
+fn keep_journal(state: State<'_, AppState>, recipe_id: String, stage: String, limit: Option<usize>) -> CmdResult<Vec<JournalEntry>> {
+    let keep = Keep::open(keep_dir(&state.keep_base, &recipe_id, &stage)).map_err(err)?;
+    keep.journal(limit.unwrap_or(50)).map_err(err)
+}
+
+/// Records in a stage's keep, newest first.
+#[tauri::command]
+fn keep_records(state: State<'_, AppState>, recipe_id: String, stage: String, limit: Option<usize>) -> CmdResult<Vec<KeepRecord>> {
+    let keep = Keep::open(keep_dir(&state.keep_base, &recipe_id, &stage)).map_err(err)?;
+    keep.query(None, true, limit.unwrap_or(200)).map_err(err)
 }
 
 /// The recipe as it is on disk, for editing.
@@ -1047,6 +1134,8 @@ pub fn run() {
             std::fs::create_dir_all(&user_recipes)?;
             let artifacts_dir = data_dir.join("artifacts");
             std::fs::create_dir_all(&artifacts_dir)?;
+            let keep_base = data_dir.join("recipe-data");
+            std::fs::create_dir_all(&keep_base)?;
             let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
             let library = RecipeLibrary::new(vec![
@@ -1062,6 +1151,7 @@ pub fn run() {
                 prompts: SystemPrompts::new(data_dir.join("prompts")),
                 db_path: db_path.to_string_lossy().into_owned(),
                 artifacts_dir,
+                keep_base,
                 run_gate: tokio::sync::Mutex::new(()),
             });
             app.manage(WatchRuntime::default());
@@ -1099,6 +1189,10 @@ pub fn run() {
             use_system_prompt_version,
             preview_planner,
             plan_recipe,
+            keep_states,
+            rebuild_keep,
+            keep_journal,
+            keep_records,
             list_watches,
             add_watch,
             set_watch_enabled,

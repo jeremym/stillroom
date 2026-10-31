@@ -66,6 +66,29 @@ pub struct Stage {
     pub steps: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<String>,
+    /// A run keep: what this stage holds on to between runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<KeepSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepSpec {
+    #[serde(default)]
+    pub refresh: Refresh,
+}
+
+/// When a stage with a keep runs again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Refresh {
+    /// Every run (logs, anything that reads the world).
+    Always,
+    /// Only when the inputs and files the stage reads have changed (indexes, parsed material).
+    #[default]
+    WhenSourcesChange,
+    /// Only when the user presses Build now or Rebuild.
+    Manual,
 }
 
 pub const IMPLIED_STAGE: &str = "make";
@@ -444,7 +467,7 @@ impl Recipe {
         let steps: Vec<String> = self.steps.iter().map(|s| s.id().to_string()).filter(|k| !assigned(&|s| &s.steps, k)).collect();
         let outputs: Vec<String> = self.outputs.keys().filter(|k| !assigned(&|s| &s.outputs, k)).cloned().collect();
         if stages.is_empty() {
-            return vec![Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs }];
+            return vec![Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs, keep: None }];
         }
         if !inputs.is_empty() {
             stages[0].inputs.extend(inputs);
@@ -455,7 +478,7 @@ impl Recipe {
                     make.steps.extend(steps);
                     make.outputs.extend(outputs);
                 }
-                None => stages.push(Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs: Vec::new(), steps, outputs }),
+                None => stages.push(Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs: Vec::new(), steps, outputs, keep: None }),
             }
         }
         stages

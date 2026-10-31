@@ -521,7 +521,7 @@ function App() {
             <Strip
               label="Stages"
               stages={stripFor(recipe, {
-                inputs: place === "setup" ? setupInputs : undefined,
+                inputs: place === "setup" ? setupInputs : runIsHere ? run?.inputs : runningHere ? setupInputs : undefined,
                 records: runIsHere || runningHere ? steps : undefined,
                 running: runningHere,
                 runStatus: runIsHere ? run?.status : null,

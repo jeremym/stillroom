@@ -35,6 +35,8 @@ describe("stripFor", () => {
     const live = [rec("list", "succeeded"), rec("answer", "running")];
     const s = stripFor(recipe, { records: live, running: true });
     expect(s.map((x) => x.status)).toEqual(["done", "running 1 of 1", "waiting"]);
+    const given = stripFor({ ...recipe, stages: [{ id: "in", name: "Give", inputs: ["folder"] }, ...recipe.stages.slice(1)] }, { records: live, running: true, inputs: { folder: "/x" } });
+    expect(given[0].status).toBe("given");
     expect(s[1].progress).toBe(0);
     const paused = [rec("list", "succeeded", { reusedFrom: "old" }), rec("answer", "succeeded"), rec("check", "skipped")];
     const p = stripFor(recipe, { records: paused, runStatus: "needs_review" });

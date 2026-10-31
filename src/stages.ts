@@ -41,7 +41,11 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
   const stepIds = stage.steps ?? [];
   const records = ctx.records ? topRecords(ctx.records) : null;
 
-  // A run in progress or finished speaks first.
+  // A run in progress or finished speaks first. A stage with only inputs was answered when the run started.
+  if (records && records.size > 0 && stepIds.length === 0 && (stage.inputs ?? []).length > 0) {
+    const missing = (stage.inputs ?? []).filter((name) => recipe.inputs[name]?.required !== false && empty(ctx.inputs?.[name]));
+    return missing.length === 0 ? { ...base, status: "given", tone: "green" } : { ...base, status: "not given", tone: "dim" };
+  }
   if (records && records.size > 0 && stepIds.length > 0) {
     const recs = stepIds.map((id) => records.get(id)).filter((r): r is StepRecord => Boolean(r));
     const failed = recs.find((r) => r.status === "failed");

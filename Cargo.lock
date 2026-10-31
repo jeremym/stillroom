@@ -3949,7 +3949,7 @@ checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 
 [[package]]
 name = "stillroom"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3970,7 +3970,7 @@ dependencies = [
 
 [[package]]
 name = "stillroom-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3993,7 +3993,7 @@ dependencies = [
 
 [[package]]
 name = "stillroom-models"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "indexmap 2.14.2",

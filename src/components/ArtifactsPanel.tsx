@@ -136,8 +136,9 @@ interface PanelProps {
   onEdit?: (stepId: string, output: unknown) => void;
 }
 
-export function ArtifactsPanel({ run, outputs, steps, busy, onEdit }: PanelProps) {
+export function ArtifactsPanel({ run, outputs, steps, busy, onEdit, groups }: PanelProps & { groups?: { label: string | null; names: string[] }[] }) {
   const entries = Object.entries(run.outputs ?? {});
+  const groupOf = (n: string) => groups?.find((g) => g.names.includes(n))?.label ?? null;
   const [active, setActive] = useState(0);
   useEffect(() => setActive(0), [run.id]);
   if (entries.length === 0) return null;
@@ -148,9 +149,12 @@ export function ArtifactsPanel({ run, outputs, steps, busy, onEdit }: PanelProps
       {entries.length > 1 && (
         <nav className="tabs">
           {entries.map(([n, v], k) => (
-            <button key={n} className={`tab ${k === idx ? "active" : ""} ${v == null ? "pending" : ""}`} onClick={() => setActive(k)}>
-              {outputs[n]?.label ?? n}
-            </button>
+            <span key={n} style={{ display: "contents" }}>
+              {groups && groupOf(n) && (k === 0 || groupOf(entries[k - 1][0]) !== groupOf(n)) && <span className="tab-group">{groupOf(n)}</span>}
+              <button className={`tab ${k === idx ? "active" : ""} ${v == null ? "pending" : ""}`} onClick={() => setActive(k)}>
+                {outputs[n]?.label ?? n}
+              </button>
+            </span>
           ))}
         </nav>
       )}

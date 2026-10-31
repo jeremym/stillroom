@@ -4,7 +4,7 @@ import { describePermissions } from "../permissions";
 import { Glyph, inputGlyph, isGlyphName, outputGlyph, stepGlyph } from "../brand";
 import { Empty, Zone } from "@overtone-foundry/app-kit";
 import { WatchPanel } from "./WatchPanel";
-import type { InstalledModel, RecipeInfo, RunSummary, WatchView } from "../types";
+import type { InstalledModel, RecipeInfo, RunSummary, StepInfo, WatchView } from "../types";
 
 /* The recipe's own page: what it does, what it needs, its runs, its watches, how it works. */
 interface Props {
@@ -59,12 +59,21 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
           </span>
           <span className="label">May touch</span>
           <span className="muted">{describePermissions(recipe.permissions, recipe.inputs)}. Nothing else.</span>
-          <span className="label">Steps</span>
-          <span className="strip">
-            {recipe.steps.map((s, i) => (
-              <span key={s.id} style={{ display: "contents" }}>
-                {i > 0 && <span className="arrow">›</span>}
-                <span className={`step ${s.kind === "model" || s.kind === "agent" ? "ai" : ""} ${s.kind === "review" ? "review" : ""}`}><Glyph name={stepGlyph(s.kind)} /> {s.name ?? s.id}</span>
+          <span className="label">Stages</span>
+          <span className="stage-list">
+            {recipe.stages.map((st, i) => (
+              <span key={st.id} className="stage-row">
+                <span className="stage-n">{i + 1}</span>
+                <span><strong>{st.name}</strong>{st.why && <span className="muted"> · {st.why}</span>}
+                  <span className="strip">
+                    {(st.steps ?? []).map((id) => recipe.steps.find((s) => s.id === id)).filter((s): s is StepInfo => Boolean(s)).map((s, k) => (
+                      <span key={s.id} style={{ display: "contents" }}>
+                        {k > 0 && <span className="arrow">›</span>}
+                        <span className={`step ${s.kind === "model" || s.kind === "agent" ? "ai" : ""} ${s.kind === "review" ? "review" : ""}`}><Glyph name={stepGlyph(s.kind)} /> {s.name ?? s.id}</span>
+                      </span>
+                    ))}
+                  </span>
+                </span>
               </span>
             ))}
           </span>

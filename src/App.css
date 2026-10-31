@@ -242,3 +242,13 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .plan-problems { border: 1px solid var(--bezel); border-radius: 6px; padding: 8px 12px; }
 .plan-problems ul { margin: 4px 0 0; padding-left: 18px; }
 .field textarea { width: 100%; margin: 4px 0; resize: vertical; }
+
+/* Stages: headings in Set up, rows on the Recipe page, group labels on result tabs, headings in the teletype. */
+.stage-section { margin: 14px 0 0; }
+.stage-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 4px; }
+.stage-n { font-family: var(--display); font-size: var(--size-display); letter-spacing: 0.06em; color: var(--phos-faint); }
+.stage-list { display: flex; flex-direction: column; gap: 8px; }
+.stage-row { display: flex; gap: 10px; align-items: flex-start; }
+.stage-row .strip { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+.tabs .tab-group { font-family: var(--display); font-size: calc(var(--size-display) * 0.7); letter-spacing: 0.12em; text-transform: uppercase; color: var(--phos-faint); align-self: center; margin: 0 6px 0 10px; }
+.tty .head { color: var(--phos-dim); font-family: var(--display); letter-spacing: 0.1em; margin-top: 6px; }

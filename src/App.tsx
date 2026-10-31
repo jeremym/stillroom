@@ -16,7 +16,8 @@ import { Welcome } from "./components/Welcome";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
 import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
 import { isLocalModel, rememberProviders, shortModel, whereWord } from "./models";
-import { Dial, Empty, Pill, Rail, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
+import { Dial, Empty, Pill, Rail, Strip, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
+import { outputsByStage, stripFor } from "./stages";
 import "./App.css";
 
 // React Flow is heavy; load it in its own chunk so the rest of the app paints first.
@@ -69,6 +70,9 @@ function App() {
   const [planProgress, setPlanProgress] = useState<string | null>(null);
   const [planProblems, setPlanProblems] = useState<string[] | null>(null);
   const [planNote, setPlanNote] = useState<string | null>(null);
+  // The strip: which stage is selected, and what Set up holds so the strip can say who needs you.
+  const [stageSel, setStageSel] = useState<string | null>(null);
+  const [setupInputs, setSetupInputs] = useState<Record<string, unknown>>({});
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   // The welcome shows until it has been finished or skipped once (firstRun absent means never shown).
@@ -354,7 +358,7 @@ function App() {
       setRecipeId(saved.recipe.id);
       setFreshId(saved.recipe.id);
       setPlanNote(note);
-      setPlace("door");
+      setPlace(req.mode === "goal" ? "recipe" : "door");
     } catch (e) {
       setCreateError(String(e));
     } finally {
@@ -512,7 +516,23 @@ function App() {
 
       <main className="shell">
         {isRecipePlace(place) && recipe && (
-          <Dial places={places} current={place} onChange={(id) => setPlace(id as Place)} tone={needsYou && runIsHere ? "amber" : "green"} progress={runningHere ? progress : undefined} crumb={crumb} />
+          <>
+            <Dial places={places} current={place} onChange={(id) => setPlace(id as Place)} tone={needsYou && runIsHere ? "amber" : "green"} progress={runningHere ? progress : undefined} crumb={crumb} />
+            <Strip
+              label="Stages"
+              stages={stripFor(recipe, {
+                inputs: place === "setup" ? setupInputs : undefined,
+                records: runIsHere || runningHere ? steps : undefined,
+                running: runningHere,
+                runStatus: runIsHere ? run?.status : null,
+              })}
+              current={stageSel}
+              onSelect={(id) => {
+                setStageSel(id);
+                if (place === "setup") document.getElementById(`stage-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+            />
+          </>
         )}
 
         <div className="place">
@@ -573,6 +593,9 @@ function App() {
               onCancel={() => setPlace(recipe ? "recipe" : "library")} onStop={() => api.stopRun().catch((e) => setError(String(e)))} />
           )}
 
+          {place === "recipe" && planNote && freshId === recipe?.id && (
+            <p className="result-line hint-line"><Glyph name="sparkles" /> {planNote}</p>
+          )}
           {place === "recipe" && recipe && (
             <RecipePage recipe={recipe} models={models?.models ?? []} history={history} watches={watches}
               map={flowFor(recipe, false)}
@@ -586,7 +609,7 @@ function App() {
           )}
           {place === "setup" && recipes && recipe && (
             <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
-              models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} />
+              models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} onInputsChange={setSetupInputs} />
           )}
 
           {place === "running" && (
@@ -602,7 +625,7 @@ function App() {
                 )}
                 {flowFor(runRecipe ?? recipe, false)}
                 <Zone title="As it happens" sub="each step typed as it starts and finishes (the trace)">
-                  <Teletype records={runIsHere || runningHere ? steps : []} live={runningHere} />
+                  <Teletype records={runIsHere || runningHere ? steps : []} live={runningHere} stages={recipe?.stages} />
                   <details className="trace-table">
                     <summary className="muted">The same facts as a table</summary>
                     <TracePanel run={runIsHere ? run : null} steps={runIsHere || runningHere ? steps : []} />
@@ -663,7 +686,7 @@ function App() {
                 {run.status === "needs_review" && (
                   <ReviewPanel run={run} steps={runRecipe?.steps ?? []} busy={running} onDecide={editAndRerun} />
                 )}
-                <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} steps={runRecipe?.steps ?? []} busy={running} onEdit={editAndRerun} />
+                <ArtifactsPanel run={run} outputs={runRecipe?.outputs ?? {}} steps={runRecipe?.steps ?? []} busy={running} onEdit={editAndRerun} groups={runRecipe ? outputsByStage(runRecipe).map((g) => ({ label: g.stage?.name ?? null, names: g.names })) : undefined} />
                 {firstRunHint && (
                   <p className="result-line hint-line"><Glyph name="sparkles" /> That was your first run. The <button className="link" onClick={() => setPlace("door")}>Recipe card</button> shows how it was made and lets you change it; <strong>Set up</strong> runs it again on something else.</p>
                 )}

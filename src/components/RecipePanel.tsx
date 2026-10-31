@@ -34,6 +34,8 @@ interface Props {
   onRun: (recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, reuse: boolean) => void;
   /** Watch one of the recipe's folder inputs: the recipe runs by itself when something lands there. */
   onWatch: (recipe: RecipeInfo, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) => void;
+  /** The strip above wants to know which stage still needs you. */
+  onInputsChange?: (inputs: Record<string, unknown>) => void;
 }
 
 function InputField({
@@ -79,13 +81,15 @@ function InputField({
   );
 }
 
-export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch }: Props) {
+export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch, onInputsChange }: Props) {
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [preview, setPreview] = useState<ResolutionPreview | null>(null);
   const [reuse, setReuse] = useState(true);
   const folderInputs = Object.entries(recipe.inputs).filter(([, spec]) => spec.type === "directory").map(([k]) => k);
   const [watchInput, setWatchInput] = useState<string>("");
+
+  useEffect(() => { onInputsChange?.(inputs); }, [inputs, onInputsChange]);
 
   useEffect(() => {
     setInputs(defaultInputs(recipe.inputs));
@@ -131,9 +135,17 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       </div>
       {recipe.description && <p className="muted">{recipe.description}</p>}
 
-      {Object.entries(recipe.inputs).map(([name, spec]) => (
-        <InputField key={name} name={name} spec={spec} value={inputs[name]}
-          onChange={(v) => setInputs((i) => ({ ...i, [name]: v }))} />
+      {recipe.stages.filter((st) => (st.inputs ?? []).some((n) => n in recipe.inputs)).map((st, i) => (
+        <section key={st.id} id={`stage-${st.id}`} className="stage-section">
+          {recipe.stages.length > 1 && (
+            <h3 className="stage-head"><span className="stage-n">{recipe.stages.indexOf(st) + 1}</span> {st.name}{st.why && <span className="muted"> · {st.why}</span>}</h3>
+          )}
+          {(st.inputs ?? []).filter((n) => n in recipe.inputs).map((name) => (
+            <InputField key={name} name={name} spec={recipe.inputs[name]} value={inputs[name]}
+              onChange={(v) => setInputs((i) => ({ ...i, [name]: v }))} />
+          ))}
+          {i === 0 && null}
+        </section>
       ))}
 
       <h3>Models for this run <span className="muted">(model slots)</span></h3>

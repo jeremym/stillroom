@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef } from "react";
 import { shortModel, whereWord } from "../models";
 import { fmtMs, fmtTokens } from "../api";
-import type { StepRecord } from "../types";
+import type { Stage, StepRecord } from "../types";
 
 /* The teletype: the run as a typed log, one line per event as it happens. The table in TracePanel
    is the same facts for reading afterwards; this is for watching. */
 
-interface Line { at: number; time: string; mark: string; text: string; tone: "" | "dim" | "amber" | "red" | "bright"; indent?: boolean }
+interface Line { at: number; time: string; mark: string; text: string; tone: "" | "dim" | "amber" | "red" | "bright"; indent?: boolean; head?: boolean }
 
 function clock(iso: string | null): { at: number; time: string } {
   if (!iso) return { at: 0, time: "        " };
@@ -18,8 +18,14 @@ function kindWord(k: string) {
   return k === "model" ? "AI step" : k === "agent" ? "AI agent" : k === "tool" ? "program" : k === "map" ? "for each" : k === "review" ? "your approval" : k;
 }
 
-export function linesFor(records: StepRecord[]): Line[] {
+export function linesFor(records: StepRecord[], stages: Stage[] = []): Line[] {
   const out: Line[] = [];
+  // A heading when the first step of a stage starts, with the stage's why.
+  stages.forEach((st, i) => {
+    const starts = records.filter((r) => !r.parent && (st.steps ?? []).includes(r.stepId) && (r.startedAt || r.finishedAt)).map((r) => clock(r.startedAt ?? r.finishedAt).at);
+    if (starts.length === 0) return;
+    out.push({ at: Math.min(...starts) - 0.5, time: "", mark: "", text: `── ${i + 1}. ${st.name.toUpperCase()} ──${st.why ? `  ${st.why}` : ""}`, tone: "dim", head: true });
+  });
   for (const r of records) {
     const name = r.name ?? r.stepId;
     const where = r.parent ? `${r.parent} › ` : "";
@@ -55,8 +61,8 @@ function short(v: unknown): string {
   return s.length > 90 ? s.slice(0, 90) + "…" : s;
 }
 
-export function Teletype({ records, live }: { records: StepRecord[]; live: boolean }) {
-  const lines = useMemo(() => linesFor(records), [records]);
+export function Teletype({ records, live, stages }: { records: StepRecord[]; live: boolean; stages?: Stage[] }) {
+  const lines = useMemo(() => linesFor(records, stages ?? []), [records, stages]);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (live && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
@@ -65,8 +71,8 @@ export function Teletype({ records, live }: { records: StepRecord[]; live: boole
     <div className="tty" ref={ref} role="log" aria-live={live ? "polite" : "off"}>
       {lines.length === 0 && <div className="dim">Waiting for the first step…</div>}
       {lines.map((l, i) => (
-        <div key={i} className={`${l.indent ? "in" : ""} ${l.tone}`}>
-          {!l.indent && <span className="t">{l.time}</span>}{l.mark && <span className="mark">{l.mark} </span>}{l.text}
+        <div key={i} className={`${l.indent ? "in" : ""} ${l.head ? "head" : ""} ${l.tone}`}>
+          {!l.indent && !l.head && <span className="t">{l.time}</span>}{l.mark && <span className="mark">{l.mark} </span>}{l.text}
         </div>
       ))}
       {live && <div><span className="t">        </span><span className="cursor" /></div>}

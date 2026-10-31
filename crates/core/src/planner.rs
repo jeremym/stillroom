@@ -159,7 +159,7 @@ pub fn assemble_system(prompt: &str, tools: &[ToolInfo]) -> String {
 pub fn assemble_system_with(prompt: &str, tools: &[ToolInfo], library: Option<&crate::stagelib::StageLibrary>) -> String {
     let mut s = String::from(prompt.trim_end());
     if let Some(lib) = library.filter(|l| !l.stages.is_empty()) {
-        s.push_str("\n\n## Ready-made stages\n\nThese stages are already built and tested. When one does what a stage of the recipe should do, use it instead of composing steps: write the stage as `{ \"use\": \"<id>\" }` (optionally with your own `name` and `why`) and nothing else; its inputs, steps, prompts, and outputs are added to the recipe for you, and the recipe may declare inputs with the same names. Reference what it returns from later stages exactly as listed. Do not list its steps or inputs yourself.\n");
+        s.push_str("\n\n## Ready-made stages\n\nThese stages are already built and tested. Prefer one whenever it does what a stage of the recipe should do; compose steps yourself only for what no ready-made stage covers. To use one, the stage entry is exactly `{ \"use\": \"<id>\" }`, optionally with your own `name` and `why`, and you write none of its steps, inputs, prompts, or files: they are added for you, with the ids listed under returns. A recipe that answers questions over a folder is just:\n\n```\n\"stages\": [ { \"use\": \"index_folder\" }, { \"use\": \"answer_from_index\" } ], \"steps\": [], \"inputs\": {}, \"modelSlots\": {}, \"outputs\": {}\n```\n\nYour own stages may follow and reference what a ready-made stage returns.\n");
         s.push_str(&lib.describe());
     }
     s.push_str("\n\n## Tools available\n\nThese are the only tools. Use the parameter names exactly.\n");
@@ -538,7 +538,7 @@ mod tests {
         assert!(y["modelSlots"].get("writer").is_some());
         assert!(out.draft.files.contains_key("prompts/summarize_file.md"));
         let s = assemble_system_with("P", &ToolRegistry::builtin().catalog(), Some(&lib));
-        assert!(s.contains("### `summarize_file`") && s.contains("Use after: `index_folder`"));
+        assert!(s.contains("- `summarize_file`:") && s.contains("use after `index_folder`"));
     }
 
     #[test]

@@ -92,33 +92,30 @@ impl StageLibrary {
         self.stages.iter().find(|s| s.id == id)
     }
 
-    /// The list the planner reads: id, what it does, what it adds, what it returns.
+    /// The list the planner reads, one short block per stage: id, what it does, what it adds,
+    /// what it returns. Kept terse; every line here is paid for on every plan.
     pub fn describe(&self) -> String {
         let mut s = String::new();
         for st in &self.stages {
-            s.push_str(&format!("\n### `{}` — {}\n\n{}\n", st.id, st.name, st.summary));
+            s.push_str(&format!("\n- `{}`: {}", st.id, st.summary));
+            let mut facts: Vec<String> = Vec::new();
             if !st.inputs.is_empty() {
-                let names: Vec<String> = st.inputs.iter().map(|(k, v)| format!("`{k}` ({})", v.get("type").and_then(Value::as_str).unwrap_or("?"))).collect();
-                s.push_str(&format!("Adds inputs: {}.\n", names.join(", ")));
-            }
-            if !st.model_slots.is_empty() {
-                s.push_str(&format!("Adds model slots: {}.\n", st.model_slots.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
+                facts.push(format!("adds inputs {}", st.inputs.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
             }
             if !st.requires.is_empty() {
-                s.push_str(&format!("Use after: {}.\n", st.requires.iter().map(|r| format!("`{r}`")).collect::<Vec<_>>().join(", ")));
-            }
-            if let Some(k) = &st.keep {
-                s.push_str(&format!("Has a run keep (refresh: {}).\n", serde_json::to_value(k.refresh).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()));
+                facts.push(format!("use after {}", st.requires.iter().map(|r| format!("`{r}`")).collect::<Vec<_>>().join(", ")));
             }
             if !st.outputs.is_empty() {
-                s.push_str(&format!("Delivers outputs: {}.\n", st.outputs.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
+                facts.push(format!("delivers {}", st.outputs.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
             }
-            if !st.returns.is_empty() {
-                s.push_str("Later stages can reference:\n");
-                for r in &st.returns {
-                    s.push_str(&format!("- {r}\n"));
-                }
+            if !facts.is_empty() {
+                s.push_str(&format!(" ({})", facts.join("; ")));
             }
+            s.push('.');
+            for r in &st.returns {
+                s.push_str(&format!("\n  - returns {r}"));
+            }
+            s.push('\n');
         }
         s
     }
@@ -288,6 +285,6 @@ mod tests {
             assert!(!st.summary.is_empty() && !st.why.is_empty(), "{} has a summary and a why", st.id);
         }
         let text = lib.describe();
-        assert!(text.contains("### `"));
+        assert!(text.contains("- `index_folder`:"));
     }
 }

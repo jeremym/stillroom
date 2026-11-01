@@ -27,13 +27,28 @@ export interface StripContext {
   keeps?: Record<string, KeepState>;
 }
 
+function keepParts(k: KeepState): { n: string; when: string } {
+  // A keep that holds step outputs but no records (a kept spine, parsed pages) says when it was built, not "0 records".
+  const n = k.records > 0 ? ` · ${k.records} record${k.records === 1 ? "" : "s"}` : "";
+  const when = k.builtAt ? ` · built ${new Date(k.builtAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "";
+  return { n, when };
+}
+
+/** The keep's state for the inputs at hand (Set up, the strip): fresh, stale, or not built. */
 export function keepWord(k: KeepState): { status: string; tone: StageTone } {
-  const n = `${k.records} record${k.records === 1 ? "" : "s"}`;
-  const when = k.builtAt ? ` · ${new Date(k.builtAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "";
+  const { n, when } = keepParts(k);
   if (k.fresh == null) return { status: "not built yet", tone: "dim" };
-  if (k.refresh === "always") return { status: `${n} · runs every time`, tone: "green" };
-  if (k.fresh) return { status: `fresh · ${n}${when}`, tone: "green" };
-  return { status: `stale · will rebuild · ${n}`, tone: "amber" };
+  if (k.refresh === "always") return { status: `runs every time${n}`, tone: "green" };
+  if (k.fresh) return { status: `fresh${n}${when}`, tone: "green" };
+  return { status: `stale · will rebuild${n}`, tone: "amber" };
+}
+
+/** The keep's state when no inputs are known (the Recipe page): what it holds, with no verdict on freshness. */
+export function keepHeldWord(k: KeepState): { status: string; tone: StageTone } {
+  const { n, when } = keepParts(k);
+  if (k.fresh == null) return { status: "not built yet", tone: "dim" };
+  if (k.refresh === "always") return { status: `runs every time${n}`, tone: "green" };
+  return { status: `${when.replace(/^ · /, "")}${n}`, tone: "green" };
 }
 
 /** A duration in words people plan by: "under a second", "40 s", "4 min", "1 h 10 min". */
@@ -51,6 +66,13 @@ export function aboutMs(ms: number): string {
 /** "about 4 min, once" or "about 20 s, every run": what a stage costs and how often it runs. */
 export function estimateWord(e: StageEstimate): string {
   return `about ${aboutMs(e.avgDurationMs)}, ${e.once ? "once" : "every run"}`;
+}
+
+/** Whether every required input of this stage and the stages before it has a value. */
+export function inputsKnownUpTo(recipe: RecipeInfo, stage: Stage, inputs: Record<string, unknown> | undefined): boolean {
+  if (!inputs) return false;
+  const upTo = recipe.stages.slice(0, recipe.stages.indexOf(stage) + 1);
+  return upTo.every((st) => (st.inputs ?? []).every((name) => recipe.inputs[name]?.required === false || !empty(inputs[name])));
 }
 
 function empty(v: unknown): boolean {
@@ -98,9 +120,12 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
   // Before a run: a kept stage says what it holds; any stage says if it still needs you.
   const keep = ctx.keeps?.[stage.id];
   if (keep && stage.keep) {
-    const w = keepWord(keep);
-    return { ...base, ...w };
+    // Fresh or stale is a verdict about particular inputs; until the inputs this stage can see are
+    // all given, say only what the keep holds.
+    return { ...base, ...(inputsKnownUpTo(recipe, stage, ctx.inputs) ? keepWord(keep) : keepHeldWord(keep)) };
   }
+  // With no Set up in sight (the Recipe page) a stage with inputs says only that it asks you for them.
+  if (!ctx.inputs && (stage.inputs ?? []).some((name) => recipe.inputs[name]?.required !== false)) return { ...base, status: "you provide", tone: "dim" };
   const missing = (stage.inputs ?? []).filter((name) => {
     const spec = recipe.inputs[name];
     if (!spec || spec.required === false) return false;

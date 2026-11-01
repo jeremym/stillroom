@@ -4,7 +4,7 @@ import { describePermissions } from "../permissions";
 import { Glyph, inputGlyph, isGlyphName, outputGlyph, stepGlyph } from "../brand";
 import { Empty, Zone } from "@overtone-foundry/app-kit";
 import { WatchPanel } from "./WatchPanel";
-import { keepWord } from "../stages";
+import { keepHeldWord } from "../stages";
 import type { InstalledModel, JournalEntry, KeepState, RecipeInfo, RunSummary, StepInfo, WatchView } from "../types";
 
 /* The recipe's own page: what it does, what it needs, its runs, its watches, how it works. */
@@ -60,7 +60,7 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
                 <span><strong>{st.name}</strong>{st.why && <span className="muted"> · {st.why}</span>}
                   {st.keep && (() => {
                     const k = keeps?.[st.id];
-                    const w = k ? keepWord(k) : null;
+                    const w = k ? keepHeldWord(k) : null;
                     return (
                       <span className="keep-line">
                         {w && <span className={`tag ${w.tone === "amber" ? "amber" : ""}`}>{w.status}</span>}

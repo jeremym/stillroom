@@ -157,6 +157,7 @@ function SingleRun({ r, kind }: { r: StepRecord; kind: string }) {
         {r.durationMs != null && r.durationMs > 0 && status !== "reused" ? ` · ${fmtMs(r.durationMs)}` : ""}
         {r.promptTokens != null ? ` · ${r.promptTokens} → ${r.completionTokens ?? 0} tokens` : ""}
         {r.skipReason && status !== "needs_you" ? ` · ${r.skipReason}` : ""}
+        {r.reusedFrom?.startsWith("keep:") ? " · kept: this stage's run keep was fresh, so nothing ran" : ""}
       </p>
       {status === "needs_you" && <p>Your decision is waiting in the review panel below.</p>}
       {r.model && <p className="muted mono">{r.model}{r.promptPath ? ` · ${r.promptPath}` : ""}</p>}

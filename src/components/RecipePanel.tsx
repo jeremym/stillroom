@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
 import { defaultInputs } from "../recipes/defaults";
-import { aboutMs, estimateWord, keepWord } from "../stages";
+import { aboutMs, estimateWord, inputsKnownUpTo, keepHeldWord, keepWord } from "../stages";
 import type { InputSpec, InstalledModel, KeepState, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
 import { Glyph } from "../brand";
 import { isLocalModel, whereWord } from "../models";
@@ -154,14 +154,15 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
           })()}
           {st.keep && (() => {
             const k = keeps?.[st.id];
-            const w = k ? keepWord(k) : { status: "…", tone: "dim" as const };
+            const w = k ? (inputsKnownUpTo(recipe, st, inputs) ? keepWord(k) : keepHeldWord(k)) : { status: "…", tone: "dim" as const };
             const last = k?.last;
+            const changed = last ? last.added + last.replaced + last.removed : 0;
             return (
               <div className="row keep-line">
                 <span className={`tag ${w.tone === "amber" ? "amber" : ""}`}>{w.status}</span>
                 <span className="muted">
                   This stage remembers between runs (a run keep): what it builds is kept on this Mac in Stillroom's data folder, and deleting the recipe deletes it.
-                  {last && ` Last run: +${last.added} added, ${last.replaced} replaced, ${last.removed} removed (${last.reason}).`}
+                  {last && (changed ? ` Last run: +${last.added} added, ${last.replaced} replaced, ${last.removed} removed (${last.reason}).` : ` Last run: ${last.reason}.`)}
                 </span>
                 {onRebuild && k && k.fresh != null && (confirmRebuild === st.id
                   ? <><button className="danger" onClick={() => { setConfirmRebuild(null); onRebuild(st.id); }}>Really rebuild</button><button onClick={() => setConfirmRebuild(null)}>Keep it</button></>
@@ -220,9 +221,14 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
 
       <p className="muted">Permissions: {describePermissions(recipe.permissions, recipe.inputs)}. Nothing else is touched.</p>
       <p className="muted">Steps: {recipe.steps.map(stepLabel).join(" → ")}</p>
-      {estimate ? (
+      {estimate ? (() => {
+        // A kept stage that is fresh for these inputs will be skipped: take it out of the total.
+        const skipped = estimate.stages.filter((e) => e.once && keeps?.[e.id]?.fresh && inputsKnownUpTo(recipe, recipe.stages.find((st) => st.id === e.id)!, inputs));
+        const skipMs = skipped.reduce((n, e) => n + e.avgDurationMs, 0);
+        const names = skipped.map((e) => recipe.stages.find((st) => st.id === e.id)?.name ?? e.id);
+        return (
         <div className="muted estimate">
-          <span>Expect about {aboutMs(estimate.avgDurationMs)} and {fmtTokens(estimate.avgPromptTokens + estimate.avgCompletionTokens)} tokens, from the last {estimate.basedOnRuns} run{estimate.basedOnRuns === 1 ? "" : "s"}.</span>
+          <span>Expect about {aboutMs(Math.max(0, estimate.avgDurationMs - skipMs))} and {fmtTokens(estimate.avgPromptTokens + estimate.avgCompletionTokens)} tokens, from the last {estimate.basedOnRuns} run{estimate.basedOnRuns === 1 ? "" : "s"}{names.length ? ` (${names.join(" and ")} ${names.length === 1 ? "is" : "are"} kept and will not run)` : ""}.</span>
           {estimate.stages.length > 0 && (
             <span className="estimate-stages">
               {estimate.stages.map((e) => {
@@ -233,7 +239,8 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
             </span>
           )}
         </div>
-      ) : (
+        );
+      })() : (
         <p className="muted">No previous runs to estimate from. After the first run, Set up says what each stage took and which stages will not need to run again.</p>
       )}
 

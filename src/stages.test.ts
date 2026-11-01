@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aboutMs, estimateWord, outputsByStage, stageOfStep, stripFor } from "./stages";
+import { aboutMs, estimateWord, keepHeldWord, keepWord, outputsByStage, stageOfStep, stripFor } from "./stages";
 import type { RecipeInfo, StepRecord } from "./types";
 
 const recipe: RecipeInfo = {
@@ -28,7 +28,7 @@ describe("stripFor", () => {
     const s = stripFor(recipe, { inputs: { folder: "/x" } });
     expect(s.map((x) => x.status)).toEqual(["ready", "needs you", "your approval"]);
     expect(s[1].tone).toBe("amber");
-    expect(stripFor(recipe)[0].status).toBe("needs you");
+    expect(stripFor(recipe)[0].status).toBe("you provide");
   });
 
   it("follows a run: running, done, waiting for you, failed", () => {
@@ -50,9 +50,19 @@ describe("stripFor", () => {
     const kept = { ...recipe, stages: [{ ...recipe.stages[0], keep: { refresh: "when_sources_change" as const } }, ...recipe.stages.slice(1)] };
     const k = (fresh: boolean | null, refresh: "always" | "when_sources_change" | "manual" = "when_sources_change") => ({ docs: { stage: "docs", records: 42, builtAt: "2026-10-31T12:00:00Z", fresh, refresh, last: null } });
     expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(null) })[0].status).toBe("not built yet");
-    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true) })[0].status).toMatch(/^fresh · 42 records · /);
+    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true) })[0].status).toMatch(/^fresh · 42 records · built /);
     expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(false) })[0]).toMatchObject({ status: "stale · will rebuild · 42 records", tone: "amber" });
-    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true, "always") })[0].status).toBe("42 records · runs every time");
+    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true, "always") })[0].status).toBe("runs every time · 42 records");
+    // With the folder not yet chosen there is no verdict, only what the keep holds.
+    expect(stripFor(kept, { inputs: {}, keeps: k(false) })[0]).toMatchObject({ status: "built Oct 31 · 42 records", tone: "green" });
+    expect(stripFor(kept, { keeps: k(false) })[0].tone).toBe("green");
+    // No Set up in sight: a stage with inputs only says it asks for them.
+    expect(stripFor(recipe, {})[0]).toMatchObject({ status: "you provide", tone: "dim" });
+    // A keep holding step outputs but no records (a kept spine) says when it was built, never "0 records".
+    const spine = { ...k(true).docs, records: 0 };
+    expect(keepWord(spine).status).toMatch(/^fresh · built /);
+    expect(keepHeldWord(spine).status).toMatch(/^built /);
+    expect(keepHeldWord({ ...spine, fresh: false }).tone).toBe("green");
     const skipped = [rec("list", "succeeded", { reusedFrom: "keep:docs" }), rec("answer", "running")];
     expect(stripFor(kept, { records: skipped, running: true })[0].status).toBe("ready · kept");
   });

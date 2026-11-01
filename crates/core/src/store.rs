@@ -4,6 +4,7 @@
 //! Proper per-step and per-artifact tables arrive with Flow Studio.
 
 use crate::cache::{CachedStep, StepCache};
+use crate::recipe::{Refresh, Stage};
 use crate::trace::{Run, RunStatus, RunSummary};
 use crate::watch::Watch;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -51,6 +52,22 @@ pub struct RunEstimate {
     pub avg_prompt_tokens: u64,
     pub avg_completion_tokens: u64,
     pub avg_duration_ms: u64,
+    /// One line per stage that has actually run before: what it took when it did.
+    #[serde(default)]
+    pub stages: Vec<StageEstimate>,
+}
+
+/// What one stage took, averaged over the runs in which it really ran (a stage served from
+/// its run keep took no time and is not counted). `once` says the stage is kept and will not
+/// run again until its sources change or it is rebuilt.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageEstimate {
+    pub id: String,
+    pub based_on_runs: usize,
+    pub avg_duration_ms: u64,
+    pub avg_tokens: u64,
+    pub once: bool,
 }
 
 impl Store {
@@ -166,8 +183,8 @@ impl Store {
         Ok(map.into_values().collect())
     }
 
-    /// Averages over previous successful runs of a recipe: a pre-run estimate.
-    pub fn estimate_for_recipe(&self, recipe_id: &str) -> Result<Option<RunEstimate>, StoreError> {
+    /// Averages over previous successful runs of a recipe: a pre-run estimate, whole and by stage.
+    pub fn estimate_for_recipe(&self, recipe_id: &str, stages: &[Stage]) -> Result<Option<RunEstimate>, StoreError> {
         let runs: Vec<Run> = self
             .all_runs()?
             .into_iter()
@@ -179,11 +196,39 @@ impl Store {
         }
         let n = runs.len() as u64;
         let sum = |f: &dyn Fn(&Run) -> u64| runs.iter().map(f).sum::<u64>() / n;
+        let stages = stages
+            .iter()
+            .filter_map(|st| {
+                // A run counts for a stage when at least one of its steps really ran there.
+                let took: Vec<(u64, u64)> = runs
+                    .iter()
+                    .filter_map(|r| {
+                        let mine = r.steps.iter().filter(|s| s.parent.is_none() && st.steps.contains(&s.step_id) && s.reused_from.is_none());
+                        let (ms, tokens, any) = mine.fold((0, 0, false), |(ms, t, _), s| {
+                            (ms + s.duration_ms.unwrap_or(0), t + s.prompt_tokens.unwrap_or(0) + s.completion_tokens.unwrap_or(0), true)
+                        });
+                        any.then_some((ms, tokens))
+                    })
+                    .collect();
+                if took.is_empty() {
+                    return None;
+                }
+                let k = took.len() as u64;
+                Some(StageEstimate {
+                    id: st.id.clone(),
+                    based_on_runs: took.len(),
+                    avg_duration_ms: took.iter().map(|t| t.0).sum::<u64>() / k,
+                    avg_tokens: took.iter().map(|t| t.1).sum::<u64>() / k,
+                    once: st.keep.as_ref().map(|k| k.refresh != Refresh::Always).unwrap_or(false),
+                })
+            })
+            .collect();
         Ok(Some(RunEstimate {
             based_on_runs: runs.len(),
             avg_prompt_tokens: sum(&|r| r.steps.iter().filter_map(|s| s.prompt_tokens).sum()),
             avg_completion_tokens: sum(&|r| r.steps.iter().filter_map(|s| s.completion_tokens).sum()),
             avg_duration_ms: sum(&|r| r.steps.iter().filter_map(|s| s.duration_ms).sum()),
+            stages,
         }))
     }
 
@@ -350,6 +395,73 @@ mod tests {
         assert_eq!(store.count_by_status(RunStatus::Succeeded).unwrap(), 1);
         assert_eq!(store.latest_run_with_inputs("x", &IndexMap::new()).unwrap().map(|r| r.id), Some("r1".into()));
         assert!(store.latest_run_with_inputs("y", &IndexMap::new()).unwrap().is_none());
+    }
+
+    fn step(run_id: &str, id: &str, ms: u64, tokens: u64, reused: Option<&str>) -> crate::trace::StepRecord {
+        crate::trace::StepRecord {
+            run_id: run_id.into(),
+            step_id: id.into(),
+            kind: "tool".into(),
+            name: None,
+            position: 0,
+            status: crate::trace::StepStatus::Succeeded,
+            started_at: None,
+            finished_at: None,
+            duration_ms: Some(ms),
+            model: None,
+            prompt_path: None,
+            prompt_tokens: Some(tokens),
+            completion_tokens: None,
+            inputs: serde_json::Value::Null,
+            output: None,
+            error: None,
+            reused_from: reused.map(String::from),
+            edited: false,
+            parent: None,
+            skip_reason: None,
+            tool_calls: vec![],
+        }
+    }
+
+    #[test]
+    fn estimates_by_stage_and_skips_kept_stages() {
+        let store = Store::open_in_memory().unwrap();
+        let run = |id: &str, steps: Vec<crate::trace::StepRecord>| {
+            store
+                .save_run(&Run {
+                    id: id.into(),
+                    recipe_id: "x".into(),
+                    recipe_name: "X".into(),
+                    recipe_version: None,
+                    status: RunStatus::Succeeded,
+                    started_at: Utc::now(),
+                    finished_at: Some(Utc::now()),
+                    inputs: IndexMap::new(),
+                    resolutions: serde_json::Value::Null,
+                    steps,
+                    outputs: IndexMap::new(),
+                    error: None,
+                    edits: Default::default(),
+                    trigger: None,
+                    continues: None,
+                })
+                .unwrap();
+        };
+        // First run builds the index (4 s) and answers (1 s); second run keeps the index and answers in 3 s.
+        run("r1", vec![step("r1", "index", 4000, 100, None), step("r1", "answer", 1000, 50, None)]);
+        run("r2", vec![step("r2", "index", 0, 0, Some("keep:build")), step("r2", "answer", 3000, 70, None)]);
+        let stages = vec![
+            Stage { id: "build".into(), name: "Build".into(), why: None, inputs: vec![], steps: vec!["index".into()], outputs: vec![], keep: Some(crate::recipe::KeepSpec { refresh: Refresh::WhenSourcesChange }) },
+            Stage { id: "ask".into(), name: "Ask".into(), why: None, inputs: vec![], steps: vec!["answer".into()], outputs: vec![], keep: None },
+            Stage { id: "never".into(), name: "Never ran".into(), why: None, inputs: vec![], steps: vec!["nope".into()], outputs: vec![], keep: None },
+        ];
+        let e = store.estimate_for_recipe("x", &stages).unwrap().unwrap();
+        assert_eq!(e.based_on_runs, 2);
+        assert_eq!(e.avg_duration_ms, 4000);
+        assert_eq!(e.stages.len(), 2, "{:?}", e.stages);
+        assert_eq!((e.stages[0].id.as_str(), e.stages[0].based_on_runs, e.stages[0].avg_duration_ms, e.stages[0].once), ("build", 1, 4000, true));
+        assert_eq!((e.stages[1].id.as_str(), e.stages[1].based_on_runs, e.stages[1].avg_duration_ms, e.stages[1].once), ("ask", 2, 2000, false));
+        assert!(store.estimate_for_recipe("y", &stages).unwrap().is_none());
     }
 
     #[test]

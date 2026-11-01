@@ -1,4 +1,4 @@
-import type { KeepState, RecipeInfo, Run, Stage, StepRecord } from "./types";
+import type { KeepState, RecipeInfo, Run, Stage, StageEstimate, StepRecord } from "./types";
 
 /* The strip, as drawn: each stage of a recipe with one status word, from what is known right now:
    which inputs are filled (Set up), which steps have run (Running, Results), whether a review is
@@ -34,6 +34,23 @@ export function keepWord(k: KeepState): { status: string; tone: StageTone } {
   if (k.refresh === "always") return { status: `${n} · runs every time`, tone: "green" };
   if (k.fresh) return { status: `fresh · ${n}${when}`, tone: "green" };
   return { status: `stale · will rebuild · ${n}`, tone: "amber" };
+}
+
+/** A duration in words people plan by: "under a second", "40 s", "4 min", "1 h 10 min". */
+export function aboutMs(ms: number): string {
+  if (ms < 1000) return "under a second";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const rest = m - h * 60;
+  return rest ? `${h} h ${rest} min` : `${h} h`;
+}
+
+/** "about 4 min, once" or "about 20 s, every run": what a stage costs and how often it runs. */
+export function estimateWord(e: StageEstimate): string {
+  return `about ${aboutMs(e.avgDurationMs)}, ${e.once ? "once" : "every run"}`;
 }
 
 function empty(v: unknown): boolean {

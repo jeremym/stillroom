@@ -467,7 +467,9 @@ impl Recipe {
         let steps: Vec<String> = self.steps.iter().map(|s| s.id().to_string()).filter(|k| !assigned(&|s| &s.steps, k)).collect();
         let outputs: Vec<String> = self.outputs.keys().filter(|k| !assigned(&|s| &s.outputs, k)).cloned().collect();
         if stages.is_empty() {
-            return vec![Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs, keep: None }];
+            let mut make = Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs, keep: None };
+            make.why = Some(self.plain_why(&make));
+            return vec![make];
         }
         if !inputs.is_empty() {
             stages[0].inputs.extend(inputs);
@@ -481,7 +483,64 @@ impl Recipe {
                 None => stages.push(Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs: Vec::new(), steps, outputs, keep: None }),
             }
         }
+        for st in stages.iter_mut() {
+            if st.why.as_deref().map(str::trim).unwrap_or("").is_empty() {
+                st.why = Some(self.plain_why(st));
+            }
+        }
         stages
+    }
+
+    /// A `why` written from what the stage holds, for a stage whose author wrote none: what it
+    /// takes, which of its steps are AI and which are programs, what it gives, whether it is kept.
+    pub fn plain_why(&self, st: &Stage) -> String {
+        fn join(words: &[String]) -> String {
+            match words {
+                [] => String::new(),
+                [a] => a.clone(),
+                [a, b] => format!("{a} and {b}"),
+                _ => format!("{}, and {}", words[..words.len() - 1].join(", "), words[words.len() - 1]),
+            }
+        }
+        let label = |spec: &Value, name: &str| spec.get("label").and_then(Value::as_str).unwrap_or(name).to_string();
+        let mut parts = Vec::new();
+        let inputs: Vec<String> = st.inputs.iter().filter_map(|n| self.inputs.get(n).map(|s| label(s, n))).collect();
+        if !inputs.is_empty() {
+            parts.push(format!("Takes {}.", join(&inputs)));
+        }
+        let steps: Vec<String> = st
+            .steps
+            .iter()
+            .filter_map(|id| self.steps.iter().find(|s| s.id() == id))
+            .map(|s| {
+                let what = match s.kind_name() {
+                    "model" | "agent" => "AI",
+                    "review" => "you approve",
+                    "map" => "once per item",
+                    _ => "a program",
+                };
+                format!("{} ({what})", s.name().unwrap_or(s.id()))
+            })
+            .collect();
+        if !steps.is_empty() {
+            parts.push(format!("Runs {}.", join(&steps)));
+        }
+        let outputs: Vec<String> = st.outputs.iter().filter_map(|n| self.outputs.get(n).map(|o| o.label.clone().unwrap_or_else(|| n.clone()))).collect();
+        if !outputs.is_empty() {
+            parts.push(format!("Gives you {}.", join(&outputs)));
+        }
+        if let Some(k) = &st.keep {
+            parts.push(match k.refresh {
+                Refresh::Always => "Remembered between runs; runs every time.".to_string(),
+                Refresh::WhenSourcesChange => "Remembered between runs; built again only when what it reads changes.".to_string(),
+                Refresh::Manual => "Remembered between runs until you rebuild it.".to_string(),
+            });
+        }
+        if parts.is_empty() {
+            "Nothing assigned to this stage yet.".to_string()
+        } else {
+            parts.join(" ")
+        }
     }
 
     /// Declared inputs a run can start without: optional ones (`required: false`, default or

@@ -3,11 +3,11 @@ id: learning-kit
 name: Learning Kit
 icon: learn
 version: 0.1.0
-description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, a narrated audio lesson, slides, flashcards, a concept map, and a process diagram, all generated from the spine.
+description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, a narrated audio lesson, slides, flashcards, a concept map, and a process diagram, all generated from the spine. The spine is kept between runs, so changing a voice or re-making the kit does not read the document again.
 author:
   name: Stillroom
 license: MIT
-tags: [built-in, learning]
+tags: [built-in, learning, keep]
 
 inputs:
   file:
@@ -190,7 +190,8 @@ stages:
     inputs: [file, focus, voice]
   - id: spine
     name: Build the Knowledge Spine
-    why: An AI step reads the document and lists its concepts, claims, and how they depend on each other (the spine); everything else is made from this, so a change here flows everywhere.
+    why: An AI step reads the document and lists its concepts, claims, and how they depend on each other (the spine); everything else is made from this, so a change here flows everywhere. The spine is remembered between runs (a run keep) and built again only when the document or the focus changes, so re-making the kit does not re-read the source.
+    keep: { refresh: when_sources_change }
     steps: [read, extract]
     outputs: [spine]
   - id: kit

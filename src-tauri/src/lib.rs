@@ -589,7 +589,8 @@ fn usage(state: State<'_, AppState>) -> CmdResult<Vec<ModelUsage>> {
 
 #[tauri::command]
 fn estimate(state: State<'_, AppState>, recipe_id: String) -> CmdResult<Option<RunEstimate>> {
-    state.store.lock().map_err(err)?.estimate_for_recipe(&recipe_id).map_err(err)
+    let stages = state.library.find(&recipe_id).map(|b| b.info().stages).unwrap_or_default();
+    state.store.lock().map_err(err)?.estimate_for_recipe(&recipe_id, &stages).map_err(err)
 }
 
 /// Write an artifact to a path the user chose in a save dialog.

@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn loads_inbox_triage_with_nested_prompts_and_schemas() {
-        let b = RecipeBundle::load(repo_recipes().join("inbox-triage"), RecipeSource::Builtin).unwrap();
+        let b = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::User).unwrap();
         assert_eq!(b.prompts.len(), 3, "{:?}", b.prompts.keys());
         let info = b.info();
         let triage = info.steps.iter().find(|s| s.id == "triage").unwrap();

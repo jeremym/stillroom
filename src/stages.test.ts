@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { outputsByStage, stageOfStep, stripFor } from "./stages";
+import { aboutMs, estimateWord, outputsByStage, stageOfStep, stripFor } from "./stages";
 import type { RecipeInfo, StepRecord } from "./types";
 
 const recipe: RecipeInfo = {
@@ -63,5 +63,18 @@ describe("stripFor", () => {
       { stage: recipe.stages[1], names: ["answer"] },
       { stage: null, names: ["extra"] },
     ]);
+  });
+});
+
+describe("estimate words", () => {
+  it("says durations the way people plan by them", () => {
+    expect(aboutMs(400)).toBe("under a second");
+    expect(aboutMs(42_000)).toBe("42 s");
+    expect(aboutMs(4 * 60_000 + 20_000)).toBe("4 min");
+    expect(aboutMs(70 * 60_000)).toBe("1 h 10 min");
+  });
+  it("says whether a stage runs once or every run", () => {
+    expect(estimateWord({ id: "a", basedOnRuns: 1, avgDurationMs: 240_000, avgTokens: 0, once: true })).toBe("about 4 min, once");
+    expect(estimateWord({ id: "a", basedOnRuns: 3, avgDurationMs: 20_000, avgTokens: 0, once: false })).toBe("about 20 s, every run");
   });
 });

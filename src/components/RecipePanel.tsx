@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, fmtMs, fmtTokens } from "../api";
+import { api, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
 import { defaultInputs } from "../recipes/defaults";
-import { keepWord } from "../stages";
+import { aboutMs, estimateWord, keepWord } from "../stages";
 import type { InputSpec, InstalledModel, KeepState, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
 import { Glyph } from "../brand";
 import { isLocalModel, whereWord } from "../models";
@@ -143,9 +143,15 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
 
       {recipe.stages.filter((st) => (st.inputs ?? []).some((n) => n in recipe.inputs) || st.keep).map((st, i) => (
         <section key={st.id} id={`stage-${st.id}`} className="stage-section">
-          {recipe.stages.length > 1 && (
-            <h3 className="stage-head"><span className="stage-n">{recipe.stages.indexOf(st) + 1}</span> {st.name}{st.why && <span className="muted"> · {st.why}</span>}</h3>
-          )}
+          {recipe.stages.length > 1 && (() => {
+            const est = estimate?.stages.find((e) => e.id === st.id);
+            return (
+              <h3 className="stage-head"><span className="stage-n">{recipe.stages.indexOf(st) + 1}</span> {st.name}
+                {est && <span className="tag">{estimateWord(est)}</span>}
+                {st.why && <span className="muted"> · {st.why}</span>}
+              </h3>
+            );
+          })()}
           {st.keep && (() => {
             const k = keeps?.[st.id];
             const w = k ? keepWord(k) : { status: "…", tone: "dim" as const };
@@ -154,7 +160,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
               <div className="row keep-line">
                 <span className={`tag ${w.tone === "amber" ? "amber" : ""}`}>{w.status}</span>
                 <span className="muted">
-                  This stage remembers between runs (a run keep, kept on this Mac in Stillroom's data folder; deleting the recipe deletes it).
+                  This stage remembers between runs (a run keep): what it builds is kept on this Mac in Stillroom's data folder, and deleting the recipe deletes it.
                   {last && ` Last run: +${last.added} added, ${last.replaced} replaced, ${last.removed} removed (${last.reason}).`}
                 </span>
                 {onRebuild && k && k.fresh != null && (confirmRebuild === st.id
@@ -213,12 +219,23 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       })}
 
       <p className="muted">Permissions: {describePermissions(recipe.permissions, recipe.inputs)}. Nothing else is touched.</p>
-      <p className="muted">
-        Steps: {recipe.steps.map(stepLabel).join(" → ")}
-        {estimate
-          ? ` · last ${estimate.basedOnRuns} run${estimate.basedOnRuns === 1 ? "" : "s"} averaged ${fmtTokens(estimate.avgPromptTokens + estimate.avgCompletionTokens)} tokens, ${fmtMs(estimate.avgDurationMs)}`
-          : " · no previous runs to estimate from"}
-      </p>
+      <p className="muted">Steps: {recipe.steps.map(stepLabel).join(" → ")}</p>
+      {estimate ? (
+        <div className="muted estimate">
+          <span>Expect about {aboutMs(estimate.avgDurationMs)} and {fmtTokens(estimate.avgPromptTokens + estimate.avgCompletionTokens)} tokens, from the last {estimate.basedOnRuns} run{estimate.basedOnRuns === 1 ? "" : "s"}.</span>
+          {estimate.stages.length > 0 && (
+            <span className="estimate-stages">
+              {estimate.stages.map((e) => {
+                const i = recipe.stages.findIndex((st) => st.id === e.id);
+                const st = recipe.stages[i];
+                return <span key={e.id} className="fact"><span className="stage-n">{i + 1}</span> {st?.name ?? e.id} <span className="muted">· {estimateWord(e)}</span></span>;
+              })}
+            </span>
+          )}
+        </div>
+      ) : (
+        <p className="muted">No previous runs to estimate from. After the first run, Set up says what each stage took and which stages will not need to run again.</p>
+      )}
 
       <label className="row" style={{ margin: "6px 0" }}>
         <input type="checkbox" checked={reuse} onChange={(e) => setReuse(e.target.checked)} />

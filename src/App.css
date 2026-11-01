@@ -249,6 +249,11 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .stage-n { font-family: var(--display); font-size: var(--size-display); letter-spacing: 0.06em; color: var(--phos-faint); }
 .stage-list { display: flex; flex-direction: column; gap: 8px; }
 .stage-row { display: flex; gap: 10px; align-items: flex-start; }
+.stage-lead { margin: 0 0 6px; }
+.stage-lead .stage-n { margin-right: 4px; }
+.stage-head .tag { margin-left: 8px; align-self: center; }
+.estimate { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; }
+.estimate-stages { display: flex; flex-wrap: wrap; gap: 4px 10px; }
 .stage-row .strip { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 6px; }
 .tabs .tab-group { font-family: var(--display); font-size: calc(var(--size-display) * 0.7); letter-spacing: 0.12em; text-transform: uppercase; color: var(--phos-faint); align-self: center; margin: 0 6px 0 10px; }
 .tty .head { color: var(--phos-dim); font-family: var(--display); letter-spacing: 0.1em; margin-top: 6px; }

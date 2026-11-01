@@ -501,7 +501,7 @@ export function StagesEditor({ doc, onChange, onClose }: { doc: RecipeDoc; onCha
             </span>
           </div>
           <label>Name<input type="text" value={st.name} onChange={(e) => patch(i, { name: e.target.value })} /></label>
-          <label>Why <span className="muted">(one plain sentence)</span><textarea rows={2} value={st.why ?? ""} onChange={(e) => patch(i, { why: e.target.value || undefined })} /></label>
+          <label>Why <span className="muted">(one plain sentence; leave it empty and the app writes one from what the stage holds)</span><textarea rows={2} value={st.why ?? ""} onChange={(e) => patch(i, { why: e.target.value || undefined })} /></label>
           {inputs.length > 0 && <><span className="muted">Asks for</span>{group(i, "inputs", inputs, (n) => doc.inputs?.[n]?.label ?? n)}</>}
           <span className="muted">Runs</span>{group(i, "steps", stepIds, stepName)}
           {outputs.length > 0 && <><span className="muted">Delivers</span>{group(i, "outputs", outputs, (n) => doc.outputs[n]?.label ?? n)}</>}

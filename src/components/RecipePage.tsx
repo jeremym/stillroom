@@ -52,22 +52,6 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
         aside={<><span className="tag">{yours ? "yours" : "built-in"}</span><span className="tag">v{recipe.version ?? "0"}</span><span className="tag">{recipe.steps.length} steps</span></>}>
         {recipe.description && <p>{recipe.description}</p>}
         <div className="facts">
-          <span className="label">Needs</span>
-          <span>
-            {required.length === 0 ? <span className="muted">nothing</span> : required.map(([k, i]) => <span key={k} className="fact"><Glyph name={inputGlyph(i.type)} /> {i.label ?? k}</span>)}
-            {optional.length > 0 && <span className="muted">· optional: {optional.map(([k, i]) => i.label ?? k).join(", ")}</span>}
-          </span>
-          <span className="label">Gives you</span>
-          <span>{Object.entries(recipe.outputs).map(([k, o]) => <span key={k} className="fact"><Glyph name={outputGlyph(o.type)} /> {o.label ?? k}</span>)}</span>
-          <span className="label">Thinks with</span>
-          <span>
-            {Object.keys(recipe.modelSlots).length === 0 ? <span className="muted">no model: programs only</span> :
-              Object.entries(recipe.modelSlots).map(([k, s]) => (
-                <span key={k} className="fact"><Glyph name="ai" /> {k} <span className="muted">· needs {s.requires.join(", ")}</span>{unfillable.some(([u]) => u === k) && <span className="tag amber">no model installed</span>}</span>
-              ))}
-          </span>
-          <span className="label">May touch</span>
-          <span className="muted">{describePermissions(recipe.permissions, recipe.inputs)}. Nothing else.</span>
           <span className="label">Stages</span>
           <span className="stage-list">
             {recipe.stages.map((st, i) => (
@@ -80,7 +64,7 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
                     return (
                       <span className="keep-line">
                         {w && <span className={`tag ${w.tone === "amber" ? "amber" : ""}`}>{w.status}</span>}
-                        <span className="muted"> remembers between runs</span>
+                        <span className="muted"> remembers between runs (a run keep)</span>
                         {k && k.fresh != null && (
                           <button className="link" onClick={() => setJournalFor(journalFor === st.id ? null : st.id)}>{journalFor === st.id ? "hide history" : "history"}</button>
                         )}
@@ -107,6 +91,22 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
               </span>
             ))}
           </span>
+          <span className="label">Needs</span>
+          <span>
+            {required.length === 0 ? <span className="muted">nothing</span> : required.map(([k, i]) => <span key={k} className="fact"><Glyph name={inputGlyph(i.type)} /> {i.label ?? k}</span>)}
+            {optional.length > 0 && <span className="muted">· optional: {optional.map(([k, i]) => i.label ?? k).join(", ")}</span>}
+          </span>
+          <span className="label">Gives you</span>
+          <span>{Object.entries(recipe.outputs).map(([k, o]) => <span key={k} className="fact"><Glyph name={outputGlyph(o.type)} /> {o.label ?? k}</span>)}</span>
+          <span className="label">Thinks with</span>
+          <span>
+            {Object.keys(recipe.modelSlots).length === 0 ? <span className="muted">no model: programs only</span> :
+              Object.entries(recipe.modelSlots).map(([k, s]) => (
+                <span key={k} className="fact"><Glyph name="ai" /> {k} <span className="muted">· needs {s.requires.join(", ")}</span>{unfillable.some(([u]) => u === k) && <span className="tag amber">no model installed</span>}</span>
+              ))}
+          </span>
+          <span className="label">May touch</span>
+          <span className="muted">{describePermissions(recipe.permissions, recipe.inputs)}. Nothing else.</span>
         </div>
         <div className="row" style={{ marginTop: 18 }}>
           <button className="primary" style={{ marginTop: 0 }} onClick={onSetup}><Glyph name="power" /> Set up a run</button>

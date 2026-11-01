@@ -284,6 +284,18 @@ export interface RunEstimate {
   avgPromptTokens: number;
   avgCompletionTokens: number;
   avgDurationMs: number;
+  /** One line per stage that has run before: what it took when it did. */
+  stages: StageEstimate[];
+}
+
+/** What one stage took, averaged over the runs in which it really ran; `once` means it is kept
+    and will not run again until its sources change or it is rebuilt. */
+export interface StageEstimate {
+  id: string;
+  basedOnRuns: number;
+  avgDurationMs: number;
+  avgTokens: number;
+  once: boolean;
 }
 
 /** A tool the runtime has, as shown to a recipe author. */

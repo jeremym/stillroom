@@ -125,6 +125,8 @@ source: { stage: index_folder, version: 1, digest: "sha256:…" }   # digest of 
 
 ### 4.1 The shelf
 
+**Status 2026-11-02: shipped on `stages`** (merge d1ff315). Live: the existing database climbed to store version 2 and seeded the shelf with the example plus the three built-ins that had runs; Archive moved Learning Kit into a folded Archive zone and Restore brought it back; the Catalog zone (folded, phase 3 makes it a place) added Research Brief to the shelf; the card menu shows Delete and Reveal only for your own recipes (`docs/screenshots/phase2-*.png`). 101 Rust tests, 184 frontend. The watch-mid-run fix shipped with it: `run:started`, `runId` on every run event, a watch says started only once it holds the run gate.
+
 What the Library's Recipes zone shows. A shelf entry is either a recipe in the user's folder (`yours`) or a catalog id the user put on the shelf (`built-in` or `community`, by reference, never copied). The list of shelved catalog ids and the archived ids live in the store (`shelf` table: `recipe_id, kind, shelved_at, archived_at`), not in the recipe, so a shared recipe never carries anyone's shelf.
 
 - **Fresh install:** one entry, the example recipe *Describe a document* (`recipes/describe-document`: read a file, write two or three sentences about what it is and what is in it; icon `notes`; description under 140 characters so the card stays short). Welcome's last screen opens its Set up, as today.

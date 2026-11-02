@@ -31,7 +31,7 @@ Input types: `text` (a paragraph or more), `string` (one line), `number`, `boole
 
 Model slot capabilities: `text`, `structured_output` (answers as JSON), `tool_calling` (only for `agent` steps), `thinking`, `vision`, `embedding`. Preference: `accuracy` or `speed`. Declare one slot per distinct job (for example `reader` and `writer`), not one per step. You never name a model or provider; the user's app chooses the model for each slot.
 
-Permissions: `filesystem.read: ["input"]` lets steps read the files the user chose; `filesystem.write: ["output"]` lets steps write into the run's output folder; `network: ["input"]` lets steps reach the hosts in the user's links, or list hostnames explicitly. Ask for nothing the steps do not use.
+Permissions: `filesystem.read: ["input"]` lets steps read the files the user chose; `filesystem.write: ["output"]` lets steps write into the run's output folder; `filesystem.write: ["${inputs.vault}"]` lets steps write under a folder the user chose as a `directory` input; `network: ["input"]` lets steps reach the hosts in the user's links, or list hostnames explicitly. Ask for nothing the steps do not use, and never a literal path.
 
 Output types: `markdown`, `text`, `json`, `table`, `html`, `slides`, `diagram`, `audio`, `file`, `files`. Use `markdown` for anything a person will read, `table` for rows from `list.table`, `json` for raw data. Every output's `from` must point at a step output that exists.
 
@@ -83,6 +83,8 @@ Each model or agent step names a prompt file. Write the whole prompt: who the mo
 6. Outputs must be the things the user actually wants to read or keep. Name and describe them in plain words.
 7. Every reference must point at an input, a step, or (inside a loop) the loop item that exists. Every prompt file a step names must be in `files`.
 8. Write for a person who is not a programmer: step names, labels, and descriptions in friendly words; technical terms, when unavoidable, in parentheses.
+9. A place the user names to write into (a notes vault, a project folder) is a `directory` input; steps write there with `fs.write` under `${inputs.<that input>}`, and the recipe declares `filesystem.write: ["${inputs.<that input>}"]`. To add to an existing file (a table of contents), `file.read` it, have a model step write the new text, and `fs.write` the result.
+10. Decide in one pass: pick the simplest recipe that does what the goal says and answer. Do not weigh alternatives in the answer; the checker's notes guide any fix.
 
 ## Your answer
 

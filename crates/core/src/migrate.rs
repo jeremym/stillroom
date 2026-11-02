@@ -124,7 +124,9 @@ pub fn migrate(mut yaml: Value) -> Result<Migrated, MigrateError> {
 /// Features of the recipe format and the Stillroom version that first ran them. `Draft::write`
 /// stamps `runtime.minVersion` from this table, so a shared recipe carries its floor without
 /// its author knowing; the loader compares the floor to what this build understands.
-pub const FORMAT_FEATURES: &[(&str, &str)] = &[("stages", "0.3.0"), ("keep", "0.3.0"), ("stage source", "0.4.0")];
+// Every feature here shipped in 0.3.0 (stages, keeps, and the provenance a ready-made stage carries),
+// so a recipe saved today asks for 0.3.0, a version that exists. The next format change adds its own row.
+pub const FORMAT_FEATURES: &[(&str, &str)] = &[("stages", "0.3.0"), ("keep", "0.3.0"), ("stage source", "0.3.0")];
 
 /// The version floor the recipe's features ask for, and which feature set it, if any.
 pub fn required_version(yaml: &Value) -> Option<(&'static str, &'static str)> {
@@ -643,11 +645,11 @@ mod tests {
         staged["stages"][0]["keep"] = json!({ "refresh": "always" });
         assert_eq!(required_version(&staged).map(|x| x.1), Some("0.3.0"));
         staged["stages"][0]["source"] = json!({ "stage": "a", "version": 1, "digest": "sha256:0" });
-        assert_eq!(required_version(&staged), Some(("stage source", "0.4.0")));
-        assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("0.4.0"));
+        assert_eq!(required_version(&staged).map(|x| x.1), Some("0.3.0"), "provenance needs nothing newer than stages themselves");
+        assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("0.3.0"));
         staged["runtime"]["minVersion"] = json!("9.0");
         assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("9.0"), "an author's higher floor stays");
-        assert_eq!(supported_version("0.2.0"), "0.4.0", "this build reads every feature in the table");
+        assert_eq!(supported_version("0.2.0"), "0.3.0", "this build reads every feature in the table");
         assert_eq!(supported_version("1.2.0"), "1.2.0");
     }
 

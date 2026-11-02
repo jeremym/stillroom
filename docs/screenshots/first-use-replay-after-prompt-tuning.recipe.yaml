@@ -1,0 +1,266 @@
+schemaVersion: '0'
+id: planned
+name: Planned recipe
+icon: notes
+version: 0.1.0
+description: Turns links, files, or both into a learning-kit brief, then saves it into an Obsidian vault subfolder and updates the table of contents.
+inputs:
+  focus:
+    type: text
+    label: What do you need to know?
+    description: A question or a sentence about what matters.
+  urls:
+    type: urls
+    label: Pages to read
+    description: One link per line. The recipe reaches these sites and no others.
+  folder:
+    type: directory
+    label: Your documents
+    description: A folder of .pdf, .docx, .md, or .txt files. Subfolders are read too.
+  vault_dir:
+    type: directory
+    label: Vault folder
+    description: The Obsidian subfolder where learning kits are saved.
+    required: true
+    default: ~/Documents/obsidian-vaults/jeremym-vault/LearningKit-Stillroom
+  toc_file:
+    type: string
+    label: Table-of-contents file
+    description: The file in the vault folder that lists all kits.
+    required: true
+    default: index.md
+  kit_name:
+    type: string
+    label: Kit name
+    description: File name for this kit without the .md extension (e.g. 'tech-design-interview').
+    required: true
+modelSlots:
+  reader:
+    requires:
+    - text
+    - structured_output
+    preference: accuracy
+    description: Reads each page and pulls out what it says about the focus.
+  writer:
+    requires:
+    - text
+    preference: accuracy
+    description: Writes the brief from the findings.
+  toc_editor:
+    requires:
+    - text
+    preference: speed
+    description: Updates the table-of-contents file with a new entry.
+steps:
+- id: links_pages
+  kind: map
+  name: Read each page
+  over: ${inputs.urls}
+  as: url
+  concurrency: 3
+  steps:
+  - id: fetch
+    kind: tool
+    name: Fetch the page
+    tool: http.fetch
+    inputs:
+      url: ${url}
+      maxChars: 14000
+  - id: findings
+    kind: model
+    name: Pull out what it says
+    slot: reader
+    prompt: prompts/read_links_findings.md
+    inputs:
+      focus: ${inputs.focus}
+      source: ${url}
+      text: ${steps.fetch.output.text}
+    outputSchema: schemas/read_links_findings.json
+    params:
+      think: false
+      temperature: 0.1
+      contextLength: 16384
+- id: read_list
+  kind: tool
+  name: List the files
+  tool: fs.list
+  inputs:
+    path: ${inputs.folder}
+    extensions:
+    - pdf
+    - docx
+    - md
+    - markdown
+    - txt
+    recursive: true
+- id: read_files
+  kind: map
+  name: Read each file
+  over: ${steps.read_list.output.entries}
+  as: file
+  concurrency: 2
+  steps:
+  - id: text
+    kind: tool
+    name: Read the file
+    tool: doc.text
+    inputs:
+      path: ${file.path}
+  - id: findings
+    kind: model
+    name: Pull out what it says
+    slot: reader
+    prompt: prompts/read_folder_findings.md
+    inputs:
+      focus: ${inputs.focus}
+      source: ${file.path}
+      text: ${steps.text.output.text}
+    outputSchema: schemas/read_folder_findings.json
+    params:
+      think: false
+      temperature: 0.1
+      contextLength: 32768
+- id: brief_write
+  kind: model
+  name: Write the brief
+  slot: writer
+  prompt: prompts/write_brief.md
+  inputs:
+    focus: ${inputs.focus}
+    files: ${steps.read_files.output}
+    pages: ${steps.links_pages.output}
+  params:
+    think: false
+    temperature: 0.3
+    contextLength: 32768
+- id: read_toc
+  kind: tool
+  tool: file.read
+  prompt: Read the table of contents
+  steps:
+  - id: read_toc
+    kind: tool
+    name: Read the table of contents
+    tool: file.read
+    inputs:
+      path: ${inputs.vault_dir}/${inputs.toc_file}
+- id: update_toc
+  kind: model
+  slot: toc_editor
+  prompt: prompts/update_toc.md
+  params:
+    temperature: 0.2
+  steps:
+  - id: update_toc
+    kind: model
+    name: Update the table of contents
+    slot: toc_editor
+    prompt: prompts/update_toc.md
+    inputs:
+      existing_toc: ${steps.read_toc.output.text}
+      brief: ${steps.brief_write.output}
+      kit_name: ${inputs.kit_name}
+    params:
+      temperature: 0.2
+- id: save_brief
+  kind: tool
+  tool: fs.write
+  prompt: Save the kit file
+  steps:
+  - id: save_brief
+    kind: tool
+    name: Save the kit file
+    tool: fs.write
+    inputs:
+      dir: ${inputs.vault_dir}
+      name: ${inputs.kit_name}.md
+      text: ${steps.brief_write.output}
+      overwrite: true
+- id: save_toc
+  kind: tool
+  tool: fs.write
+  prompt: Save the updated table of contents
+  steps:
+  - id: save_toc
+    kind: tool
+    name: Save the updated table of contents
+    tool: fs.write
+    inputs:
+      dir: ${inputs.vault_dir}
+      name: ${inputs.toc_file}
+      text: ${steps.update_toc.output}
+      overwrite: true
+outputs:
+  brief:
+    from: ${steps.brief_write.output}
+    type: markdown
+    label: Brief
+    description: What the documents and pages say about your focus, cited by file and page.
+  updated_toc:
+    from: ${steps.update_toc.output}
+    type: markdown
+    label: Updated table of contents
+    description: The table-of-contents file after the new kit entry has been added.
+stages:
+- id: read_links
+  name: Gather from links
+  why: Fetch each URL you give and pull out what each page says about your focus (the interview topic), keeping exact quotes so nothing is lost (web scraping).
+  inputs:
+  - focus
+  - urls
+  steps:
+  - links_pages
+  source:
+    stage: read_links
+    version: 1
+    digest: sha256:b47b91d2a479ed31e50a983d75c342f9134249a3d6ad40329f32d3b2eaea1540
+- id: read_folder
+  name: Read local files
+  why: Read every file in a folder you point to — an Obsidian workspace, a set of notes, whatever — and pull out what each says about your focus, with quotes and page numbers; unchanged files are skipped on later runs (incremental file reading).
+  inputs:
+  - folder
+  steps:
+  - read_list
+  - read_files
+  keep:
+    refresh: when_sources_change
+  source:
+    stage: read_folder
+    version: 1
+    digest: sha256:c2abf1099c2c8fbffceef5fb1ba8ee2f31961fee3edff70f7af65665029c34f2
+- id: write_brief
+  name: Build the kit
+  why: Turn everything gathered so far into one learning-kit brief with sections for pro tips, step-by-step walkthroughs, and phrases to say, citing every point by file, page, or link so you can trace it back.
+  steps:
+  - brief_write
+  outputs:
+  - brief
+  source:
+    stage: write_brief
+    version: 1
+    digest: sha256:715b858338de39ef7a0e579892584034ed152c5f6f3a8bd7f92526d1650f9795
+- id: save_to_vault
+  name: Save to vault
+  why: The finished brief is written as a Markdown file into your Obsidian subfolder, and the table-of-contents file in that folder is updated so the new kit appears in the right place.
+  inputs:
+  - vault_dir
+  - toc_file
+  - kit_name
+  steps:
+  - read_toc
+  - update_toc
+  - save_brief
+  - save_toc
+  outputs:
+  - updated_toc
+permissions:
+  network:
+  - input
+  filesystem:
+    read:
+    - input
+    - ${inputs.vault_dir}
+    write:
+    - ${inputs.vault_dir}
+runtime:
+  minVersion: 0.4.0

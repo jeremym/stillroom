@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Glyph, RECIPE_GLYPHS, type GlyphName } from "../brand";
 import { Zone } from "@overtone-foundry/app-kit";
 import { api } from "../api";
@@ -37,11 +37,13 @@ interface Props {
   onCreate: (req: NewRecipeRequest) => void;
   onCancel: () => void;
   onStop?: () => void;
+  /** Rendered directly under the Draft it / Create row: a progress window while the planner works. */
+  below?: ReactNode;
 }
 
 const VIA_WORD: Record<string, string> = { pinned: "your pick", default: "your default", recommended: "recommended", capability: "Auto" };
 
-export function NewRecipe({ recipes, reserved = [], busy, error, progress, problems, onCreate, onCancel, onStop }: Props) {
+export function NewRecipe({ recipes, reserved = [], busy, error, progress, problems, onCreate, onCancel, onStop, below }: Props) {
   const [mode, setMode] = useState<NewRecipeMode>("goal");
   const [sourceId, setSourceId] = useState(recipes[0]?.id ?? "");
   const [name, setName] = useState("");
@@ -164,6 +166,7 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
         </button>
         {busy && mode === "goal" && onStop ? <button className="stop" onClick={onStop}><Glyph name="stop" /> Stop</button> : <button disabled={busy} onClick={onCancel}>Cancel</button>}
       </div>
+      {below}
     </Zone>
   );
 }

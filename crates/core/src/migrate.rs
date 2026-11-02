@@ -175,6 +175,10 @@ pub fn stamp_min_version(yaml: &mut Value) -> Option<String> {
 // ---------------------------------------------------------------------------------------------
 // The deprecation registry
 
+/// Where a deprecation applies in a recipe (the stage id, say; None for the whole recipe) and
+/// what the Note about it says.
+pub type Detection = (Option<String>, String);
+
 /// One way a recipe can be out of date, and how to bring it up to date. `detect` names each
 /// place in a current recipe where it applies (the stage id, say) with the Note's text;
 /// `rewrite` repairs one such place, or every place when no target is given, and says whether
@@ -190,7 +194,7 @@ pub struct Deprecation {
     pub replaced_by: &'static str,
     /// What the Fix button says.
     pub fix_label: &'static str,
-    pub detect: fn(&Value) -> Vec<(Option<String>, String)>,
+    pub detect: fn(&Value) -> Vec<Detection>,
     pub rewrite: fn(&mut Value, Option<&str>) -> bool,
 }
 
@@ -267,7 +271,7 @@ fn keep_writers(step: &Value) -> Vec<String> {
 }
 
 /// Stages whose steps write a keep without declaring one: (stage id, what the Note says).
-fn detect_undeclared_keeps(yaml: &Value) -> Vec<(Option<String>, String)> {
+fn detect_undeclared_keeps(yaml: &Value) -> Vec<Detection> {
     let steps = yaml.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
     let Some(stages) = yaml.get("stages").and_then(Value::as_array) else { return Vec::new() };
     let mut out = Vec::new();

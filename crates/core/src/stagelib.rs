@@ -323,10 +323,10 @@ pub fn merge_slot(into: &mut Value, from: &Value) {
         }
     }
     for k in ["preference", "recommended", "description"] {
-        if !a.contains_key(k) {
-            if let Some(v) = b.get(k) {
-                a.insert(k.into(), v.clone());
-            }
+        if !a.contains_key(k)
+            && let Some(v) = b.get(k)
+        {
+            a.insert(k.into(), v.clone());
         }
     }
 }

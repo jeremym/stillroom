@@ -1,4 +1,4 @@
-//! SQLite persistence for runs and folder watches. One file, no server.
+//! SQLite persistence for runs, folder watches, and the shelf. One file, no server.
 //!
 //! Runs are stored as a JSON document plus a few indexed columns for listing.
 //! Proper per-step and per-artifact tables arrive with Flow Studio.
@@ -8,6 +8,7 @@ use crate::recipe::{Refresh, Stage};
 use crate::trace::{Run, RunStatus, RunSummary};
 use crate::watch::Watch;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
@@ -24,7 +25,41 @@ pub struct Store {
 
 /// The store's on-disk layout version, kept in SQLite's `PRAGMA user_version`. Each step of the
 /// ladder in `init` brings a file up one version: one `CREATE`, `ALTER`, or backfill per step.
-pub const STORE_SCHEMA_VERSION: i64 = 1;
+pub const STORE_SCHEMA_VERSION: i64 = 2;
+
+/// The one recipe a fresh shelf starts with (the example, *Describe a document*).
+pub const EXAMPLE_RECIPE_ID: &str = "describe-document";
+
+/// Where a recipe sits for the Library. The shelf is what the Recipes zone shows; the archive is
+/// what was taken off the shelf without being deleted (folded under Archive, with Restore); the
+/// catalog is a built-in that is neither. A recipe of the user's own is never in the catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShelfState {
+    Shelf,
+    Archive,
+    #[default]
+    Catalog,
+}
+
+impl ShelfState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShelfState::Shelf => "shelf",
+            ShelfState::Archive => "archive",
+            ShelfState::Catalog => "catalog",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "shelf" => Some(ShelfState::Shelf),
+            "archive" => Some(ShelfState::Archive),
+            "catalog" => Some(ShelfState::Catalog),
+            _ => None,
+        }
+    }
+}
 
 /// A store behind a mutex can serve as the executor's step cache (`Arc<Mutex<Store>>`
 /// coerces to `Arc<dyn StepCache>`).
@@ -97,6 +132,12 @@ impl Store {
                 // so a file written before the ladder existed (user_version 0, tables present)
                 // climbs to 1 without change.
                 0 => self.create_v1()?,
+                // Version 2: the shelf. Seeded so an existing user keeps in front what they have
+                // used, and a fresh install sees one recipe.
+                1 => {
+                    self.create_v2()?;
+                    self.seed_shelf()?;
+                }
                 _ => break,
             }
             v += 1;
@@ -144,6 +185,75 @@ impl Store {
             "#,
         )?;
         Ok(())
+    }
+
+    fn create_v2(&self) -> Result<(), StoreError> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS shelf (
+                recipe_id  TEXT PRIMARY KEY,
+                state      TEXT NOT NULL,
+                changed_at TEXT NOT NULL
+            );
+            "#,
+        )?;
+        Ok(())
+    }
+
+    /// Put the example recipe on the shelf, plus every recipe that has at least one run on
+    /// record: whoever has run a built-in keeps it in front of them, while a fresh database has
+    /// no runs and ends up with the example alone. The store does not know which ids are
+    /// built-in; a row for one of the user's own recipes says what its default already says.
+    fn seed_shelf(&self) -> Result<(), StoreError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut ids = vec![EXAMPLE_RECIPE_ID.to_string()];
+        let mut stmt = self.conn.prepare("SELECT DISTINCT recipe_id FROM runs")?;
+        for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            ids.push(row?);
+        }
+        for id in ids {
+            self.conn.execute(
+                "INSERT INTO shelf (recipe_id, state, changed_at) VALUES (?1, 'shelf', ?2) ON CONFLICT(recipe_id) DO NOTHING",
+                params![id, now],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Where the shelf table says a recipe sits; `None` when it has never been placed, which
+    /// means the default for its source (shelf for the user's own, catalog for a built-in).
+    pub fn shelf_state(&self, recipe_id: &str) -> Result<Option<ShelfState>, StoreError> {
+        let s: Option<String> =
+            self.conn.query_row("SELECT state FROM shelf WHERE recipe_id = ?1", params![recipe_id], |r| r.get(0)).optional()?;
+        Ok(s.as_deref().and_then(ShelfState::parse))
+    }
+
+    pub fn set_shelf(&self, recipe_id: &str, state: ShelfState) -> Result<(), StoreError> {
+        self.conn.execute(
+            r#"INSERT INTO shelf (recipe_id, state, changed_at) VALUES (?1, ?2, ?3)
+               ON CONFLICT(recipe_id) DO UPDATE SET state = excluded.state, changed_at = excluded.changed_at"#,
+            params![recipe_id, state.as_str(), chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Forget a recipe's place (on delete). Returns whether there was a row.
+    pub fn remove_shelf(&self, recipe_id: &str) -> Result<bool, StoreError> {
+        Ok(self.conn.execute("DELETE FROM shelf WHERE recipe_id = ?1", params![recipe_id])? > 0)
+    }
+
+    /// Every placed recipe and where it sits, by recipe id.
+    pub fn shelf_all(&self) -> Result<BTreeMap<String, ShelfState>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT recipe_id, state FROM shelf")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = BTreeMap::new();
+        for row in rows {
+            let (id, state) = row?;
+            if let Some(state) = ShelfState::parse(&state) {
+                out.insert(id, state);
+            }
+        }
+        Ok(out)
     }
 
     pub fn save_run(&self, run: &Run) -> Result<(), StoreError> {
@@ -411,6 +521,87 @@ mod tests {
         drop(store);
         assert_eq!(Store::open(&path).unwrap().schema_version().unwrap(), STORE_SCHEMA_VERSION, "opening again is a no-op");
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn bare_run(id: &str, recipe_id: &str) -> Run {
+        Run {
+            id: id.into(),
+            recipe_id: recipe_id.into(),
+            recipe_name: recipe_id.to_uppercase(),
+            recipe_version: None,
+            status: RunStatus::Succeeded,
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            inputs: IndexMap::new(),
+            resolutions: serde_json::Value::Null,
+            steps: vec![],
+            outputs: IndexMap::new(),
+            error: None,
+            edits: Default::default(),
+            trigger: None,
+            continues: None,
+        }
+    }
+
+    #[test]
+    fn a_fresh_database_has_the_example_alone_on_the_shelf() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.schema_version().unwrap(), STORE_SCHEMA_VERSION);
+        let all = store.shelf_all().unwrap();
+        assert_eq!(all, BTreeMap::from([(EXAMPLE_RECIPE_ID.to_string(), ShelfState::Shelf)]));
+        assert_eq!(store.shelf_state("learning-kit").unwrap(), None, "never placed: the caller's default applies");
+    }
+
+    #[test]
+    fn climbing_from_version_one_shelves_what_has_been_run() {
+        let path = std::env::temp_dir().join(format!("stillroom-store-shelf-{}.db", uuid::Uuid::now_v7()));
+        {
+            // A version-1 store (phase 1) with runs of two recipes, one of them twice.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 1;").unwrap();
+            let v1 = Store { conn };
+            v1.create_v1().unwrap();
+            v1.save_run(&bare_run("r1", "learning-kit")).unwrap();
+            v1.save_run(&bare_run("r2", "learning-kit")).unwrap();
+            v1.save_run(&bare_run("r3", "my-own")).unwrap();
+            assert_eq!(v1.schema_version().unwrap(), 1);
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), STORE_SCHEMA_VERSION);
+        let all = store.shelf_all().unwrap();
+        assert_eq!(
+            all,
+            BTreeMap::from([
+                (EXAMPLE_RECIPE_ID.to_string(), ShelfState::Shelf),
+                ("learning-kit".to_string(), ShelfState::Shelf),
+                ("my-own".to_string(), ShelfState::Shelf),
+            ])
+        );
+        assert_eq!(store.list_runs(10).unwrap().len(), 3, "the runs are still there");
+        drop(store);
+        // Opening again is a no-op: the seed does not run twice and does not undo a change.
+        let store = Store::open(&path).unwrap();
+        store.set_shelf("learning-kit", ShelfState::Archive).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.shelf_state("learning-kit").unwrap(), Some(ShelfState::Archive));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn shelf_rows_are_set_replaced_and_removed() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_shelf("research-brief", ShelfState::Shelf).unwrap();
+        assert_eq!(store.shelf_state("research-brief").unwrap(), Some(ShelfState::Shelf));
+        store.set_shelf("research-brief", ShelfState::Archive).unwrap();
+        assert_eq!(store.shelf_state("research-brief").unwrap(), Some(ShelfState::Archive));
+        store.set_shelf("research-brief", ShelfState::Catalog).unwrap();
+        assert_eq!(store.shelf_state("research-brief").unwrap(), Some(ShelfState::Catalog));
+        assert!(store.remove_shelf("research-brief").unwrap());
+        assert!(!store.remove_shelf("research-brief").unwrap());
+        assert_eq!(store.shelf_state("research-brief").unwrap(), None);
+        assert_eq!(serde_json::to_value(ShelfState::Archive).unwrap(), serde_json::json!("archive"));
+        assert_eq!(serde_json::from_value::<ShelfState>(serde_json::json!("catalog")).unwrap(), ShelfState::Catalog);
     }
 
     #[test]

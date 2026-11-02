@@ -3,11 +3,12 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
 import { WatchPanel } from "../components/WatchPanel";
 import { Glyph, Logo, type GlyphName } from "../brand";
-import { Toggle, Zone, applyLook, loadLook, type Look } from "@overtone-foundry/app-kit";
+import { Tag, Toggle, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type Look } from "@overtone-foundry/app-kit";
 import { rememberProviders, whereWord } from "../models";
+import { measuredTag } from "../planWith";
 import { PullModel } from "../components/PullModel";
 import { PromptEditor } from "../components/PromptEditor";
-import type { CodexStatus, ModelsResponse, PermissionEntry, RecipesResponse, RuntimeStatus, Settings, TryResult, WatchView } from "../types";
+import type { CodexStatus, InstalledModel, ModelsResponse, PermissionEntry, PlanMeasurement, RecipesResponse, RuntimeStatus, Settings, TryPlanningResult, TryResult, WatchView } from "../types";
 
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
@@ -83,6 +84,19 @@ export default function SettingsApp() {
       setTries((t) => ({ ...t, [id]: { busy: false, result: { ok: false, durationMs: 0, answer: null, error: String(e), promptTokens: null, completionTokens: null } } }));
     }
   }, []);
+  // Try planning: the planner's first call on a sample goal, timed and checked. The engine records the
+  // result under planner.measured and says settings:changed, which is how the row's tag updates.
+  const [planTries, setPlanTries] = useState<Record<string, PlanTry>>({});
+  const tryPlanning = useCallback(async (id: string) => {
+    setPlanTries((t) => ({ ...t, [id]: { since: new Date().toISOString() } }));
+    try {
+      const result = await api.tryPlanning(id);
+      setPlanTries((t) => ({ ...t, [id]: { result } }));
+    } catch (e) {
+      setPlanTries((t) => ({ ...t, [id]: { error: String(e) } }));
+    }
+  }, []);
+  const planCell = (m: InstalledModel) => <TryPlanningCell model={m} state={planTries[m.id]} measured={settings.planner?.measured?.[m.id]} onTry={tryPlanning} />;
   const [keyDraft, setKeyDraft] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   const refreshKey = useCallback(() => { api.hasSecret("ollama.apiKey").then(setKeySet).catch(() => setKeySet(null)); }, []);
@@ -231,20 +245,24 @@ export default function SettingsApp() {
               </div>
               <p className="muted">Sent as <span className="mono">Authorization: Bearer …</span> on every call to the address above. A local Ollama needs none.</p>
               {installed.length > 0 ? (
-                <table>
-                  <thead><tr><th>Model</th><th>Size</th><th>Context</th><th>Can</th><th></th></tr></thead>
-                  <tbody>
-                    {installed.map((m) => (
-                      <tr key={m.id}>
-                        <td className="mono">{m.name}</td>
-                        <td>{m.parameterSize ?? ""}</td>
-                        <td>{m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : ""}</td>
-                        <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>
-                        <td><TryCell id={m.id} state={tries[m.id]} onTry={tryModel} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <>
+                  <p className="muted planner-note">Not every model plans well; the planner (what drafts a recipe from a goal) uses the fastest clean one unless you pin another. <strong>Try planning</strong> measures a model on a sample goal.</p>
+                  <table>
+                    <thead><tr><th>Model</th><th>Size</th><th>Context</th><th>Can</th><th></th><th></th></tr></thead>
+                    <tbody>
+                      {installed.map((m) => (
+                        <tr key={m.id}>
+                          <td className="mono">{m.name}</td>
+                          <td>{m.parameterSize ?? ""}</td>
+                          <td>{m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : ""}</td>
+                          <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>
+                          <td><TryCell id={m.id} state={tries[m.id]} onTry={tryModel} /></td>
+                          <td>{planCell(m)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
               ) : provider?.available ? <p className="muted">Ollama is running but has no models. Pull one below.</p> : null}
             </Zone>
 
@@ -349,13 +367,14 @@ export default function SettingsApp() {
               {codexOn && (
                 <>
                   <table>
-                    <thead><tr><th>Model</th><th>Can</th><th></th><th></th></tr></thead>
+                    <thead><tr><th>Model</th><th>Can</th><th></th><th></th><th></th></tr></thead>
                     <tbody>
                       {codexModels.map((m) => (
                         <tr key={m.id}>
                           <td className="mono">{m.name}{m.name === codex?.defaultModel ? <span className="muted"> · Codex's default</span> : ""}</td>
                           <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>
                           <td><TryCell id={m.id} state={tries[m.id]} onTry={tryModel} /></td>
+                          <td>{planCell(m)}</td>
                           <td>{m.name !== codex?.defaultModel && <button className="link" onClick={() => saveCodex({ models: (settings.codex?.models ?? []).filter((n) => n !== m.name) })}>remove</button>}</td>
                         </tr>
                       ))}
@@ -405,13 +424,14 @@ export default function SettingsApp() {
                   </div>
                   {openaiModels.length > 0 && (
                     <table>
-                      <thead><tr><th>Model</th><th>Can</th><th></th><th></th></tr></thead>
+                      <thead><tr><th>Model</th><th>Can</th><th></th><th></th><th></th></tr></thead>
                       <tbody>
                         {openaiModels.map((m) => (
                           <tr key={m.id}>
                             <td className="mono">{m.name}</td>
                             <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>
                             <td><TryCell id={m.id} state={tries[m.id]} onTry={tryModel} /></td>
+                            <td>{planCell(m)}</td>
                             <td>{(settings.openai?.models ?? []).includes(m.name) && <button className="link" onClick={() => saveOpenai({ models: (settings.openai?.models ?? []).filter((n) => n !== m.name) })}>remove</button>}</td>
                           </tr>
                         ))}
@@ -555,6 +575,34 @@ function TryCell({ id, state, onTry }: { id: string; state?: { busy: boolean; re
       {r && (r.ok
         ? <span className="muted"> · answered in {(r.durationMs / 1000).toFixed(1)} s{r.answer ? <> · “{r.answer}”</> : ""}</span>
         : <span className="red"> · {r.error}</span>)}
+    </span>
+  );
+}
+
+/** A trial plan from the table: running since, or what it came back with. */
+type PlanTry = { since: string } | { result: TryPlanningResult } | { error: string };
+
+/* Try planning, for a model that answers in a fixed shape (JSON): the planner's first call on a sample goal,
+   timed and checked; up to five minutes, Stop cancels. The engine remembers the result, and the row wears it
+   as a tag ("plans in 48 s" / "plan had problems") until the next trial. */
+function TryPlanningCell({ model, state, measured, onTry }: { model: InstalledModel; state?: PlanTry; measured?: PlanMeasurement; onTry: (id: string) => void }) {
+  const since = state && "since" in state ? state.since : null;
+  const elapsed = useElapsed(since, Boolean(since));
+  if (!model.capabilities.includes("structured_output")) return null;
+  const tag = measuredTag(measured);
+  return (
+    <span className="try-cell try-planning">
+      {since ? (
+        <>
+          <span className="muted">Trying… {fmtElapsed(elapsed ?? 0)}</span>
+          <button className="link" onClick={() => api.stopRun("plan").catch(() => {})}><Glyph name="stop" /> Stop</button>
+        </>
+      ) : (
+        <button className="link" onClick={() => onTry(model.id)} title="Run the planner's first call on a sample goal with this model, and time it">{measured || state ? "Try planning again" : "Try planning"}</button>
+      )}
+      {tag && !since && <Tag tone={tag.amber ? "amber" : undefined}>{tag.text}</Tag>}
+      {state && "error" in state && <span className="red"> · {/stopped|cancel/i.test(state.error) ? "stopped" : state.error}</span>}
+      {state && "result" in state && !state.result.clean && state.result.problems[0] && <span className="muted"> · {state.result.problems[0]}</span>}
     </span>
   );
 }

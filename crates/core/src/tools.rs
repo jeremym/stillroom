@@ -105,6 +105,46 @@ impl Default for DocText {
 /// inflate to hundreds of megabytes of XML; past this, the file is refused rather than read.
 pub const DOCX_TEXT_CAP: u64 = 32 * 1024 * 1024;
 
+/// The most text kept from a PDF; the rest is dropped with a note.
+pub const PDF_TEXT_CAP: usize = 32 * 1024 * 1024;
+
+/// How long a PDF may take to read before the step gives up on it.
+pub const PDF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Read a PDF's text on a thread of its own with a 64 MiB stack (the parser recurses deeply on
+/// some files), giving up after `timeout`; a parser failure, a panic, or the clock running out
+/// each come back as a note in words, never as a crash. The text is cut at `PDF_TEXT_CAP`.
+pub async fn pdf_text(bytes: Vec<u8>, timeout: std::time::Duration) -> Result<String, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let spawned = std::thread::Builder::new().name("pdf-text".into()).stack_size(64 * 1024 * 1024).spawn(move || {
+        let out = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(&bytes));
+        let _ = tx.send(match out {
+            Ok(Ok(t)) => Ok(t),
+            Ok(Err(e)) => Err(format!("The PDF could not be read: {e}")),
+            Err(_) => Err("The PDF could not be read: the reader gave up on it.".to_string()),
+        });
+    });
+    if let Err(e) = spawned {
+        return Err(format!("The PDF could not be read: {e}"));
+    }
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(Ok(mut text))) => {
+            if text.len() > PDF_TEXT_CAP {
+                let mut cut = PDF_TEXT_CAP;
+                while !text.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                text.truncate(cut);
+            }
+            Ok(text)
+        }
+        Ok(Ok(Err(note))) => Err(note),
+        Ok(Err(_)) => Err("The PDF could not be read: the reader stopped without an answer.".to_string()),
+        // The thread is left to finish on its own; nothing waits for it.
+        Err(_) => Err(format!("The PDF took longer than {} seconds to read; it was skipped.", timeout.as_secs())),
+    }
+}
+
 fn docx_text(bytes: &[u8]) -> Result<String, String> {
     use std::io::Read;
     let cursor = std::io::Cursor::new(bytes);
@@ -197,15 +237,14 @@ impl Tool for DocText {
         let (kind, text, pages, note): (&str, String, Vec<Value>, Option<String>) = match ext.as_str() {
             "pdf" => {
                 let bytes = std::fs::read(&path).map_err(|e| ToolError::Failed(e.to_string()))?;
-                match tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&bytes)).await {
-                    Ok(Ok(t)) => {
+                match pdf_text(bytes, PDF_TIMEOUT).await {
+                    Ok(t) => {
                         let pages: Vec<Value> = t.split('\u{c}').enumerate().filter(|(_, p)| !p.trim().is_empty()).map(|(i, p)| json!({ "number": i + 1, "text": p.trim() })).collect();
                         let text = pages.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n\n");
                         let note = text.trim().is_empty().then(|| "This PDF has no text layer (a scan, or images only); nothing to read without vision.".to_string());
                         ("pdf", text, pages, note)
                     }
-                    Ok(Err(e)) => ("pdf", String::new(), Vec::new(), Some(format!("The PDF could not be read: {e}"))),
-                    Err(e) => return Err(ToolError::Failed(e.to_string())),
+                    Err(note) => ("pdf", String::new(), Vec::new(), Some(note)),
                 }
             }
             "docx" => {
@@ -1840,6 +1879,17 @@ mod tests {
     async fn http_fetch_refuses_hosts_outside_the_policy() {
         let err = HttpFetch::default().call(&ctx(), json!({ "url": "https://example.com/" })).await.unwrap_err();
         assert!(matches!(err, ToolError::Denied(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn pdf_reading_gives_up_in_words_when_the_clock_runs_out() {
+        let bytes = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pdf")).unwrap();
+        let text = pdf_text(bytes.clone(), PDF_TIMEOUT).await.unwrap();
+        assert!(text.contains("Hello PDF world"));
+        let note = pdf_text(bytes, std::time::Duration::ZERO).await.unwrap_err();
+        assert_eq!(note, "The PDF took longer than 0 seconds to read; it was skipped.");
+        let note = pdf_text(b"not a pdf".to_vec(), PDF_TIMEOUT).await.unwrap_err();
+        assert!(note.starts_with("The PDF could not be read"), "{note}");
     }
 
     #[test]

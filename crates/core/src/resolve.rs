@@ -92,9 +92,16 @@ pub fn seconds_words(ms: u64) -> String {
 }
 
 /// Why a model stands where it does in the planning rank, from the facts: whether it fits in
-/// memory, that it answers in a fixed shape, and what Try planning measured (or that nothing has).
-pub fn planning_reason(fits: bool, measured: Option<&Measured>) -> String {
-    let fit = if fits { "fits in memory" } else { "larger than this Mac can hold comfortably" };
+/// memory (or runs in the cloud), that it answers in a fixed shape, and what Try planning
+/// measured (or that nothing has).
+pub fn planning_reason(m: &InstalledModel, memory_bytes: Option<u64>, measured: Option<&Measured>) -> String {
+    let fit = if !m.local {
+        "runs in the cloud, used only when you choose it"
+    } else if fits_in_memory(m.size_bytes, memory_bytes) {
+        "fits in memory"
+    } else {
+        "larger than this Mac can hold comfortably"
+    };
     let shape = "answers in a fixed shape (JSON)";
     let timing = match measured {
         Some(m) if m.clean => format!("planned clean in {}", seconds_words(m.ms)),
@@ -129,7 +136,7 @@ pub fn rank_for_planning(models: &[InstalledModel], measured: &BTreeMap<String, 
         .into_iter()
         .enumerate()
         .map(|(i, m)| {
-            let reason = planning_reason(fits_in_memory(m.size_bytes, memory_bytes), measured.get(&m.id));
+            let reason = planning_reason(m, memory_bytes, measured.get(&m.id));
             (m.clone(), i as u32 + 1, reason)
         })
         .collect()

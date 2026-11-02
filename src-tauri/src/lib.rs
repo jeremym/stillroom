@@ -13,8 +13,9 @@ use stillroom_core::trace::RunSummary;
 use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, trial_request, PLANNER_SLOT};
 use stillroom_core::{
-    consent, edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, Grant, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest,
-    Planner, PromptState, RecipeBundle, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
+    consent, edits_for_rerun, pins_from_run, planning_reason, rank_for_planning, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, Grant, Measured,
+    ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner, PlanningFacts, PromptState, RecipeBundle, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, ResolvedVia, Run, RunTrigger,
+    ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
@@ -46,6 +47,8 @@ pub(crate) struct AppState {
     run_gate: tokio::sync::Mutex<()>,
     /// Where a recipe being got from a folder or zip waits, checked, for the user's yes.
     quarantine_dir: PathBuf,
+    /// Physical RAM of this Mac, read once at startup; `None` when it could not be read.
+    memory_bytes: Option<u64>,
 }
 
 impl AppState {
@@ -141,13 +144,30 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// The user's model defaults from Settings › Models.
+    /// The user's model defaults from Settings › Models, plus the facts the planner's Auto
+    /// uses: what Try planning measured and this Mac's RAM.
     fn resolve_defaults(&self) -> ResolveDefaults {
-        self.settings()
+        let mut d: ResolveDefaults = self
+            .settings()
             .ok()
             .and_then(|s| s.get("models").cloned())
             .and_then(|m| serde_json::from_value(m).ok())
+            .unwrap_or_default();
+        d.planning = self.planning_facts();
+        d
+    }
+
+    fn planning_facts(&self) -> PlanningFacts {
+        let measured = self
+            .store
+            .lock()
+            .ok()
+            .and_then(|s| s.planner_measured().ok())
             .unwrap_or_default()
+            .into_iter()
+            .map(|(id, m)| (id, Measured { ms: m.ms, clean: m.clean }))
+            .collect();
+        PlanningFacts { measured, memory_bytes: self.memory_bytes }
     }
 
     /// Where a recipe stands with the user: its literal permission entries against the store's grants.
@@ -571,6 +591,69 @@ fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: Value) -> Cmd
 }
 
 #[cfg(test)]
+mod planner_preview_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The contract the New recipe screen and Settings › Models build on.
+    #[test]
+    fn planner_preview_and_try_planning_serialize_in_camel_case() {
+        let preview = PlannerPreview {
+            resolution: Some(PlannerResolution {
+                slot: "planner".into(),
+                model_id: "ollama:glm-4.7-flash".into(),
+                via: ResolvedVia::Capability,
+                reason: "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s".into(),
+            }),
+            problem: None,
+            memory_bytes: Some(36 << 30),
+            candidates: vec![
+                PlannerCandidate {
+                    model_id: "ollama:glm-4.7-flash".into(),
+                    name: "glm-4.7-flash".into(),
+                    parameter_size: Some("29.9B".into()),
+                    size_bytes: Some(20 << 30),
+                    fits: true,
+                    rank: 1,
+                    measured_ms: Some(48_000),
+                    measured_clean: Some(true),
+                    reason: "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s".into(),
+                    local: true,
+                },
+                PlannerCandidate {
+                    model_id: "ollama:qwen3-coder:80b".into(),
+                    name: "qwen3-coder:80b".into(),
+                    parameter_size: Some("80B".into()),
+                    size_bytes: Some(49 << 30),
+                    fits: false,
+                    rank: 2,
+                    measured_ms: None,
+                    measured_clean: None,
+                    reason: "larger than this Mac can hold comfortably, answers in a fixed shape (JSON), not yet measured".into(),
+                    local: true,
+                },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(&preview).unwrap(),
+            json!({
+                "resolution": { "slot": "planner", "modelId": "ollama:glm-4.7-flash", "via": "capability", "reason": "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s" },
+                "problem": null,
+                "memoryBytes": 38654705664u64,
+                "candidates": [
+                    { "modelId": "ollama:glm-4.7-flash", "name": "glm-4.7-flash", "parameterSize": "29.9B", "sizeBytes": 21474836480u64, "fits": true, "rank": 1, "measuredMs": 48000, "measuredClean": true,
+                      "reason": "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s", "local": true },
+                    { "modelId": "ollama:qwen3-coder:80b", "name": "qwen3-coder:80b", "parameterSize": "80B", "sizeBytes": 52613349376u64, "fits": false, "rank": 2, "measuredMs": null, "measuredClean": null,
+                      "reason": "larger than this Mac can hold comfortably, answers in a fixed shape (JSON), not yet measured", "local": true }
+                ]
+            })
+        );
+        let trial = TryPlanning { ms: 48_000, clean: false, problems: vec!["the answer named no stages".into()] };
+        assert_eq!(serde_json::to_value(&trial).unwrap(), json!({ "ms": 48000, "clean": false, "problems": ["the answer named no stages"] }));
+    }
+}
+
+#[cfg(test)]
 mod settings_tests {
     use super::*;
     use serde_json::json;
@@ -912,11 +995,45 @@ fn use_system_prompt_version(app: AppHandle, state: State<'_, AppState>, name: S
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PlannerPreview {
-    /// The model a plan started now would use, and how it was chosen.
-    resolution: Option<stillroom_core::Resolution>,
+    /// The model a plan started now would use, how it was chosen, and why in words.
+    resolution: Option<PlannerResolution>,
     problem: Option<String>,
-    /// Installed models that could do the job, for the picker.
-    candidates: Vec<InstalledModel>,
+    /// Physical RAM of this Mac; null when it could not be read (every model then counts as fitting).
+    memory_bytes: Option<u64>,
+    /// Every model that could plan, best first: the local ones in Auto's order, then any cloud
+    /// model you have turned on (never an automatic pick), for the picker.
+    candidates: Vec<PlannerCandidate>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlannerResolution {
+    slot: String,
+    model_id: String,
+    via: ResolvedVia,
+    /// Why, from the facts: "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s".
+    reason: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlannerCandidate {
+    model_id: String,
+    /// The bare name and the provider's size word ("29.9B"), for the picker's label.
+    name: String,
+    parameter_size: Option<String>,
+    /// The weights on disk; null when the provider does not say (cloud models).
+    size_bytes: Option<u64>,
+    /// Whether the weights fit comfortably in this Mac's memory (at most 60 % of RAM).
+    fits: bool,
+    /// Auto's order, 1 first.
+    rank: u32,
+    /// What Try planning measured, if it ran: how long, and whether the answer checked clean.
+    measured_ms: Option<u64>,
+    measured_clean: Option<bool>,
+    reason: String,
+    /// True when the model runs on this Mac. A cloud model is listed only because you turned it on.
+    local: bool,
 }
 
 impl AppState {
@@ -929,16 +1046,53 @@ impl AppState {
     }
 }
 
-/// Which model would plan right now: the pin you pass, else Settings, else Auto (local only).
+/// Which model would plan right now: the pin you pass, else Settings, else Auto (local only, by
+/// the planning rank), with the reason in words and the cost of each candidate said up front.
 #[tauri::command]
 async fn preview_planner(state: State<'_, AppState>, model: Option<String>) -> CmdResult<PlannerPreview> {
     let installed = state.router().list_all().await;
+    let defaults = state.resolve_defaults();
+    let facts = &defaults.planning;
     let slot = stillroom_core::planner::planner_slot();
-    let candidates = installed.iter().filter(|m| slot.requires.iter().all(|c| m.capabilities.contains(c))).cloned().collect();
+    let candidate = |m: &InstalledModel, rank: u32, reason: String| PlannerCandidate {
+        model_id: m.id.clone(),
+        name: m.name.clone(),
+        parameter_size: m.parameter_size.clone(),
+        size_bytes: m.size_bytes,
+        fits: stillroom_core::model::fits_in_memory(m.size_bytes, facts.memory_bytes),
+        rank,
+        measured_ms: facts.measured.get(&m.id).map(|x| x.ms),
+        measured_clean: facts.measured.get(&m.id).map(|x| x.clean),
+        reason,
+        local: m.local,
+    };
+    let mut candidates: Vec<PlannerCandidate> =
+        rank_for_planning(&installed, &facts.measured, facts.memory_bytes).into_iter().map(|(m, rank, reason)| candidate(&m, rank, reason)).collect();
+    let mut next = candidates.len() as u32 + 1;
+    for m in installed.iter().filter(|m| !m.local && slot.requires.iter().all(|c| m.capabilities.contains(c))) {
+        candidates.push(candidate(m, next, planning_reason(m, facts.memory_bytes, facts.measured.get(&m.id))));
+        next += 1;
+    }
     let pins = state.planner_pins(model);
-    Ok(match resolve_slots_with(&planner_recipe(), &installed, &pins, &state.resolve_defaults()) {
-        Ok(mut r) => PlannerPreview { resolution: r.remove(PLANNER_SLOT), problem: None, candidates },
-        Err(e) => PlannerPreview { resolution: None, problem: Some(e.to_string()), candidates },
+    Ok(match resolve_slots_with(&planner_recipe(), &installed, &pins, &defaults) {
+        Ok(mut r) => {
+            let resolution = r.remove(PLANNER_SLOT).map(|res| {
+                let facts_words = installed
+                    .iter()
+                    .find(|m| m.id == res.model_id)
+                    .map(|m| planning_reason(m, facts.memory_bytes, facts.measured.get(&m.id)))
+                    .unwrap_or_default();
+                let reason = match res.via {
+                    ResolvedVia::Pinned => format!("chosen by you; {facts_words}"),
+                    ResolvedVia::Default => format!("your default model; {facts_words}"),
+                    ResolvedVia::Recommended => format!("recommended; {facts_words}"),
+                    ResolvedVia::Capability => facts_words,
+                };
+                PlannerResolution { slot: res.slot, model_id: res.model_id, via: res.via, reason }
+            });
+            PlannerPreview { resolution, problem: None, memory_bytes: facts.memory_bytes, candidates }
+        }
+        Err(e) => PlannerPreview { resolution: None, problem: Some(e.to_string()), memory_bytes: facts.memory_bytes, candidates },
     })
 }
 
@@ -1805,6 +1959,7 @@ pub fn run() {
                 stage_library: Arc::new(stillroom_core::StageLibrary::load(&builtin_stages_dir(app.handle())).unwrap_or_default()),
                 run_gate: tokio::sync::Mutex::new(()),
                 quarantine_dir,
+                memory_bytes: stillroom_core::model::physical_memory_bytes(),
             });
             app.manage(WatchRuntime::default());
             let rt = app.state::<WatchRuntime>();

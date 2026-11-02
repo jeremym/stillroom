@@ -100,13 +100,25 @@ export function inputWord(key: string, spec: InputSpec): string {
     case "json": return "some data";
     default: {
       const label = (spec.label ?? key).trim();
-      return label ? article(label.toLowerCase()) : "some text";
+      if (!label) return "some text";
+      // A label written as a question ("What do you want to know?") asks for a question, not "a what do you…".
+      if (label.includes("?")) return "a question";
+      return article(label.toLowerCase());
     }
   }
 }
 
-/** What a recipe needs to run, as one phrase: "a folder, a question"; "nothing" when it asks for nothing. */
+/** The input named by its own label: "an inbox folder". Used when several inputs would otherwise read the same. */
+function labelledWord(key: string, spec: InputSpec): string {
+  const label = (spec.label ?? key).trim().toLowerCase();
+  return label.includes("?") ? "a question" : article(label);
+}
+
+/** What a recipe needs to run, as one phrase: "a folder, a question"; "nothing" when it asks for nothing.
+    Two inputs of the same kind are told apart by their labels: "an inbox folder, an archive folder". */
 export function needsLine(r: RecipeInfo): string {
-  const words = Object.entries(r.inputs).filter(([, i]) => i.required !== false).map(([k, i]) => inputWord(k, i));
+  const required = Object.entries(r.inputs).filter(([, i]) => i.required !== false);
+  const plain = required.map(([k, i]) => inputWord(k, i));
+  const words = required.map(([k, i], n) => (plain.indexOf(plain[n]) !== plain.lastIndexOf(plain[n]) ? labelledWord(k, i) : plain[n]));
   return words.length ? words.join(", ") : "nothing";
 }

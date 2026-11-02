@@ -137,6 +137,8 @@ What the Library's Recipes zone shows. A shelf entry is either a recipe in the u
 
 ### 4.2 The catalog
 
+**Status 2026-11-02: shipped on `stages`** (merge f3ec6ba). Live: ⌘B opens the Catalog place with the filter row drawn from tags, the built-in row with needs and may-touch lines, `on the shelf` tags, and the Samples row with the copy-first note and the Finder link (`docs/screenshots/phase3-*.png`). Look (the read-only Recipe page) and Duplicate with provenance are covered by component and Rust tests; their on-screen check is in the final pass. `community/` and `samples/` ship as resources; Duplicate moved into Rust and writes `x-source` with a digest. 108 Rust tests, 257 frontend.
+
 A new place, `browse` (⌘B), reached from a **Browse the catalog** button beside New recipe and from the empty-shelf line. The Rail breadcrumb reads `Library › Catalog`.
 
 - **Filter row:** `all · documents · research · news · learning · text · samples`, drawn from the recipes' `tags`; a toggle **runs on what I have** (every slot fillable by an installed model); a search box over name, description, and whys.
@@ -146,6 +148,8 @@ A new place, `browse` (⌘B), reached from a **Browse the catalog** button besid
 - **Updates:** a shelved catalog recipe is always the shipped version (by reference). A *duplicated* one carries `source: { catalog: id, version }`; when the catalog's version is newer and the user's steps still match the digest, its card says "a newer built-in exists · Compare".
 
 ### 4.3 The repository side
+
+**Status 2026-11-02:** `CONTRIBUTING.md`, `.github/CODEOWNERS`, and `community/` are in; rulesets protecting the default branch are on all ten public repositories (code-owner review not yet required; turn it on once CODEOWNERS is on `main`).
 
 Recipes keep living in the public repository, which is how "community" works without a registry:
 

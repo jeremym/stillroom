@@ -78,6 +78,8 @@ describe("needsLine", () => {
     expect(needsLine(docs)).toBe("a folder, a question");
     expect(needsLine(brief)).toBe("links");
     expect(needsLine(recipe("e", { inputs: { a: { type: "string", label: "Email address" } } }))).toBe("an email address");
+    expect(needsLine(recipe("q", { inputs: { a: { type: "text", label: "What do you want to know?" } } }))).toBe("a question");
+    expect(needsLine(recipe("f", { inputs: { inbox: { type: "directory", label: "Inbox folder" }, archive: { type: "directory", label: "Archive folder" } } }))).toBe("an inbox folder, an archive folder");
     expect(needsLine(recipe("f", { inputs: { a: { type: "file" }, b: { type: "files" }, c: { type: "url" }, d: { type: "text", label: "Instructions" } } }))).toBe("a file, some files, a link, instructions");
   });
   it("skips optional inputs and says nothing when nothing is needed", () => {

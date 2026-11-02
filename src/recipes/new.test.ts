@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { blankRecipe, copyRecipe, slugify, uniqueId } from "./new";
+import { blankRecipe, slugify, uniqueId } from "./new";
 
 describe("slugify", () => {
   it("makes a folder-safe id", () => {
@@ -25,19 +25,5 @@ describe("blankRecipe", () => {
     expect(d.yaml.outputs.text.from).toBe("${steps.read.output.text}");
     expect(d.yaml.icon).toBe("notes");
     expect(blankRecipe("y", "Y").yaml.icon).toBeUndefined();
-  });
-});
-
-describe("copyRecipe", () => {
-  it("renames, strips the built-in tag and author, keeps files", () => {
-    const src = { yaml: { schemaVersion: "0", id: "a", name: "A", tags: ["built-in", "text"], author: { name: "S" }, steps: [], outputs: {} }, files: { "prompts/p.md": "hi" } };
-    const out = copyRecipe(src, "b", "B", "mail", true);
-    expect(out.yaml.id).toBe("b");
-    expect(out.yaml.name).toBe("B");
-    expect(out.yaml.icon).toBe("mail");
-    expect(out.yaml.tags).toEqual(["text"]);
-    expect(out.yaml.author).toBeUndefined();
-    expect(out.files["prompts/p.md"]).toBe("hi");
-    expect(src.yaml.id).toBe("a");
   });
 });

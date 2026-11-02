@@ -7,7 +7,7 @@ import type { RecipeInfo } from "../types";
 // The engine is not here; the zone's calls land on this mock instead.
 vi.mock("../api", () => ({ api: { setShelf: vi.fn(() => Promise.resolve()), revealRecipesFolder: vi.fn(() => Promise.resolve()) } }));
 import { api } from "../api";
-import { ArchiveZone, CatalogZone } from "./Shelf";
+import { ArchiveZone } from "./Shelf";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -57,16 +57,5 @@ describe("ArchiveZone", () => {
     expect(api.setShelf).toHaveBeenCalledWith("b", "shelf");
     await act(async () => { await Promise.resolve(); });
     expect(onChanged).toHaveBeenCalled();
-  });
-});
-
-describe("CatalogZone", () => {
-  it("adds a recipe to the shelf and opens the card", () => {
-    const onOpen = vi.fn();
-    act(() => root.render(<CatalogZone recipes={[recipe("c", { shelf: "catalog" })]} facts={facts} open onToggle={() => {}} onOpen={onOpen} onError={() => {}} />));
-    click(button("Add to shelf"));
-    expect(api.setShelf).toHaveBeenCalledWith("c", "shelf");
-    click(host.querySelector("button.card"));
-    expect(onOpen).toHaveBeenCalledWith("c");
   });
 });

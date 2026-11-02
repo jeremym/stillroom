@@ -16,7 +16,7 @@ interface Props {
   onRefreshModels: () => void;
   onPickRecipe: (id: string) => void;
   onSkip: () => void;
-  /** Leave the welcome for the Library with the Catalog zone open. */
+  /** Leave the welcome for the Catalog place (⌘B). */
   onBrowse: () => void;
 }
 

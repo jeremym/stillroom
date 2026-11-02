@@ -14,8 +14,9 @@ import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
 import { AskAgain } from "./components/AskAgain";
 import { Welcome } from "./components/Welcome";
-import { ArchiveZone, CardMenu, CatalogZone, EmptyShelf, RecipeCard } from "./components/Shelf";
-import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
+import { ArchiveZone, CardMenu, EmptyShelf, RecipeCard } from "./components/Shelf";
+import { CatalogPlace } from "./components/Catalog";
+import { blankRecipe, slugify, uniqueId } from "./recipes/new";
 import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
 import { isLocalModel, rememberProviders, shortModel, whereWord } from "./models";
 import { Dial, Empty, Pill, Rail, Strip, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
@@ -33,13 +34,13 @@ import "./App.css";
 // React Flow is heavy; load it in its own chunk so the rest of the app paints first.
 const FlowView = lazy(() => import("./flow/FlowView"));
 
-/* Places. Library is home. Opening a recipe puts the Dial on screen with that recipe's five places;
-   the Dial turns by itself when a run starts, finishes, or needs you. Settings and New recipe sit
-   outside the Dial, reached from the Rail or the menu. */
-type Place = "welcome" | "library" | "new" | "recipe" | "setup" | "running" | "results" | "door";
-type RecipePlace = Exclude<Place, "welcome" | "library" | "new">;
+/* Places. Library is home; the Catalog (browse, ⌘B) sits beside it. Opening a recipe puts the Dial on
+   screen with that recipe's five places; the Dial turns by itself when a run starts, finishes, or
+   needs you. Settings and New recipe sit outside the Dial, reached from the Rail or the menu. */
+type Place = "welcome" | "library" | "browse" | "new" | "recipe" | "setup" | "running" | "results" | "door";
+type RecipePlace = Exclude<Place, "welcome" | "library" | "browse" | "new">;
 const PLACE_LABEL: Record<Place, string> = {
-  welcome: "Welcome", library: "Library", new: "New recipe",
+  welcome: "Welcome", library: "Library", browse: "Catalog", new: "New recipe",
   recipe: "Recipe", setup: "Set up", running: "Running", results: "Results", door: "Recipe card",
 };
 const RECIPE_PLACES: RecipePlace[] = ["recipe", "setup", "running", "results", "door"];
@@ -93,8 +94,6 @@ function App() {
   // The welcome shows until it has been finished or skipped once (firstRun absent means never shown).
   const [firstRunHint, setFirstRunHint] = useState(false);
   const [stopping, setStopping] = useState(false);
-  // The Catalog zone is folded until Browse the catalog asks for it (phase 3 gives it a place of its own).
-  const [catalogOpen, setCatalogOpen] = useState(false);
   // A watch that ran while another run was on screen: it stays out of the way, this line says it happened.
   const [backgroundNote, setBackgroundNote] = useState<{ text: string; runId: string | null } | null>(null);
   const recipesRef = useRef<RecipesResponse | null>(null);
@@ -201,12 +200,10 @@ function App() {
     if (place === "setup" && recipe) ensureShelved(recipe).catch((e) => setError(String(e)));
   }, [place, recipe, ensureShelved]);
 
-  // Browse the catalog: for now the Catalog zone of the Library, opened and scrolled to. Phase 3 makes it a place.
-  const browseCatalog = useCallback(() => {
-    setPlace("library");
-    setCatalogOpen(true);
-    setTimeout(() => document.getElementById("catalog")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
-  }, []);
+  // Browse the catalog: its own place, beside the Library.
+  const browseCatalog = useCallback(() => setPlace("browse"), []);
+  // Look at a catalog recipe: its page, read-only until it is shelved (RecipePage reads the shelf state).
+  const lookAt = useCallback((id: string) => openRecipe(id), [openRecipe]);
 
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -305,6 +302,7 @@ function App() {
       case "new-recipe": setCreateError(null); setPlace("new"); break;
       case "reveal-recipes": api.revealRecipesFolder().catch((e) => setError(String(e))); break;
       case "place-library": setPlace("library"); break;
+      case "place-browse": setPlace("browse"); break;
       case "place-recipe": goRecipe("recipe"); break;
       case "place-setup": goRecipe("setup"); break;
       case "place-running": goRecipe("running"); break;
@@ -339,11 +337,15 @@ function App() {
   }, []);
 
   // Outside Tauri (plain browser dev) the menu does not exist; a keyboard fallback keeps the shortcuts.
+  // ⌘B (the Catalog) is bound here in every build: the native menu is built in Rust and has no item for
+  // it yet; when one arrives with the same id, both paths land on the same place.
   useEffect(() => {
-    if ("__TAURI_INTERNALS__" in window) return;
+    const inTauri = "__TAURI_INTERNALS__" in window;
     const h = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      const map: Record<string, string> = { ",": "settings", n: "new-recipe", "0": "place-library", "1": "place-recipe", "2": "place-setup", "3": "place-running", "4": "place-results", "5": "place-door", r: "run", "/": "shortcuts" };
+      if (!e.metaKey || e.altKey || e.ctrlKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const map: Record<string, string> = inTauri
+        ? { b: "place-browse" }
+        : { ",": "settings", n: "new-recipe", b: "place-browse", "0": "place-library", "1": "place-recipe", "2": "place-setup", "3": "place-running", "4": "place-results", "5": "place-door", r: "run", "/": "shortcuts" };
       const id = map[e.key];
       if (id) { e.preventDefault(); onMenu(id); }
     };
@@ -426,8 +428,14 @@ function App() {
         const tries = out.attempts === 1 ? "first try" : `${out.attempts} tries`;
         note = `Drafted by ${shortModel(out.modelId)} (${whereWord(out.modelId)}) on the ${tries} in ${fmtElapsed(Math.round(out.durationMs / 1000))}. Walk the steps and their prompts, then Save; nothing has run yet.`;
       } else if (req.mode === "copy" && req.sourceId) {
-        const src = await api.readRecipeDraft(req.sourceId);
-        draft = copyRecipe(src.draft, req.id, req.name, req.icon, src.source === "builtin");
+        // The engine makes the copy and writes where it came from (its provenance).
+        const info = await api.duplicateRecipe(req.sourceId, req.id, req.name, req.icon ?? null);
+        await refreshRecipes();
+        setRecipeId(info.id);
+        setFreshId(info.id);
+        setPlanNote(null);
+        setPlace("door");
+        return;
       } else {
         draft = blankRecipe(req.id, req.name, req.icon);
       }
@@ -448,12 +456,11 @@ function App() {
   async function duplicateRecipe(r: RecipeInfo) {
     setError(null);
     try {
-      const src = await api.readRecipeDraft(r.id);
       const taken = recipesRef.current?.recipes.map((x) => x.id) ?? [];
       const id = uniqueId(`${slugify(r.name)}-copy`, taken);
-      const saved = await api.saveRecipeDraft(copyRecipe(src.draft, id, `${r.name} (copy)`, undefined, src.source === "builtin"));
+      const info = await api.duplicateRecipe(r.id, id, `${r.name} (copy)`);
       await refreshRecipes();
-      openRecipe(saved.recipe.id);
+      openRecipe(info.id);
     } catch (e) {
       setError(String(e));
     }
@@ -564,6 +571,9 @@ function App() {
 
   const recipeIcon = recipe && isGlyphName(recipe.icon) ? recipe.icon : "recipe";
   const cardFacts = useMemo(() => ({ models: models?.models ?? [], history }), [models, history]);
+  // A catalog recipe that is not shelved is looked at, not acted on, until Add to shelf.
+  const looking = Boolean(recipe && shelfOf(recipe) === "catalog");
+  const origin = recipe?.from ? recipes?.recipes.find((r) => r.id === recipe.from?.catalog) ?? null : null;
   const runsOfThis = run ? history.filter((h) => h.recipeId === run.recipeId) : [];
 
   return (
@@ -573,9 +583,11 @@ function App() {
           <nav className="crumbs" aria-label="Where you are">
             <button className="home" onClick={() => setPlace("library")} title="Library: every recipe"><Logo size={28} /></button>
             {place === "library" && <><span className="sep">›</span><span className="here">Library</span></>}
+            {place === "browse" && <><span className="sep">›</span><button onClick={() => setPlace("library")} title="Library: your shelf">Library</button><span className="sep">›</span><span className="here">Catalog</span></>}
             {(place === "new" || place === "welcome") && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
             {isRecipePlace(place) && recipe && (
               <>
+                {looking && <><span className="sep">›</span><button onClick={browseCatalog} title="The catalog (⌘B)">Catalog</button></>}
                 <span className="sep">›</span>
                 <button onClick={() => setPlace("recipe")} className={place === "recipe" ? "here" : ""} title="This recipe's page">
                   <Glyph name={recipeIcon} /> <span className="label">recipe </span>{recipe.name}
@@ -629,7 +641,7 @@ function App() {
                 <span className="label">Library</span><span>Every recipe, every run, your watches. The logo at the top left always brings you back.</span>
                 <span className="label">Recipe</span><span>Pick one and the Dial appears: <b>Recipe</b> (what it does, its runs) · <b>Set up</b> (inputs, models, Run) · <b>Running</b> (each step as it happens) · <b>Results</b> (what it made) · <b>Recipe card</b> (the recipe written out as a map you can edit).</span>
                 <span className="label">Colours</span><span>Green is the machine. Paper is what it made for you. Amber means it needs you, or something would leave this Mac. Red is a failure.</span>
-                <span className="label">Keys</span><span className="mono">⌘0 Library · ⌘1…⌘5 the Dial · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ this help</span>
+                <span className="label">Keys</span><span className="mono">⌘0 Library · ⌘B Catalog · ⌘1…⌘5 the Dial · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ this help</span>
               </div>
             </Zone>
           )}
@@ -655,7 +667,7 @@ function App() {
               <Zone title="Recipes" sub="reusable processes that produce a result"
                 aside={<>
                   <span>{shelf.shelf.length} on the shelf</span>
-                  {shelf.catalog.length > 0 && <button className="quiet" onClick={browseCatalog}><Glyph name="search" /> Browse the catalog</button>}
+                  <button className="quiet" onClick={browseCatalog} title="The catalog (⌘B)"><Glyph name="search" /> Browse the catalog</button>
                   <button className="quiet" onClick={() => { setCreateError(null); setPlace("new"); }}><Glyph name="plus" /> New recipe</button>
                 </>}>
                 {shelf.shelf.length === 0 && recipes ? (
@@ -675,12 +687,15 @@ function App() {
                   </p>
                 ))}
               </Zone>
-              <CatalogZone recipes={shelf.catalog} facts={cardFacts} open={catalogOpen} onToggle={setCatalogOpen} onOpen={(id) => openRecipe(id)} onError={setError} onChanged={refreshRecipes} />
               <ArchiveZone recipes={shelf.archive} facts={cardFacts} onOpen={(id) => openRecipe(id)} onError={setError} onChanged={refreshRecipes} />
               <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={openRun} onError={(m) => setError(m)} />
               <HistoryPanel history={history} onOpen={openRun} />
               <UsagePanel usage={usage} />
             </>
+          )}
+
+          {place === "browse" && recipes && (
+            <CatalogPlace recipes={recipes.recipes} facts={cardFacts} onLook={lookAt} onError={setError} onChanged={refreshRecipes} />
           )}
 
           {place === "new" && recipes && (
@@ -696,7 +711,8 @@ function App() {
               map={flowFor(recipe, false)}
               onSetup={() => setPlace("setup")} onDoor={() => setPlace("door")} onOpenRun={openRun}
               onDuplicate={() => duplicateRecipe(recipe)} onRename={(n) => renameRecipe(recipe, n)} onDelete={() => deleteRecipe(recipe)}
-              onWatchesChanged={refreshWatches} onError={(m) => setError(m)} />
+              onWatchesChanged={refreshWatches} onError={(m) => setError(m)}
+              readOnly={looking} onAddToShelf={() => ensureShelved(recipe).catch((e) => setError(String(e)))} origin={origin} onLook={lookAt} />
           )}
 
           {place === "setup" && recipes && recipe && firstRunHint && (

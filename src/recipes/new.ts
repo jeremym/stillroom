@@ -1,7 +1,8 @@
 import type { Draft, RecipeDoc } from "../types";
 
-/* Making a recipe in the app: a blank one that already runs, or a copy of an existing one under a
-   new name. Pure functions; the Rust checker still has the last word when the draft is saved. */
+/* Making a recipe in the app: a blank one that already runs. (A copy of an existing one is the
+   engine's job, `duplicate_recipe`, so it can write where the copy came from.) Pure functions; the
+   Rust checker still has the last word when the draft is saved. */
 
 /** "My Weekly Report!" → "my-weekly-report". */
 export function slugify(name: string): string {
@@ -46,15 +47,4 @@ export function blankRecipe(id: string, name: string, icon?: string): Draft {
     },
   };
   return { yaml, files: {} };
-}
-
-/** A copy of a draft under a new id, name, and icon. A copy is yours whatever it was copied from. */
-export function copyRecipe(draft: Draft, id: string, name: string, icon?: string | null, fromBuiltin = false): Draft {
-  const yaml: RecipeDoc = structuredClone(draft.yaml);
-  yaml.id = id;
-  yaml.name = name;
-  if (icon) yaml.icon = icon; else if (icon === null) delete yaml.icon;
-  if (Array.isArray(yaml.tags)) yaml.tags = (yaml.tags as string[]).filter((t) => t !== "built-in");
-  if (fromBuiltin) delete yaml.author;
-  return { yaml, files: { ...draft.files } };
 }

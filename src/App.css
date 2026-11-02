@@ -29,7 +29,17 @@ footer { margin-top: 24px; color: var(--phos-faint); font-size: var(--size-label
 .card-slot { position: relative; display: flex; flex-direction: column; }
 .card-slot > .card { flex: 1; width: 100%; }
 .card-slot:has(.card-foot) > .card { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.card-foot { display: flex; justify-content: flex-end; padding: 6px 8px; border: 1px solid var(--bezel); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); background: var(--ground); }
+.card-foot { display: flex; justify-content: flex-end; gap: 6px; align-items: center; padding: 6px 8px; border: 1px solid var(--bezel); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); background: var(--ground); }
+/* The catalog card's lines under the card: what it needs, what it may touch, who wrote it. */
+.card-lines { display: flex; flex-direction: column; gap: 3px; padding: 8px 12px; font-size: var(--size-small); color: var(--phos-dim); border: 1px solid var(--bezel); border-top: 0; background: var(--ground); }
+.card-lines .label { font-family: var(--display); letter-spacing: 0.12em; text-transform: uppercase; font-size: var(--size-label); color: var(--phos-faint); margin-right: 4px; }
+.card-slot:has(.card-lines) > .card { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+/* The catalog's filter row: kinds, the model test, the search box. */
+.catalog-filters { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.catalog-filters .segmented { flex-wrap: wrap; }
+.catalog-toggle { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
+.catalog-search { flex: 1; min-width: 240px; }
+.provenance { margin-top: 6px; }
 .card-menu { position: absolute; top: 8px; right: 8px; }
 .card-menu > summary { list-style: none; cursor: pointer; width: 28px; height: 24px; display: inline-flex; align-items: center; justify-content: center; color: var(--phos-dim); border: 1px solid transparent; border-radius: var(--radius); font-size: var(--size-display); line-height: 1; }
 .card-menu > summary::-webkit-details-marker { display: none; }

@@ -69,6 +69,8 @@ Carried into the phases below rather than fixed first: permission consent for li
 
 ## 3. The format layer
 
+**Status 2026-11-02: shipped on `stages`** (merge aeb1bf8). Live: a recipe with `minVersion: 9.0.0` reads "too-new could not be opened. This recipe needs Stillroom 9.0.0 or newer; you have 0.2.0." in the Library; a recipe whose stage writes a keep without declaring one shows "Worth a look · Stage “Remember” writes a keep but does not say so · Declare the keep" on its card, and the fix clears it (`docs/screenshots/phase1-*.png`). 97 Rust tests including the compat fixtures (`crates/core/tests/compat/`), 129 frontend. One deviation from the text below: the version floor stamped on save is capped at what this build supports (`migrate::supported_version`), so a 0.2.0 build does not refuse its own 0.3.0-floor saves; revisit when 0.3.0 is cut.
+
 The rule stays: the Rust side is the only validator; the UI renders what Rust returns. Everything here lives in `crates/core`.
 
 ### 3.1 Fixtures, before any code

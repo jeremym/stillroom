@@ -299,8 +299,8 @@ mod tests {
                 let n = draft.yaml["stages"].as_array().map(Vec::len).unwrap_or(1);
                 draft.yaml["stages"][n - 1]["outputs"] = serde_json::json!(["result"]);
             }
-            let problems = draft.check(&known);
-            assert!(problems.is_empty(), "{}: {:?}", st.id, problems);
+            let findings = draft.check(&known);
+            assert!(findings.is_empty(), "{}: {:?}", st.id, findings);
             assert!(!st.summary.is_empty() && !st.why.is_empty(), "{} has a summary and a why", st.id);
         }
         let text = lib.describe();

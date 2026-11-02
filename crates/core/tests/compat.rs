@@ -3,6 +3,8 @@
 //!
 //! - `compat/recipes/v0-pre-stages/`: the four recipes as they were on `main` before stages.
 //! - `compat/recipes/v0-stages/`: the six built-ins and `samples/inbox-triage` as of the stages work.
+//! - `compat/recipes/v0-notes/`: hand-made recipes that are fine but out of date in one way each,
+//!   so the checker's Notes and their Fixes are pinned here too.
 //! - `compat/planner-answers/`: planner answers in the shapes the merge rules were written for.
 
 use serde_json::Value;
@@ -11,7 +13,7 @@ use std::path::{Path, PathBuf};
 use stillroom_core::planner::{answer_schema, draft_from_answers, strip_schema, PlanRequest};
 use stillroom_core::stagelib::{repo_stages_dir, StageLibrary};
 use stillroom_core::tools::ToolRegistry;
-use stillroom_core::{migrate, Draft, RecipeBundle, RecipeSource, CURRENT_SCHEMA_VERSION, RECIPE_SCHEMA};
+use stillroom_core::{migrate, Draft, RecipeBundle, RecipeSource, Severity, CURRENT_SCHEMA_VERSION, RECIPE_SCHEMA};
 
 fn compat_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compat")
@@ -33,8 +35,18 @@ fn fixture_recipes() -> Vec<(String, String, PathBuf)> {
             out.push((set.file_name().unwrap().to_string_lossy().into_owned(), d.file_name().unwrap().to_string_lossy().into_owned(), d));
         }
     }
-    assert!(out.len() >= 11, "expected the four pre-stages recipes and seven stages-era ones, found {}", out.len());
+    assert!(out.len() >= 13, "expected the four pre-stages recipes, seven stages-era ones, and the notes set; found {}", out.len());
     out
+}
+
+/// The Notes each fixture is expected to carry, by `<set>/<recipe>`: (text, fix id). Any fixture
+/// not listed must check with nothing to say. When a change adds a Note to a built-in, this is
+/// the test that goes red, and the fixture is only moved on once a migration is written for it.
+fn expected_notes(set: &str, name: &str) -> Vec<(&'static str, &'static str)> {
+    match format!("{set}/{name}").as_str() {
+        "v0-notes/undeclared-keep" => vec![("Stage “Remember” writes a keep but does not say so.", "declare_keep:remember")],
+        _ => Vec::new(),
+    }
 }
 
 #[test]
@@ -45,8 +57,20 @@ fn every_fixture_recipe_loads_and_checks_without_problems() {
         assert_eq!(bundle.recipe.id, name, "{set}/{name}: the folder is named after the recipe");
         assert!(!bundle.recipe.stages_or_implied().is_empty(), "{set}/{name}: the strip draws");
         let draft = Draft::read(&dir).unwrap_or_else(|e| panic!("{set}/{name}: {e}"));
-        let problems = draft.check(&tools);
+        let findings = draft.check(&tools);
+        let problems: Vec<&str> = findings.iter().filter(|f| f.severity == Severity::Problem).map(|f| f.text.as_str()).collect();
         assert!(problems.is_empty(), "{set}/{name} has problems: {problems:#?}");
+        let notes: Vec<(&str, &str)> = findings.iter().filter(|f| f.severity == Severity::Note).map(|f| (f.text.as_str(), f.fix.as_deref().unwrap_or(""))).collect();
+        assert_eq!(notes, expected_notes(&set, &name), "{set}/{name}: notes");
+        if !notes.is_empty() {
+            // A Note does not stop a save, and its Fix leaves nothing to say.
+            let tmp = std::env::temp_dir().join(format!("stillroom-compat-{}", uuid::Uuid::now_v7()));
+            draft.write(&tmp, &tools).unwrap_or_else(|e| panic!("{set}/{name}: a Note must not refuse a save: {e}"));
+            let _ = std::fs::remove_dir_all(&tmp);
+            let fixes: Vec<String> = notes.iter().map(|(_, f)| f.to_string()).collect();
+            let fixed = draft.fix(&fixes).unwrap_or_else(|e| panic!("{set}/{name}: {e}"));
+            assert!(fixed.check(&tools).is_empty(), "{set}/{name}: fixed, but the checker still says {:?}", fixed.check(&tools));
+        }
 
         // Migration is idempotent on the fixture's YAML as written: a second pass changes nothing
         // and has nothing to say.
@@ -125,8 +149,8 @@ fn every_recorded_planner_answer_becomes_a_clean_draft() {
         let (draft, merge_problems) = draft_from_answers(&fx.request, strip.as_deref(), answer.as_deref(), Some(&lib)).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(merge_problems.is_empty(), "{name}: {merge_problems:?}");
         assert_eq!(draft.yaml["id"], fx.request.id, "{name}: the requested id wins");
-        let problems = draft.check(&tools);
-        assert!(problems.is_empty(), "{name}: {problems:#?}");
+        let findings = draft.check(&tools);
+        assert!(findings.is_empty(), "{name}: a drafted recipe arrives with nothing to fix, got {findings:#?}");
         // The draft must also be a recipe the bundle loader accepts, not only one the checker passes.
         let tmp = std::env::temp_dir().join(format!("stillroom-compat-{}", uuid::Uuid::now_v7()));
         draft.write(&tmp, &tools).unwrap_or_else(|e| panic!("{name}: {e}"));

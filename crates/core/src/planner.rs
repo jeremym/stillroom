@@ -237,9 +237,9 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
         yaml.insert(k, val);
     }
     let mut yaml = crate::migrate::migrate(Value::Object(yaml)).map_err(|e| e.to_string())?.yaml;
-    if let Some(o) = yaml.as_object_mut() {
-        declare_keeps(o);
-    }
+    // A drafted recipe gets every registry repair (a stage that writes a keep declares one, and
+    // so on): the same repairs the checker offers an author as Notes with a Fix.
+    crate::migrate::repair_all(&mut yaml);
     let mut files = BTreeMap::new();
     match v.get("files") {
         Some(Value::Array(items)) => {
@@ -262,47 +262,6 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
         _ => {}
     }
     Ok(Draft { yaml, files })
-}
-
-/// A stage whose steps touch a keep without naming another stage's gets a keep declared when
-/// the model left it out: `when_sources_change` when it indexes, `always` otherwise (a log).
-/// Models reach for the tools and forget the declaration. The checker still guards recipes
-/// written by hand.
-fn declare_keeps(yaml: &mut serde_json::Map<String, Value>) {
-    fn own_keep_tool(s: &Value) -> Option<&str> {
-        let t = s.get("tool").and_then(Value::as_str)?;
-        let names_other = s.get("inputs").and_then(|i| i.get("stage")).and_then(Value::as_str).is_some();
-        (t.starts_with("keep.") && !(names_other && matches!(t, "keep.get" | "keep.query" | "keep.list" | "keep.search"))).then_some(t)
-    }
-    let mut users: Vec<(String, bool)> = Vec::new(); // (step id, indexes)
-    if let Some(steps) = yaml.get("steps").and_then(Value::as_array) {
-        for s in steps {
-            let mut tools: Vec<&str> = own_keep_tool(s).into_iter().collect();
-            if let Some(inner) = s.get("steps").and_then(Value::as_array) {
-                tools.extend(inner.iter().filter_map(own_keep_tool));
-            }
-            if !tools.is_empty() {
-                if let Some(id) = s.get("id").and_then(Value::as_str) {
-                    users.push((id.to_string(), tools.contains(&"keep.index")));
-                }
-            }
-        }
-    }
-    if users.is_empty() {
-        return;
-    }
-    if let Some(stages) = yaml.get_mut("stages").and_then(Value::as_array_mut) {
-        for st in stages.iter_mut() {
-            let ids: Vec<&str> = st.get("steps").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-            let mine: Vec<&(String, bool)> = users.iter().filter(|(id, _)| ids.contains(&id.as_str())).collect();
-            if !mine.is_empty() && !st.get("keep").is_some_and(Value::is_object) {
-                let refresh = if mine.iter().any(|(_, idx)| *idx) { "when_sources_change" } else { "always" };
-                if let Some(o) = st.as_object_mut() {
-                    o.insert("keep".into(), json!({ "refresh": refresh }));
-                }
-            }
-        }
-    }
 }
 
 pub struct Planner {
@@ -522,7 +481,7 @@ fn merge_partial(skeleton: &mut Draft, partial: &Draft, lib: &crate::stagelib::S
             rewrite(outputs, &aliases);
         }
     }
-    declare_keeps(base);
+    crate::migrate::repair_all(&mut skeleton.yaml);
 }
 
 /// The strip answer as a skeleton draft: ready-made stages expanded, custom ones named with
@@ -682,7 +641,7 @@ impl Planner {
                     prompt_tokens += pt;
                     completion_tokens += ct;
                     if custom == 0 && draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
-                        let problems = draft.check(&known_tools);
+                        let problems = draft.problems(&known_tools);
                         return Ok(PlanOutcome { draft, problems, attempts: 1, model_id: self.model_id.clone(), prompt_tokens, completion_tokens, duration_ms: started.elapsed().as_millis() as u64 });
                     }
                     if draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
@@ -727,7 +686,7 @@ impl Planner {
             emit(PlanEvent::Checking { attempt });
             let problems = match compose(skeleton.as_ref(), &resp.content, req, lib) {
                 Ok((draft, mut problems)) => {
-                    problems.extend(draft.check(&known_tools));
+                    problems.extend(draft.problems(&known_tools));
                     let better = best.as_ref().map(|(_, p)| problems.len() < p.len()).unwrap_or(true);
                     if better {
                         best = Some((draft, problems.clone()));
@@ -863,6 +822,7 @@ mod tests {
         assert_eq!(d.yaml["stages"][1]["keep"]["refresh"], "always");
         let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
         assert!(d.check(&known).is_empty(), "{:?}", d.check(&known));
+        assert!(d.problems(&known).is_empty());
     }
 
     #[tokio::test]

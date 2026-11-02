@@ -1,6 +1,7 @@
 //! A recipe being edited: `recipe.yaml` as a JSON value plus its prompt and schema files.
 //! Read from a bundle directory, checked for problems in plain words, written back out.
 
+use crate::migrate::{Finding, FixId};
 use crate::propagate::dependencies;
 use crate::recipe::{Recipe, Step};
 use crate::refs::{parse_ref, Ref};
@@ -85,9 +86,34 @@ impl Draft {
         self.yaml.get("id").and_then(Value::as_str)
     }
 
-    /// Everything wrong with the draft, in words a recipe author can act on. Empty means it
-    /// loads, every reference points at something that exists, and nothing depends on itself.
-    pub fn check(&self, known_tools: &[String]) -> Vec<String> {
+    /// Everything the checker has to say, in words a recipe author can act on: Problems (the
+    /// draft would not load or run; a save is refused) and Notes (it works, but is out of date
+    /// in a way the app can repair; each carries a fix id for `Draft::fix`). No findings means
+    /// it loads, every reference points at something that exists, and nothing depends on itself.
+    pub fn check(&self, known_tools: &[String]) -> Vec<Finding> {
+        let mut findings: Vec<Finding> = self.problem_texts(known_tools).into_iter().map(Finding::problem).collect();
+        if format_problems(&self.yaml).is_empty() {
+            findings.extend(crate::migrate::notes_for(&self.yaml));
+        }
+        findings
+    }
+
+    /// Only the Problems, as text: what stops a save. Notes are left out.
+    pub fn problems(&self, known_tools: &[String]) -> Vec<String> {
+        self.check(known_tools).into_iter().filter(Finding::is_problem).map(|f| f.text).collect()
+    }
+
+    /// The draft with the named fixes applied (see `migrate::DEPRECATIONS`). An unknown fix id
+    /// is an error in words; a fix that finds nothing to change is not.
+    pub fn fix(&self, fixes: &[FixId]) -> Result<Draft, String> {
+        let mut out = self.clone();
+        for f in fixes {
+            crate::migrate::apply_fix(&mut out.yaml, f)?;
+        }
+        Ok(out)
+    }
+
+    fn problem_texts(&self, known_tools: &[String]) -> Vec<String> {
         let mut problems = format_problems(&self.yaml);
         if !problems.is_empty() {
             return problems;
@@ -171,6 +197,9 @@ impl Draft {
         // Keep tools write to the step's own stage's keep, so that stage must declare one; a read
         // may name an earlier kept stage instead.
         let kept: HashSet<&str> = recipe.stages.iter().filter(|s| s.keep.is_some()).map(|s| s.id.as_str()).collect();
+        // A stage that writes a keep without declaring one is a Note with a Fix (the registry's
+        // `declare_keep`), not a Problem; its steps are not reported again here.
+        let undeclared: HashSet<String> = crate::migrate::notes_for(&self.yaml).into_iter().filter_map(|n| n.fix).filter_map(|f| f.strip_prefix("declare_keep:").map(String::from)).collect();
         let stage_name_of = |step_id: &str| place.get(&("step", step_id)).map(|p| p.1.to_string());
         let stage_id_of = |step_id: &str| place.get(&("step", step_id)).and_then(|p| recipe.stages.get(p.0)).map(|s| s.id.as_str());
         let uses_keep = |tool: &str| tool.starts_with("keep.");
@@ -187,8 +216,9 @@ impl Draft {
             }
             for (tool, named) in tools {
                 let own_kept = stage_id_of(step.id()).is_some_and(|id| kept.contains(id));
+                let own_undeclared = stage_id_of(step.id()).is_some_and(|id| undeclared.contains(id));
                 let reads_other = matches!(tool.as_str(), "keep.get" | "keep.query" | "keep.list" | "keep.search") && named.as_deref().is_some_and(|n| kept.contains(n));
-                if !own_kept && !reads_other {
+                if !own_kept && !reads_other && !(own_undeclared && named.is_none()) {
                     let where_ = stage_name_of(step.id()).map(|n| format!("its stage “{n}”")).unwrap_or_else(|| "its stage".into());
                     problems.push(match named.as_deref() {
                         Some(n) if !kept.contains(n) => format!("“{}” reads the keep of stage “{n}”, which has no run keep.", label(step)),
@@ -345,9 +375,9 @@ impl Draft {
     }
 
     /// Write `recipe.yaml` and every file into `dir`, removing prompt and schema files the
-    /// draft no longer has. Refuses a draft with problems.
+    /// draft no longer has. Refuses a draft with Problems; Notes do not stop a save.
     pub fn write(&self, dir: &Path, known_tools: &[String]) -> Result<(), DraftError> {
-        let problems = self.check(known_tools);
+        let problems = self.problems(known_tools);
         if !problems.is_empty() {
             return Err(DraftError::Invalid(problems));
         }
@@ -520,7 +550,7 @@ mod tests {
         let files = [("prompts/a.md".to_string(), "Answer.".to_string())].into_iter().collect();
         let d = Draft { yaml: yaml.clone(), files };
         let known = vec!["fs.list".to_string()];
-        assert!(d.check(&known).is_empty(), "{:?}", d.check(&known));
+        assert!(d.problems(&known).is_empty(), "{:?}", d.problems(&known));
         let r: Recipe = serde_json::from_value(yaml.clone()).unwrap();
         let stages = r.stages_or_implied();
         assert_eq!(stages.len(), 2);
@@ -538,7 +568,7 @@ mod tests {
         yaml["stages"][0]["steps"] = serde_json::json!(["list", "answer", "ghost"]);
         yaml["steps"][0]["inputs"]["q"] = serde_json::json!("${inputs.question}");
         let d = Draft { yaml: yaml.clone(), files: d.files.clone() };
-        let text = d.check(&known).join("\n");
+        let text = d.problems(&known).join("\n");
         assert!(text.contains("lists step “ghost”, which does not exist"), "{text}");
         assert!(text.contains("The step “answer” is in two stages"), "{text}");
         assert!(text.contains("reads the input “question”, which comes later, in stage “Ask”"), "{text}");
@@ -551,28 +581,43 @@ mod tests {
         ]);
         bad["steps"][0] = serde_json::json!({ "id": "list", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${inputs.folder}" } });
         let d = Draft { yaml: bad.clone(), files: d.files.clone() };
-        let text = d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
-        assert!(text.contains("uses keep.put, but its stage “Add documents” has no run keep"), "{text}");
+        let findings = d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, crate::migrate::Severity::Note);
+        assert_eq!(findings[0].text, "Stage “Add documents” writes a keep but does not say so.");
+        assert_eq!(findings[0].fix.as_deref(), Some("declare_keep:docs"));
+        assert_eq!(findings[0].fix_label.as_deref(), Some("Declare the keep"));
+        assert!(d.problems(&vec!["keep.put".to_string()]).is_empty(), "a Note is not a Problem");
+        let fixed = d.fix(&["declare_keep:docs".to_string()]).unwrap();
+        assert_eq!(fixed.yaml["stages"][0]["keep"]["refresh"], "always");
+        assert!(fixed.check(&vec!["keep.put".to_string()]).is_empty());
+        assert_eq!(d.fix(&["nonsense".to_string()]).unwrap_err(), "There is no fix called “nonsense”.");
+        // A reader with no keep anywhere near it is still a Problem: nothing would ever fill it.
+        bad["steps"][0] = serde_json::json!({ "id": "list", "kind": "tool", "tool": "keep.query", "inputs": {} });
+        let d = Draft { yaml: bad.clone(), files: d.files.clone() };
+        let text = d.problems(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
+        assert!(text.contains("uses keep.query, but its stage “Add documents” has no run keep"), "{text}");
+        bad["steps"][0] = serde_json::json!({ "id": "list", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${inputs.folder}" } });
         bad["stages"][0]["keep"] = serde_json::json!({ "refresh": "always" });
         let d = Draft { yaml: bad.clone(), files: d.files.clone() };
-        assert!(d.check(&vec!["keep.put".to_string()]).is_empty(), "{:?}", d.check(&vec!["keep.put".to_string()]));
+        assert!(d.problems(&vec!["keep.put".to_string()]).is_empty(), "{:?}", d.problems(&vec!["keep.put".to_string()]));
         bad["steps"][1]["inputs"]["files"] = serde_json::json!("${steps.list.output}");
         bad["steps"][1] = serde_json::json!({ "id": "answer", "kind": "tool", "tool": "keep.query", "inputs": { "stage": "nope" } });
         let d = Draft { yaml: bad.clone(), files: d.files.clone() };
-        let text = d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
+        let text = d.problems(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
         assert!(text.contains("reads the keep of stage “nope”, which has no run keep"), "{text}");
         // Reading the keep of a later stage is refused: that keep is not filled yet.
         bad["stages"][1]["keep"] = serde_json::json!({ "refresh": "always" });
         bad["steps"][0] = serde_json::json!({ "id": "list", "kind": "tool", "tool": "keep.query", "inputs": { "stage": "ask" } });
         bad["steps"][1] = serde_json::json!({ "id": "answer", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${inputs.question}" } });
         let d = Draft { yaml: bad.clone(), files: d.files.clone() };
-        let text = d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
+        let text = d.problems(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
         assert!(text.contains("“list” (stage “Add documents”) reads the keep of stage “Ask”, which comes later"), "{text}");
         // Reading an earlier stage's keep is fine.
         bad["steps"][0] = serde_json::json!({ "id": "list", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${inputs.folder}" } });
         bad["steps"][1] = serde_json::json!({ "id": "answer", "kind": "tool", "tool": "keep.query", "inputs": { "stage": "docs" } });
         let d = Draft { yaml: bad.clone(), files: d.files.clone() };
-        assert!(d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).is_empty(), "{:?}", d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]));
+        assert!(d.problems(&vec!["keep.put".to_string(), "keep.query".to_string()]).is_empty(), "{:?}", d.problems(&vec!["keep.put".to_string(), "keep.query".to_string()]));
 
         // No stages: one implied stage holds everything. Partial stages: the rest lands in Make.
         let mut plain = Draft::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../recipes/summarize-file")).unwrap().yaml;
@@ -605,7 +650,7 @@ mod tests {
             "outputs": { "summary": { "from": "${steps.sum.output}", "type": "markdown" } }
         });
         let d = Draft { yaml, files: Default::default() };
-        let p = d.check(&["file.read".into()]);
+        let p = d.problems(&["file.read".into()]);
         let joined = p.join("\n");
         assert!(joined.contains("“read-file”: a step id is a letter followed by"), "{joined}");
         assert!(joined.contains("“sum” is missing prompt (a model step needs it)"), "{joined}");
@@ -638,7 +683,7 @@ mod tests {
             "outputs": { "text": { "from": "${steps.read.output.text}", "type": "text", "label": "The file's text" } }
         });
         let draft = Draft { yaml, files: BTreeMap::new() };
-        let problems = draft.check(&tools());
+        let problems = draft.problems(&tools());
         assert!(problems.is_empty(), "blank recipe should be valid, got: {problems:?}");
     }
 
@@ -646,11 +691,11 @@ mod tests {
     fn builtin_recipes_read_clean() {
         for name in ["summarize-file", "learning-kit", "research-brief", "daily-news-log", "ask-your-documents", "batch-briefing"] {
             let d = Draft::read(&repo_recipes().join(name)).unwrap();
-            assert_eq!(d.check(&tools()), Vec::<String>::new(), "{name}");
+            assert_eq!(d.problems(&tools()), Vec::<String>::new(), "{name}");
         }
         // Inbox Triage is a sample now, not a built-in, but it still has to read clean.
         let d = Draft::read(&repo_recipes().join("../samples/inbox-triage")).unwrap();
-        assert_eq!(d.check(&tools()), Vec::<String>::new(), "inbox-triage");
+        assert_eq!(d.problems(&tools()), Vec::<String>::new(), "inbox-triage");
         assert!(d.files.contains_key("prompts/classify.md"));
         assert!(d.files.contains_key("schemas/draft.json"));
     }
@@ -664,7 +709,7 @@ mod tests {
         steps[1]["steps"][0]["inputs"]["path"] = Value::String("${message.path}".into());
         steps[1]["steps"][1]["prompt"] = Value::String("prompts/missing.md".into());
         d.files.remove("schemas/draft.json");
-        let problems = d.check(&tools());
+        let problems = d.problems(&tools());
         let text = problems.join("\n");
         assert!(text.contains("“Summarize the triage” reads from a step it cannot see: nope"), "{text}");
         assert!(text.contains("the loop calls each item “email”"), "{text}");
@@ -678,12 +723,12 @@ mod tests {
         let mut d = Draft::read(&repo_recipes().join("summarize-file")).unwrap();
         d.yaml["steps"][0]["inputs"]["path"] = Value::String("${steps.summarize.output}".into());
         d.yaml["steps"][0]["tool"] = Value::String("magic.wand".into());
-        let text = d.check(&tools()).join("\n");
+        let text = d.problems(&tools()).join("\n");
         assert!(text.contains("in a circle: read → summarize → read"), "{text}");
         assert!(text.contains("tool this app does not have: magic.wand"), "{text}");
 
         d.yaml["steps"][0]["kind"] = Value::String("spell".into());
-        let text = d.check(&tools()).join("\n");
+        let text = d.problems(&tools()).join("\n");
         assert!(text.contains("has an unknown kind “spell”"), "{text}");
     }
 

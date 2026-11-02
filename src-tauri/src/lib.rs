@@ -13,7 +13,7 @@ use stillroom_core::trace::RunSummary;
 use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
+    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
     PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
@@ -859,10 +859,19 @@ fn known_tools(state: &AppState) -> Vec<String> {
     state.tools.ids().into_iter().map(String::from).collect()
 }
 
-/// Problems with a draft, in words. Empty means it would load and run.
+/// Everything the checker has to say about a draft, in words: Problems (which stop a save) and
+/// Notes (which do not, and may carry a fix id for `fix_recipe_draft`). Empty means it would
+/// load and run as it is.
 #[tauri::command]
-fn check_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Vec<String>> {
+fn check_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Vec<Finding>> {
     Ok(draft.check(&known_tools(&state)))
+}
+
+/// Apply the named fixes (the ids on the Notes `check_recipe_draft` returned) and hand back the
+/// rewritten draft. Nothing is written to disk. An unknown fix id is an error.
+#[tauri::command]
+fn fix_recipe_draft(draft: Draft, fixes: Vec<String>) -> CmdResult<Draft> {
+    draft.fix(&fixes)
 }
 
 #[derive(Serialize)]
@@ -1338,6 +1347,7 @@ pub fn run() {
             list_tools,
             read_recipe_draft,
             check_recipe_draft,
+            fix_recipe_draft,
             save_recipe_draft,
             list_system_prompts,
             read_system_prompt,

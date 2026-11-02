@@ -7,12 +7,30 @@ import type { RecipeInfo } from "../types";
 // The engine is not here; the planner preview lands on this mock instead.
 vi.mock("../api", () => ({
   api: {
-    previewPlanner: vi.fn(() => Promise.resolve({ resolution: null, problem: null, candidates: [] })),
+    previewPlanner: vi.fn(() => Promise.resolve({ resolution: null, problem: null, memoryBytes: null, candidates: [] })),
+    tryPlanning: vi.fn(() => Promise.resolve({ ms: 48_000, clean: true, problems: [] })),
+    stopRun: vi.fn(() => Promise.resolve(true)),
     getPrompt: vi.fn(() => Promise.resolve(null)),
   },
 }));
 import { api } from "../api";
 import { NewRecipe } from "./NewRecipe";
+import type { PlannerCandidate, PlannerPreview } from "../types";
+
+const GB = 1e9;
+function candidate(extra: Partial<PlannerCandidate> = {}): PlannerCandidate {
+  return { modelId: "ollama:qwen3:14b", name: "qwen3:14b", parameterSize: "14.8B", sizeBytes: 9.3 * GB, fits: true, rank: 1, measuredMs: 48_000, measuredClean: true, reason: "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s", local: true, ...extra };
+}
+const PREVIEW: PlannerPreview = {
+  resolution: { slot: "planner", modelId: "ollama:qwen3:14b", via: "capability", reason: "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s" },
+  problem: null,
+  memoryBytes: 36 * 2 ** 30,
+  candidates: [
+    candidate(),
+    candidate({ modelId: "ollama:glm-4.7-flash:q8", name: "glm-4.7-flash:q8", parameterSize: "29.9B", sizeBytes: 29.9 * GB, fits: false, rank: 2, measuredMs: null, measuredClean: null, reason: "larger than this Mac holds comfortably" }),
+    candidate({ modelId: "codex:gpt-5", name: "gpt-5", parameterSize: null, sizeBytes: null, rank: 3, measuredMs: null, measuredClean: null, reason: "runs in the cloud", local: false }),
+  ],
+};
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -71,6 +89,34 @@ describe("NewRecipe", () => {
     expect(labels()).toEqual(["Copy of", "Name", "Icon"]);
     const options = Array.from(host.querySelectorAll("select option")).map((o) => o.textContent);
     expect(options).toEqual(["Recipe a (built-in)", "Recipe b (built-in)"]);
+  });
+  it("lists the planners in Auto's order with size and where, and says Auto's reason and cost", async () => {
+    vi.mocked(api.previewPlanner).mockResolvedValue(PREVIEW);
+    await mount();
+    const options = Array.from(host.querySelectorAll('select[aria-label="Planning model"] option')).map((o) => o.textContent);
+    expect(options).toEqual(["Auto — qwen3:14b (Auto)", "qwen3:14b · 14.8B · local", "glm-4.7-flash:q8 · 29.9B · local", "gpt-5 · cloud"]);
+    const planLabel = Array.from(host.querySelectorAll(".field label")).find((l) => l.textContent?.startsWith("Plan with"));
+    expect(planLabel?.textContent).toContain("Auto picks a model that fits in memory, answers in a fixed shape (JSON), and has planned quickly before");
+    const cost = host.querySelector('[data-testid="plan-cost"]')!;
+    expect(cost.textContent).toContain("qwen3:14b · 9.3 GB · fits in memory, answers in a fixed shape (JSON), planned clean in 48 s");
+    expect(cost.classList.contains("amber")).toBe(false);
+    expect(cost.querySelector("button.link")?.textContent).toBe("measure again");
+  });
+  it("a picked model that does not fit gets the amber cost line, and measure it runs a trial plan then re-reads the preview", async () => {
+    vi.mocked(api.previewPlanner).mockResolvedValue(PREVIEW);
+    await mount();
+    const select = host.querySelector('select[aria-label="Planning model"]') as HTMLSelectElement;
+    await act(async () => {
+      select.value = "ollama:glm-4.7-flash:q8";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const cost = host.querySelector('[data-testid="plan-cost"]')!;
+    expect(cost.classList.contains("amber")).toBe(true);
+    expect(cost.textContent).toContain("29.9 GB on a 36 GB Mac: larger than this Mac holds comfortably; a smaller model plans in a fraction of the time · not yet measured");
+    const calls = vi.mocked(api.previewPlanner).mock.calls.length;
+    await act(async () => { (cost.querySelector("button.link") as HTMLElement).click(); });
+    expect(api.tryPlanning).toHaveBeenCalledWith("ollama:glm-4.7-flash:q8");
+    expect(vi.mocked(api.previewPlanner).mock.calls.length).toBe(calls + 1);
   });
   it("renders what is passed below under the Draft it row", async () => {
     await mount({ below: <div data-testid="progress">drafting…</div> });

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Glyph, RECIPE_GLYPHS, type GlyphName } from "../brand";
-import { Tabs, Zone, type TabItem } from "@overtone-foundry/app-kit";
+import { Tabs, Tag, Zone, fmtElapsed, useElapsed, type TabItem } from "@overtone-foundry/app-kit";
 import { api } from "../api";
 import { isLocalModel, shortModel, whereWord } from "../models";
+import { costLine, gb, optionLabel } from "../planWith";
 import { slugify, uniqueId } from "../recipes/new";
 import { PromptEditor } from "./PromptEditor";
-import type { PlannerPreview, RecipeInfo } from "../types";
+import type { PlannerCandidate, PlannerPreview, RecipeInfo, TryPlanningResult } from "../types";
 
 /* New recipe: a starting point, a name, an icon. Then the map opens in edit mode.
    From a goal: describe what the recipe should do (and paste what it should know); the planner,
@@ -49,6 +50,9 @@ const STARTS: TabItem<NewRecipeMode>[] = [
 
 const VIA_WORD: Record<string, string> = { pinned: "your pick", default: "your default", recommended: "recommended", capability: "Auto" };
 
+/** A trial plan (Try planning) from this screen: running since, or what it came back with. */
+type Trial = { modelId: string; since: string } | { modelId: string; result: TryPlanningResult } | { modelId: string; error: string };
+
 export function NewRecipe({ recipes, reserved = [], busy, error, progress, problems, onCreate, onCancel, onStop, below }: Props) {
   const [mode, setMode] = useState<NewRecipeMode>("goal");
   const [sourceId, setSourceId] = useState(recipes[0]?.id ?? "");
@@ -58,6 +62,8 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
   const [material, setMaterial] = useState("");
   const [model, setModel] = useState<string>("");
   const [preview, setPreview] = useState<PlannerPreview | null>(null);
+  const [previewTick, setPreviewTick] = useState(0);
+  const [trial, setTrial] = useState<Trial | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
   const [promptError, setPromptError] = useState<string | null>(null);
   const taken = useMemo(() => [...recipes.map((r) => r.id), ...reserved], [recipes, reserved]);
@@ -69,14 +75,34 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
     let live = true;
     api.previewPlanner(model || null).then((p) => { if (live) setPreview(p); }).catch((e) => { if (live) setPromptError(String(e)); });
     return () => { live = false; };
-  }, [mode, model]);
+  }, [mode, model, previewTick]);
+
+  // Measure it: the planner's first call on a fixed sample goal with the chosen model, timed and checked.
+  // The engine remembers the result, so the preview is read again afterwards and the cost line updates.
+  const trying = trial && "since" in trial ? trial : null;
+  const elapsed = useElapsed(trying?.since ?? null, Boolean(trying));
+  async function measure(modelId: string) {
+    setTrial({ modelId, since: new Date().toISOString() });
+    try {
+      const result = await api.tryPlanning(modelId);
+      setTrial({ modelId, result });
+    } catch (e) {
+      setTrial({ modelId, error: String(e) });
+    } finally {
+      setPreviewTick((t) => t + 1);
+    }
+  }
 
   const request = (): NewRecipeRequest => ({
     mode, sourceId, id, name: name.trim(), icon,
     ...(mode === "goal" ? { goal: goal.trim(), material: material.trim() || undefined, model: model || null } : {}),
   });
-  const submit = () => { if (ready && !busy) onCreate(request()); };
+  const submit = () => { if (ready && !busy && !trying) onCreate(request()); };
   const picked = preview?.resolution ?? null;
+  // The model the draft would use: the user's pick, else Auto's; with its cost said in words.
+  const chosenId = model || picked?.modelId || null;
+  const chosen: PlannerCandidate | null = chosenId ? (preview?.candidates ?? []).find((c) => c.modelId === chosenId) ?? null : null;
+  const cost = chosen ? costLine(chosen, preview?.memoryBytes) : null;
   const planLabel = busy && mode === "goal" ? (progress ?? "Planning…") : busy ? "Creating…" : mode === "goal" ? "Draft it" : "Create and open its card";
 
   return (
@@ -104,17 +130,39 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
               <p className="muted material-note">Material pasted here is part of the recipe and travels with it when shared; what varies per run should be asked for, not pasted. Set up lets you change your mind later (make this part of the recipe · ask each run instead).</p>
             </div>
             <div className="field">
-              <label><strong>Plan with</strong> <span className="muted">· the model that writes the draft. Auto picks the largest model on this Mac that answers in a fixed shape (JSON).</span></label>
+              <label><strong>Plan with</strong> <span className="muted">· the model that writes the draft. Auto picks a model that fits in memory, answers in a fixed shape (JSON), and has planned quickly before.</span></label>
               <div className="row" style={{ marginTop: 4 }}>
-                <select value={model} disabled={busy} aria-label="Planning model" onChange={(e) => setModel(e.target.value)}>
+                <select value={model} disabled={busy || Boolean(trying)} aria-label="Planning model" onChange={(e) => setModel(e.target.value)}>
                   <option value="">Auto{picked && !model ? ` — ${shortModel(picked.modelId)} (${VIA_WORD[picked.via] ?? picked.via})` : ""}</option>
-                  {(preview?.candidates ?? []).map((m) => (
-                    <option key={m.id} value={m.id}>{m.name}{m.parameterSize ? ` · ${m.parameterSize}` : ""} · {whereWord(m.id)}</option>
+                  {(preview?.candidates ?? []).map((c) => (
+                    <option key={c.modelId} value={c.modelId}>{optionLabel(c)}</option>
                   ))}
                 </select>
-                {picked && <span className={isLocalModel(picked.modelId) ? "tag" : "tag amber"}>{whereWord(picked.modelId)}</span>}
+                {picked && <Tag tone={isLocalModel(picked.modelId) ? undefined : "amber"}>{whereWord(picked.modelId)}</Tag>}
                 {preview?.problem && <span className="muted">{preview.problem}. Install a model in Settings › Models.</span>}
               </div>
+              {chosen && cost && (
+                <p className={`plan-cost ${cost.amber ? "amber" : "muted"}`} data-testid="plan-cost">
+                  {!model && picked
+                    ? <>{shortModel(picked.modelId)}{chosen.sizeBytes != null ? ` · ${gb(chosen.sizeBytes)}` : ""} · {picked.reason}</>
+                    : cost.text}
+                  {" · "}
+                  {trying && trying.modelId === chosen.modelId ? (
+                    <span className="plan-trial"><Glyph name="ai" /> Trying… {fmtElapsed(elapsed ?? 0)} <button className="link" onClick={() => api.stopRun("plan").catch(() => {})}><Glyph name="stop" /> Stop</button></span>
+                  ) : (
+                    <>
+                      <button className="link" disabled={busy || Boolean(trying)} onClick={() => measure(chosen.modelId)} title="Run the planner's first call on a sample goal with this model, and time it">
+                        {chosen.measuredMs != null ? "measure again" : "measure it"}
+                      </button>
+                      {trial && !("since" in trial) && trial.modelId === chosen.modelId && (
+                        "error" in trial
+                          ? <span className="red"> · {/stopped|cancel/i.test(trial.error) ? "stopped" : trial.error}</span>
+                          : !trial.result.clean && trial.result.problems[0] ? <span className="muted"> · {trial.result.problems[0]}</span> : null
+                      )}
+                    </>
+                  )}
+                </p>
+              )}
             </div>
             <div className="field">
               <button className="quiet" aria-expanded={showPrompt} onClick={() => setShowPrompt((v) => !v)}>
@@ -154,7 +202,7 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
         )}
         {error && <pre className="error">{error}</pre>}
         <div className="row">
-          <button className="primary" style={{ marginTop: 0 }} disabled={!ready || busy} onClick={submit}>
+          <button className="primary" style={{ marginTop: 0 }} disabled={!ready || busy || Boolean(trying)} onClick={submit}>
             {busy && mode === "goal" && <Glyph name="ai" />} {planLabel}
           </button>
           {busy && mode === "goal" && onStop ? <button className="stop" onClick={onStop}><Glyph name="stop" /> Stop</button> : <button disabled={busy} onClick={onCancel}>Cancel</button>}

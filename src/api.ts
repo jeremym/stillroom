@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, Grant, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, Finding, Grant, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -53,6 +53,9 @@ export const api = {
   useSystemPromptVersion: (name: string, n: number) => invoke<PromptState>("use_system_prompt_version", { name, n }),
   /** Which model would plan right now, and which could. Nothing runs. */
   previewPlanner: (model?: string | null) => invoke<PlannerPreview>("preview_planner", { model: model ?? null }),
+  /** Try planning: the planner's first call on a fixed sample goal with this model, timed and checked;
+   *  the result is remembered under planner.measured so Auto can prefer it. Up to five minutes; `stopRun("plan")` cancels. */
+  tryPlanning: (modelId: string) => invoke<TryPlanningResult>("try_planning", { modelId }),
   /** Draft a recipe from a goal. Progress arrives as `plan:progress` events; Stop cancels. Nothing is saved. */
   planRecipe: (args: { goal: string; material?: string | null; id: string; name: string; icon?: string | null; model?: string | null }) =>
     invoke<PlanOutcome>("plan_recipe", { args }),

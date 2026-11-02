@@ -464,8 +464,8 @@ export interface Settings {
   openai?: { enabled?: boolean; baseUrl?: string; models?: string[] };
   /** Model pins per recipe: recipe id → slot → model id. */
   pins?: Record<string, Record<string, string>>;
-  /** The planner: a pinned model, or none for Auto (local only). */
-  planner?: { model?: string };
+  /** The planner: a pinned model, or none for Auto (local only); and what Try planning measured per model id. */
+  planner?: { model?: string; measured?: Record<string, PlanMeasurement> };
   firstRun?: boolean;
 }
 
@@ -506,12 +506,41 @@ export interface PromptState {
   versions: PromptVersion[];
 }
 
-export interface PlannerPreview {
-  resolution: { slot: string; modelId: string; via: "pinned" | "default" | "recommended" | "capability" } | null;
-  problem: string | null;
-  /** Installed models that could plan, for the picker. */
-  candidates: InstalledModel[];
+/** What Try planning recorded for one model: how long the strip call took, whether its answer checked clean, when. */
+export interface PlanMeasurement { ms: number; clean: boolean; at?: string }
+
+/** One model that could plan, with the cost said up front. */
+export interface PlannerCandidate {
+  modelId: string;
+  /** The bare name, for the picker's label. */
+  name: string;
+  parameterSize: string | null;
+  /** The weights on disk; null when the provider does not say (cloud models). */
+  sizeBytes: number | null;
+  /** Whether the weights fit comfortably in this Mac's memory (at most about 60 % of RAM). */
+  fits: boolean;
+  /** Auto's order, 1 first. */
+  rank: number;
+  /** What Try planning measured, if it ran. */
+  measuredMs: number | null;
+  measuredClean: boolean | null;
+  /** Why it stands where it does, in words. */
+  reason: string;
+  /** True when the model runs on this Mac. A cloud model is listed only because you turned it on. */
+  local: boolean;
 }
+
+export interface PlannerPreview {
+  resolution: { slot: string; modelId: string; via: "pinned" | "default" | "recommended" | "capability"; reason: string } | null;
+  problem: string | null;
+  /** Physical RAM of this Mac; null when it could not be read (every model then counts as fitting). */
+  memoryBytes: number | null;
+  /** Every model that could plan, in Auto's order; cloud ones last, flagged local: false. */
+  candidates: PlannerCandidate[];
+}
+
+/** Try planning's answer: the planner's first call on a fixed sample goal, timed and checked. */
+export interface TryPlanningResult { ms: number; clean: boolean; problems: string[] }
 
 /** The planner's three kinds of model call: the stage list (strip), the custom stages (steps), a fix round. */
 export type PlanPhase = "strip" | "steps" | "fix";

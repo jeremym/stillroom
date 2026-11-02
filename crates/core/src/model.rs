@@ -112,6 +112,15 @@ pub enum ModelError {
 #[async_trait::async_trait]
 pub trait ModelClient: Send + Sync {
     async fn chat(&self, model_id: &str, req: ChatRequest) -> Result<ChatResponse, ModelError>;
+    /// Like `chat`, but `on_delta` sees each piece of text as the model writes it (streaming).
+    /// Clients that cannot stream call it once with the whole content.
+    async fn chat_stream(&self, model_id: &str, req: ChatRequest, on_delta: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<ChatResponse, ModelError> {
+        let resp = self.chat(model_id, req).await?;
+        if !resp.content.is_empty() {
+            on_delta(&resp.content);
+        }
+        Ok(resp)
+    }
     /// One vector per text, from an embedding model. Providers that cannot embed say so.
     async fn embed(&self, model_id: &str, _texts: Vec<String>) -> Result<Vec<Vec<f32>>, ModelError> {
         Err(ModelError::Remote(format!("{model_id} cannot make embeddings")))

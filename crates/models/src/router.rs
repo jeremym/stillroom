@@ -56,18 +56,25 @@ impl ModelClient for ModelRouter {
     async fn chat(&self, model_id: &str, req: ChatRequest) -> Result<ChatResponse, ModelError> {
         let (pid, name) = Self::split(model_id).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
         let p = self.provider(pid).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
-        p.chat(name, req).await.map_err(|e| match e {
-            crate::provider::ProviderError::Unreachable { .. } => ModelError::Unavailable(e.to_string()),
-            other => ModelError::Remote(other.to_string()),
-        })
+        p.chat(name, req).await.map_err(model_error)
+    }
+
+    async fn chat_stream(&self, model_id: &str, req: ChatRequest, on_delta: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<ChatResponse, ModelError> {
+        let (pid, name) = Self::split(model_id).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
+        let p = self.provider(pid).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
+        p.chat_stream(name, req, on_delta).await.map_err(model_error)
     }
 
     async fn embed(&self, model_id: &str, texts: Vec<String>) -> Result<Vec<Vec<f32>>, ModelError> {
         let (pid, name) = Self::split(model_id).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
         let p = self.provider(pid).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
-        p.embed(name, texts).await.map_err(|e| match e {
-            crate::provider::ProviderError::Unreachable { .. } => ModelError::Unavailable(e.to_string()),
-            other => ModelError::Remote(other.to_string()),
-        })
+        p.embed(name, texts).await.map_err(model_error)
+    }
+}
+
+fn model_error(e: crate::provider::ProviderError) -> ModelError {
+    match e {
+        crate::provider::ProviderError::Unreachable { .. } => ModelError::Unavailable(e.to_string()),
+        other => ModelError::Remote(other.to_string()),
     }
 }

@@ -5,6 +5,7 @@
 
 pub mod bundle;
 pub mod cache;
+pub mod catalog;
 pub mod draft;
 pub mod executor;
 pub mod keep;
@@ -25,6 +26,7 @@ pub mod watch;
 
 pub use bundle::{RecipeBundle, RecipeInfo, RecipeSource};
 pub use cache::{CachedStep, MemoryCache, StepCache};
+pub use catalog::{CatalogError, CatalogFrom};
 pub use draft::{Draft, DraftError};
 pub use executor::{stage_fingerprint, stage_models, Cancel, Executor, ModelDefaults, RunRequest, FINGERPRINT_FORMAT, FORMAT_CHANGED_REASON};
 pub use keep::{Keep, KeepError, KeepManifest, KeepRecord, KeepSummary, JournalEntry};

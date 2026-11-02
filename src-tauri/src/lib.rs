@@ -941,6 +941,17 @@ fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Save
     Ok(SaveResponse { recipe: bundle.info(), path: dir.to_string_lossy().into_owned(), shadows_builtin })
 }
 
+/// Copy a recipe into the user's folder as `new_id` (Duplicate): every file comes along,
+/// `recipe.yaml` is rewritten with the new id, name, and icon (omitted keeps the original's),
+/// and a copy of a catalog recipe records where it came from in `x-source`. An id that is
+/// taken, or not in the id pattern, is refused in words.
+#[tauri::command]
+fn duplicate_recipe(app: AppHandle, state: State<'_, AppState>, recipe_id: String, new_id: String, name: String, icon: Option<String>) -> CmdResult<RecipeInfo> {
+    let copy = stillroom_core::catalog::duplicate(&state.library, &recipe_id, &new_id, &name, icon.as_deref(), &known_tools(&state)).map_err(err)?;
+    let _ = app.emit("shelf:changed", ShelfChanged { recipe_id: new_id, state: Some(ShelfState::Shelf) });
+    Ok(copy.info())
+}
+
 /// Delete one of the user's recipes (its folder), its run keeps, and any watches bound to it.
 /// Catalog recipes (built-in, community, sample) cannot be deleted; they leave the shelf instead.
 #[tauri::command]
@@ -1443,6 +1454,7 @@ pub fn run() {
             add_watch,
             set_watch_enabled,
             remove_watch,
+            duplicate_recipe,
             delete_recipe,
             set_shelf,
             reveal_recipes_folder,

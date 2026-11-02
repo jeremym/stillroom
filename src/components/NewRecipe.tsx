@@ -48,6 +48,16 @@ const STARTS: TabItem<NewRecipeMode>[] = [
   { id: "copy", label: "A copy of a recipe", glyph: "copy", hint: "Everything from an existing recipe, under your name." },
 ];
 
+/** The goal field's placeholder: plain words, one run in mind, and the one distinction people get wrong. */
+export const GOAL_PLACEHOLDER = `Say in plain words what you want it to do.
+Think of one run: what you hand it (a file, a folder, links, a question) and what you want back (a brief, study cards, a table, a file saved somewhere).
+Same document every time? Then it is not an input: paste it in the box below and it becomes part of the recipe.
+A different document each time? Then it is an input, and the recipe asks you for it every run.`;
+
+/** The material field's placeholder: the contrast with the goal, in a few words. */
+export const MATERIAL_PLACEHOLDER = `Only what never changes between runs: the handbook it always reads, a standing list of links, house-style rules, a template to follow.
+Paste it once and the recipe keeps it. Anything that changes per run is an input: say so in the goal, not here.`;
+
 const VIA_WORD: Record<string, string> = { pinned: "your pick", default: "your default", recommended: "recommended", capability: "Auto" };
 
 /** A trial plan (Try planning) from this screen: running since, or what it came back with. */
@@ -122,14 +132,14 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
         {mode === "goal" && (
           <>
             <div className="field">
-              <label><strong>What should this recipe do?</strong> <span className="muted">· say what comes in each time and what should come out</span></label>
-              <textarea rows={5} value={goal} autoFocus placeholder="Ask me for a folder of PDFs and a question each time, and answer from the documents with the page it came from."
+              <label><strong className="glow-amber">What should this recipe do? *</strong> <span className="muted">· the one thing you must fill in</span></label>
+              <textarea rows={6} value={goal} autoFocus placeholder={GOAL_PLACEHOLDER}
                 disabled={busy} onChange={(e) => setGoal(e.target.value)} />
             </div>
             <div className="field">
-              <label><strong>Built into the recipe</strong> <span className="muted">· optional · pasted here, it is baked into the recipe's prompts and used every time it cooks</span></label>
-              <textarea rows={4} value={material} disabled={busy} placeholder="House-style notes, a fixed list of links, a template to follow. Leave this empty when each run brings its own file or links; say so in the goal instead." onChange={(e) => setMaterial(e.target.value)} />
-              <p className="muted material-note">Material pasted here is part of the recipe and travels with it when shared; what varies per run should be asked for, not pasted. Set up lets you change your mind later (make this part of the recipe · ask each run instead).</p>
+              <label><strong>Built into the recipe</strong> <span className="muted">· optional · what stays the same every time, so the recipe carries it</span></label>
+              <textarea rows={4} value={material} disabled={busy} placeholder={MATERIAL_PLACEHOLDER} onChange={(e) => setMaterial(e.target.value)} />
+              <p className="muted material-note">Pasted here: part of the recipe, used every run, travels with it when shared. Asked for each run: an input, described in the goal above. Set up lets you switch either way later.</p>
             </div>
             <div className="field">
               <label><strong>Plan with</strong> <span className="muted">· the model that writes the draft. Auto picks a model that fits in memory, answers in a fixed shape (JSON), and has planned quickly before.</span></label>

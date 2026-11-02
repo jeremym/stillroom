@@ -70,10 +70,12 @@ describe("NewRecipe", () => {
     expect(host.querySelector('[role="tablist"]')?.getAttribute("aria-label")).toBe("Start from");
     expect(tab("A goal")?.getAttribute("aria-selected")).toBe("true");
     expect(hint()).toContain("The planner drafts the steps");
-    expect(labels()).toEqual(["What should this recipe do?", "Built into the recipe", "Plan with", "Name", "Icon"]);
+    expect(labels()).toEqual(["What should this recipe do? *", "Built into the recipe", "Plan with", "Name", "Icon"]);
+    expect(host.querySelector("label strong.glow-amber")?.textContent).toContain("*");
     expect(host.querySelector(".material-note")?.textContent).toContain("travels with it when shared");
-    expect(host.querySelector(".material-note")?.textContent).toContain("ask each run instead");
-    expect((host.querySelector("textarea") as HTMLTextAreaElement).placeholder).toMatch(/^Ask me for a folder of PDFs/);
+    expect(host.querySelector(".material-note")?.textContent).toContain("Asked for each run: an input");
+    expect((host.querySelector("textarea") as HTMLTextAreaElement).placeholder).toMatch(/^Say in plain words what you want it to do/);
+    expect((host.querySelectorAll("textarea")[1] as HTMLTextAreaElement).placeholder).toMatch(/^Only what never changes between runs/);
     expect(api.previewPlanner).toHaveBeenCalled();
     expect(host.querySelector(".choices, .choice")).toBeNull();
   });

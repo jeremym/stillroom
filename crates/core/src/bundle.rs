@@ -2,6 +2,7 @@
 
 use crate::recipe::{Recipe, RecipeError, Step};
 use crate::resolve::Resolution;
+use crate::store::ShelfState;
 use crate::RunRequest;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,25 @@ pub struct RecipeInfo {
     pub outputs: IndexMap<String, crate::recipe::OutputSpec>,
     /// The strip as drawn: declared stages with anything unassigned placed, or one implied stage.
     pub stages: Vec<crate::recipe::Stage>,
+    /// Where the recipe sits for the Library: on the shelf, in the archive, or (a built-in only)
+    /// in the catalog. `info()` gives the default for the source; the shell applies the store's
+    /// placement through `with_shelf`.
+    #[serde(default)]
+    pub shelf: ShelfState,
+}
+
+impl RecipeInfo {
+    /// Apply what the shelf table says, if anything. A recipe of the user's own is on the shelf
+    /// unless archived (never in the catalog); a built-in is in the catalog unless placed.
+    pub fn with_shelf(mut self, placed: Option<ShelfState>) -> Self {
+        self.shelf = match (self.source, placed) {
+            (RecipeSource::User, Some(ShelfState::Archive)) => ShelfState::Archive,
+            (RecipeSource::User, _) => ShelfState::Shelf,
+            (RecipeSource::Builtin, Some(s)) => s,
+            (RecipeSource::Builtin, None) => ShelfState::Catalog,
+        };
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,7 +243,9 @@ impl RecipeBundle {
             steps: self.recipe.steps.iter().map(step_info).collect(),
             outputs: self.recipe.outputs.clone(),
             stages: self.recipe.stages_or_implied(),
+            shelf: ShelfState::Catalog,
         }
+        .with_shelf(None)
     }
 
     pub fn request(&self, inputs: IndexMap<String, Value>, resolutions: BTreeMap<String, Resolution>) -> RunRequest {
@@ -317,6 +339,19 @@ mod tests {
         std::fs::write(tmp.join("recipe.yaml"), yaml.replace("\nnewThing: true", "").replace("\"0.5\"", "\"0.3\"")).unwrap();
         assert!(RecipeBundle::load_for(&tmp, RecipeSource::User, "0.2.0").is_ok());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn placement_follows_the_source_unless_the_shelf_says_otherwise() {
+        let builtin = RecipeBundle::load(repo_recipes().join("summarize-file"), RecipeSource::Builtin).unwrap().info();
+        assert_eq!(builtin.shelf, ShelfState::Catalog, "a built-in starts in the catalog");
+        assert_eq!(builtin.clone().with_shelf(Some(ShelfState::Shelf)).shelf, ShelfState::Shelf);
+        assert_eq!(builtin.clone().with_shelf(Some(ShelfState::Archive)).shelf, ShelfState::Archive);
+        let yours = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::User).unwrap().info();
+        assert_eq!(yours.shelf, ShelfState::Shelf, "your own starts on the shelf");
+        assert_eq!(yours.clone().with_shelf(Some(ShelfState::Archive)).shelf, ShelfState::Archive);
+        assert_eq!(yours.clone().with_shelf(Some(ShelfState::Catalog)).shelf, ShelfState::Shelf, "never in the catalog");
+        assert_eq!(serde_json::to_value(&builtin).unwrap()["shelf"], serde_json::json!("catalog"));
     }
 
     #[test]

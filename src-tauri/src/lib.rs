@@ -14,7 +14,7 @@ use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
     edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
-    PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, StepEdit, StepRecord, Store, SystemPrompts, Watch,
+    PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
@@ -515,8 +515,9 @@ struct RecipeLoadError {
 #[tauri::command]
 fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
     let scan = state.library.scan();
+    let placed = state.store.lock().map_err(err)?.shelf_all().map_err(err)?;
     Ok(RecipesResponse {
-        recipes: scan.bundles.iter().map(|b| b.info()).collect(),
+        recipes: scan.bundles.iter().map(|b| b.info().with_shelf(placed.get(&b.recipe.id).copied())).collect(),
         errors: scan
             .errors
             .into_iter()
@@ -935,7 +936,31 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("the recipe is deleted, but its run keeps could not be removed: {e}")),
     }
+    // Its place on the shelf goes with it; a built-in of the same id, now unshadowed, starts over in the catalog.
+    let _ = state.store.lock().map_err(err)?.remove_shelf(&recipe_id).map_err(err)?;
     let _ = app.emit("watch:changed", ());
+    let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: None });
+    Ok(())
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ShelfChanged {
+    recipe_id: String,
+    /// The new place, or `None` when the recipe is gone.
+    state: Option<ShelfState>,
+}
+
+/// Put a recipe on the shelf, into the archive, or (a built-in only) back in the catalog.
+/// Other windows hear `shelf:changed` and list again.
+#[tauri::command]
+fn set_shelf(app: AppHandle, app_state: State<'_, AppState>, recipe_id: String, state: ShelfState) -> CmdResult<()> {
+    let bundle = app_state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    if bundle.source == RecipeSource::User && state == ShelfState::Catalog {
+        return Err("Your own recipes stay on the shelf or in the archive; delete one to remove it.".into());
+    }
+    app_state.store.lock().map_err(err)?.set_shelf(&recipe_id, state).map_err(err)?;
+    let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: Some(state) });
     Ok(())
 }
 
@@ -1365,6 +1390,7 @@ pub fn run() {
             set_watch_enabled,
             remove_watch,
             delete_recipe,
+            set_shelf,
             reveal_recipes_folder,
             permission_status,
             open_privacy_pane,

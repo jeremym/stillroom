@@ -3,6 +3,7 @@ import { Card, Empty, Zone, type TagTone } from "@overtone-foundry/app-kit";
 import { Glyph, inputGlyph, isGlyphName } from "../brand";
 import { api } from "../api";
 import { runsOnWhatIHave, sourceWord } from "../catalog";
+import { needsPermission } from "../consent";
 import type { InstalledModel, RecipeInfo, RunSummary } from "../types";
 
 /* The Library's recipe cards and the Archive zone under them. A card is the kit's Card; what differs
@@ -25,6 +26,7 @@ export function cardTags(r: RecipeInfo, facts: CardFacts): { label: ReactNode; t
   }
   tags.push({ label: sourceWord(r.source) });
   if (!fillable) tags.push({ label: "needs a model", tone: "amber" });
+  if (needsPermission(r)) tags.push({ label: "needs your permission", tone: "amber" });
   // A duplicate of a catalog recipe, unedited, whose original has moved on since.
   if (r.from?.newer) tags.push({ label: "a newer built-in exists" });
   if (lastRun) tags.push({ label: `last run ${new Date(lastRun.startedAt).toLocaleDateString()}` });
@@ -60,11 +62,13 @@ export interface MenuActions {
   onDuplicate: (r: RecipeInfo) => void;
   onDelete: (r: RecipeInfo) => void;
   onError: (message: string) => void;
+  /** Something went right and left no other trace: "Saved to …". */
+  onNote?: (text: string) => void;
   onChanged?: () => void;
 }
 
-/** The ⋯ menu on a shelved card: Set up a run · Recipe card · Duplicate · Archive · Delete · Reveal in Finder. */
-export function CardMenu({ recipe: r, onSetup, onDoor, onDuplicate, onDelete, onError, onChanged }: { recipe: RecipeInfo } & MenuActions) {
+/** The ⋯ menu on a shelved card: Set up a run · Recipe card · Duplicate · Save a copy · Archive · Delete · Reveal in Finder. */
+export function CardMenu({ recipe: r, onSetup, onDoor, onDuplicate, onDelete, onError, onNote, onChanged }: { recipe: RecipeInfo } & MenuActions) {
   const ref = useRef<HTMLDetailsElement>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const yours = r.source === "user";
@@ -83,6 +87,8 @@ export function CardMenu({ recipe: r, onSetup, onDoor, onDuplicate, onDelete, on
         <button role="menuitem" onClick={act(() => onSetup(r.id))}><Glyph name="play" /> Set up a run</button>
         <button role="menuitem" onClick={act(() => onDoor(r.id))}><Glyph name="door" /> Recipe card</button>
         <button role="menuitem" onClick={act(() => onDuplicate(r))}><Glyph name="copy" /> Duplicate</button>
+        <button role="menuitem" title="Export the recipe as a zip to give to someone; runs, keeps, and pins stay here"
+          onClick={act(() => api.exportRecipe(r.id).then((path) => { if (path) onNote?.(`Saved to ${path}`); }).catch((e) => onError(String(e))))}><Glyph name="folder" /> Save a copy…</button>
         <button role="menuitem" onClick={act(() => api.setShelf(r.id, "archive").then(onChanged).catch((e) => onError(String(e))))}><Glyph name="inbox" /> Archive</button>
         {yours && (confirmDelete
           ? <div className="menu-confirm">

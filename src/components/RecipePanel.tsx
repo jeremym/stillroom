@@ -7,6 +7,8 @@ import { aboutMs, estimateWord, inputsKnownUpTo, keepHeldWord, keepWord } from "
 import type { InputSpec, InstalledModel, KeepState, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
 import { Glyph } from "../brand";
 import { isLocalModel, whereWord } from "../models";
+import { allTicked, consentOf } from "../consent";
+import { ConsentZone } from "./ConsentZone";
 
 const VIA_WORD: Record<string, string> = {
   pinned: "your pin on this slot",
@@ -41,6 +43,9 @@ interface Props {
   keeps?: Record<string, KeepState>;
   /** Empty a stage's keep so the next run builds it again. */
   onRebuild?: (stage: string) => void;
+  /** The consent step wrote an answer; the recipe list should be read again. The engine also says so
+   *  with `recipes:changed`; this is for the plain-browser dev build, where that event never comes. */
+  onConsentChanged?: () => void;
 }
 
 export function InputField({
@@ -86,8 +91,14 @@ export function InputField({
   );
 }
 
-export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch, onInputsChange, keeps, onRebuild }: Props) {
+export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch, onInputsChange, keeps, onRebuild, onConsentChanged }: Props) {
   const [confirmRebuild, setConfirmRebuild] = useState<string | null>(null);
+  // The consent step: which needed lines are ticked; every one ticked is the answer, written at once.
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [consentBusy, setConsentBusy] = useState(false);
+  const [consentError, setConsentError] = useState<string | null>(null);
+  const consent = consentOf(recipe);
+  const permissionNeeded = consent.needed.length > 0;
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [preview, setPreview] = useState<ResolutionPreview | null>(null);
@@ -99,6 +110,8 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
 
   useEffect(() => {
     setInputs(defaultInputs(recipe.inputs));
+    setTicked(new Set());
+    setConsentError(null);
     setWatchInput(folderInputs[0] ?? "");
     api.estimate(recipe.id).then(setEstimate).catch(() => setEstimate(null));
   }, [recipe.id]);
@@ -124,7 +137,32 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
   const slotCandidates = (requires: string[]) =>
     models.filter((m) => requires.every((c) => m.capabilities.includes(c as never)));
   const unfillable = Object.entries(recipe.modelSlots).filter(([, s]) => slotCandidates(s.requires).length === 0);
-  runRef.current = () => { if (!running && missing.length === 0 && unfillable.length === 0) onRun(recipe, inputs, pins, reuse); };
+  const blocked = running || missing.length > 0 || unfillable.length > 0 || permissionNeeded;
+  runRef.current = () => { if (!blocked) onRun(recipe, inputs, pins, reuse); };
+
+  function tick(key: string, on: boolean) {
+    const next = new Set(ticked);
+    if (on) next.add(key); else next.delete(key);
+    setTicked(next);
+    setConsentError(null);
+    // The last tick is the answer: write every needed line as allowed, then the list is read again.
+    if (on && allTicked(consent.needed, next)) {
+      setConsentBusy(true);
+      api.grantPermissions(recipe.id, consent.needed)
+        .then(() => onConsentChanged?.())
+        .catch((e) => { setConsentError(String(e)); setTicked(new Set()); })
+        .finally(() => setConsentBusy(false));
+    }
+  }
+  function revoke() {
+    setConsentBusy(true);
+    setConsentError(null);
+    setTicked(new Set());
+    api.revokePermissions(recipe.id)
+      .then(() => onConsentChanged?.())
+      .catch((e) => setConsentError(String(e)))
+      .finally(() => setConsentBusy(false));
+  }
 
   return (
     <section className="panel">
@@ -140,6 +178,9 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
         <span className="muted mono">{recipe.source} · v{recipe.version ?? "0"}</span>
       </div>
       {recipe.description && <p className="muted">{recipe.description}</p>}
+
+      <ConsentZone consent={consent} ticked={ticked} onTick={tick} onRevoke={revoke} busy={consentBusy} />
+      {consentError && <p className="error">Could not write your answer: {consentError}</p>}
 
       {recipe.stages.filter((st) => (st.inputs ?? []).some((n) => n in recipe.inputs) || st.keep).map((st, i) => (
         <section key={st.id} id={`stage-${st.id}`} className="stage-section">
@@ -248,14 +289,14 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
         <input type="checkbox" checked={reuse} onChange={(e) => setReuse(e.target.checked)} />
         <span>Reuse unchanged steps <span className="muted">(selective rerun: a step runs again only if its inputs, prompt, or model changed)</span></span>
       </label>
-      <button className="primary" disabled={running || missing.length > 0 || unfillable.length > 0}
+      <button className="primary" disabled={blocked}
         onClick={() => onRun(recipe, inputs, pins, reuse)}>
-        {running ? "Running…" : missing.length > 0 ? `Run · needs ${missing.map((k) => recipe.inputs[k]?.label ?? k).join(", ")}` : unfillable.length > 0 ? `Run · no installed model can do ${unfillable.map(([, s]) => s.requires.join(" and ")).join("; ")}` : "Run"}
+        {running ? "Running…" : permissionNeeded ? "Run · needs your permission" : missing.length > 0 ? `Run · needs ${missing.map((k) => recipe.inputs[k]?.label ?? k).join(", ")}` : unfillable.length > 0 ? `Run · no installed model can do ${unfillable.map(([, s]) => s.requires.join(" and ")).join("; ")}` : "Run"}
       </button>
       {folderInputs.length > 0 && (
         <>
           {" "}
-          <button disabled={running || missing.length > 0 || unfillable.length > 0 || !watchInput}
+          <button disabled={blocked || !watchInput}
             onClick={() => onWatch(recipe, watchInput, inputs, pins)}>
             Watch {folderInputs.length === 1 ? (recipe.inputs[watchInput]?.label ?? watchInput) : "folder"}…
           </button>

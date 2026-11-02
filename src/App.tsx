@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
-import type { KeepState, ModelsResponse, ModelUsage, PlanEvent, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
+import type { Grant, ImportPreview, KeepState, ModelsResponse, ModelUsage, PlanEvent, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
 import { Teletype } from "./components/Teletype";
@@ -16,6 +16,7 @@ import { AskAgain } from "./components/AskAgain";
 import { Welcome } from "./components/Welcome";
 import { ArchiveZone, CardMenu, EmptyShelf, RecipeCard } from "./components/Shelf";
 import { CatalogPlace } from "./components/Catalog";
+import { ImportPlace } from "./components/ImportPlace";
 import { blankRecipe, slugify, uniqueId } from "./recipes/new";
 import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
 import { isLocalModel, rememberProviders, shortModel, whereWord } from "./models";
@@ -37,10 +38,10 @@ const FlowView = lazy(() => import("./flow/FlowView"));
 /* Places. Library is home; the Catalog (browse, ⌘B) sits beside it. Opening a recipe puts the Dial on
    screen with that recipe's five places; the Dial turns by itself when a run starts, finishes, or
    needs you. Settings and New recipe sit outside the Dial, reached from the Rail or the menu. */
-type Place = "welcome" | "library" | "browse" | "new" | "recipe" | "setup" | "running" | "results" | "door";
-type RecipePlace = Exclude<Place, "welcome" | "library" | "browse" | "new">;
+type Place = "welcome" | "library" | "browse" | "import" | "new" | "recipe" | "setup" | "running" | "results" | "door";
+type RecipePlace = Exclude<Place, "welcome" | "library" | "browse" | "import" | "new">;
 const PLACE_LABEL: Record<Place, string> = {
-  welcome: "Welcome", library: "Library", browse: "Catalog", new: "New recipe",
+  welcome: "Welcome", library: "Library", browse: "Catalog", import: "Get a recipe", new: "New recipe",
   recipe: "Recipe", setup: "Set up", running: "Running", results: "Results", door: "Recipe card",
 };
 const RECIPE_PLACES: RecipePlace[] = ["recipe", "setup", "running", "results", "door"];
@@ -96,6 +97,11 @@ function App() {
   const [stopping, setStopping] = useState(false);
   // A watch that ran while another run was on screen: it stays out of the way, this line says it happened.
   const [backgroundNote, setBackgroundNote] = useState<{ text: string; runId: string | null } | null>(null);
+  // A quiet line for something that went right and left no other trace (Saved to …).
+  const [note, setNote] = useState<string | null>(null);
+  // Get a recipe…: the pick, held in quarantine until Add or Discard. Leaving the place discards.
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importing, setImporting] = useState(false);
   const recipesRef = useRef<RecipesResponse | null>(null);
   // The run whose steps the screen follows. Steps and watch events from any other run are ignored.
   const liveRunRef = useRef<string | null>(null);
@@ -202,6 +208,53 @@ function App() {
 
   // Browse the catalog: its own place, beside the Library.
   const browseCatalog = useCallback(() => setPlace("browse"), []);
+
+  // Get a recipe…: Rust opens the dialog and quarantines the pick; the preview is its own place.
+  const importRef = useRef<ImportPreview | null>(null);
+  importRef.current = importPreview;
+  const getRecipe = useCallback(async () => {
+    setError(null);
+    try {
+      const p = await api.importRecipe();
+      if (!p) return;
+      // A pick made while another preview was open replaces it; the earlier copy is thrown away.
+      const before = importRef.current;
+      if (before && before.token !== p.token) api.discardImport(before.token).catch(() => {});
+      setImportPreview(p);
+      setPlace("import");
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+  // Leaving the import place without choosing throws the quarantined copy away.
+  useEffect(() => {
+    if (place === "import" || !importPreview) return;
+    const { token } = importPreview;
+    setImportPreview(null);
+    api.discardImport(token).catch(() => {});
+  }, [place, importPreview]);
+  async function confirmImport(grants: Grant[]) {
+    if (!importPreview) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const info = await api.confirmImport(importPreview.token, grants);
+      setImportPreview(null);
+      await refreshRecipes();
+      openRecipe(info.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setImporting(false);
+    }
+  }
+  function discardImport() {
+    if (!importPreview) return;
+    const { token } = importPreview;
+    setImportPreview(null);
+    api.discardImport(token).catch((e) => setError(String(e)));
+    setPlace("library");
+  }
   // Look at a catalog recipe: its page, read-only until it is shelved (RecipePage reads the shelf state).
   const lookAt = useCallback((id: string) => openRecipe(id), [openRecipe]);
 
@@ -268,6 +321,8 @@ function App() {
     });
     // The shelf changes in this window or another (Restore, Archive, Add to shelf).
     const unlistenShelf = listen("shelf:changed", () => { refreshRecipes().catch((e) => setError(String(e))); });
+    // A recipe changed on the engine's side (the consent step wrote an answer, an import landed).
+    const unlistenRecipes = listen("recipes:changed", () => { refreshRecipes().catch((e) => setError(String(e))); });
     const unlistenWatches = listen("watch:changed", () => refreshWatches());
     const unlistenPlan = listen<PlanEvent>("plan:progress", (ev) => {
       const e = ev.payload;
@@ -288,6 +343,7 @@ function App() {
       unlisten.then((f) => f());
       unlistenWatchRun.then((f) => f());
       unlistenShelf.then((f) => f());
+      unlistenRecipes.then((f) => f());
       unlistenWatches.then((f) => f());
       unlistenPlan.then((f) => f());
       unlistenSettings.then((f) => f());
@@ -301,6 +357,7 @@ function App() {
       case "about": case "settings": api.openSettings().catch((e) => setError(String(e))); break;
       case "new-recipe": setCreateError(null); setPlace("new"); break;
       case "reveal-recipes": api.revealRecipesFolder().catch((e) => setError(String(e))); break;
+      case "get-recipe": getRecipe(); break;
       case "place-library": setPlace("library"); break;
       case "place-browse": setPlace("browse"); break;
       case "place-recipe": goRecipe("recipe"); break;
@@ -320,7 +377,7 @@ function App() {
       case "watch-folder": goRecipe("setup"); break;
       case "help": case "shortcuts": setHelpOpen(true); break;
     }
-  }, [recipeId, setLook]);
+  }, [recipeId, setLook, getRecipe]);
   useEffect(() => {
     const un = listen<string>("menu", (ev) => onMenu(ev.payload));
     return () => { un.then((f) => f()); };
@@ -583,7 +640,7 @@ function App() {
           <nav className="crumbs" aria-label="Where you are">
             <button className="home" onClick={() => setPlace("library")} title="Library: every recipe"><Logo size={28} /></button>
             {place === "library" && <><span className="sep">›</span><span className="here">Library</span></>}
-            {place === "browse" && <><span className="sep">›</span><button onClick={() => setPlace("library")} title="Library: your shelf">Library</button><span className="sep">›</span><span className="here">Catalog</span></>}
+            {(place === "browse" || place === "import") && <><span className="sep">›</span><button onClick={() => setPlace("library")} title="Library: your shelf">Library</button><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
             {(place === "new" || place === "welcome") && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
             {isRecipePlace(place) && recipe && (
               <>
@@ -646,6 +703,13 @@ function App() {
             </Zone>
           )}
 
+          {note && (
+            <p className="quiet-line" role="status">
+              <Glyph name="folder" /> {note}
+              <button className="quiet" onClick={() => setNote(null)}>Dismiss</button>
+            </p>
+          )}
+
           {backgroundNote && (
             <p className="quiet-line" role="status">
               <Glyph name="watch" /> {backgroundNote.text}
@@ -668,6 +732,7 @@ function App() {
                 aside={<>
                   <span>{shelf.shelf.length} on the shelf</span>
                   <button className="quiet" onClick={browseCatalog} title="The catalog (⌘B)"><Glyph name="search" /> Browse the catalog</button>
+                  <button className="quiet" onClick={getRecipe} title="Add a recipe from a folder or a zip someone gave you"><Glyph name="folder" /> Get a recipe…</button>
                   <button className="quiet" onClick={() => { setCreateError(null); setPlace("new"); }}><Glyph name="plus" /> New recipe</button>
                 </>}>
                 {shelf.shelf.length === 0 && recipes ? (
@@ -677,7 +742,7 @@ function App() {
                     {shelf.shelf.map((r) => (
                       <RecipeCard key={r.id} recipe={r} facts={cardFacts} onOpen={(id) => openRecipe(id)}
                         foot={<CardMenu recipe={r} onSetup={(id) => openRecipe(id, "setup")} onDoor={(id) => openRecipe(id, "door")}
-                          onDuplicate={duplicateRecipe} onDelete={deleteRecipe} onError={setError} onChanged={refreshRecipes} />} />
+                          onDuplicate={duplicateRecipe} onDelete={deleteRecipe} onError={setError} onNote={setNote} onChanged={refreshRecipes} />} />
                     ))}
                   </div>
                 )}
@@ -696,6 +761,10 @@ function App() {
 
           {place === "browse" && recipes && (
             <CatalogPlace recipes={recipes.recipes} facts={cardFacts} onLook={lookAt} onError={setError} onChanged={refreshRecipes} />
+          )}
+
+          {place === "import" && importPreview && (
+            <ImportPlace preview={importPreview} models={models?.models ?? []} busy={importing} onConfirm={confirmImport} onDiscard={discardImport} onError={setError} />
           )}
 
           {place === "new" && recipes && (
@@ -721,7 +790,8 @@ function App() {
           {place === "setup" && recipes && recipe && (
             <RecipePanel recipes={shelf.shelf.some((r) => r.id === recipe.id) ? shelf.shelf : [recipe, ...shelf.shelf]} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
               models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} onInputsChange={setSetupInputs}
-              keeps={keeps} onRebuild={(stage) => api.rebuildKeep(recipe.id, stage).then(() => keepsFor(recipe.id, setupInputs, pins)).catch((e) => setError(String(e)))} />
+              keeps={keeps} onRebuild={(stage) => api.rebuildKeep(recipe.id, stage).then(() => keepsFor(recipe.id, setupInputs, pins)).catch((e) => setError(String(e)))}
+              onConsentChanged={() => refreshRecipes().catch((e) => setError(String(e)))} />
           )}
 
           {place === "running" && (

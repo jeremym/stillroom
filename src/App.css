@@ -304,3 +304,14 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .journal li { margin: 2px 0; }
 
 .ask-again h3 { margin-top: 0; }
+
+/* The consent step (What this recipe may touch): one line and one tick per entry. */
+.consent-zone { margin: 10px 0 14px; padding: 10px 14px; border: 1px solid var(--amber); background: var(--ground-3); }
+.consent-zone h3 { margin: 0 0 6px; }
+.consent-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.consent-line { display: flex; align-items: baseline; gap: 10px; cursor: pointer; }
+.consent-line input { flex: none; }
+.consent-line.allowed { color: var(--phos-dim); cursor: default; }
+.consent-note { margin: 8px 0 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.example-note { color: var(--phos-dim); margin: 0 0 var(--gap); }
+.import-size { margin: 0 0 var(--gap); }

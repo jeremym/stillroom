@@ -39,6 +39,8 @@ interface ArtifactProps {
   steps: StepInfo[];
   busy: boolean;
   onEdit?: (stepId: string, output: unknown) => void;
+  /** A saved example, not a run on your files: look only, nothing to edit or save. */
+  readOnly?: boolean;
 }
 
 /** Media produced by tools from files cannot be edited in place; edit what made them. */
@@ -47,10 +49,10 @@ function kindIsEditable(kind: string | undefined, value: unknown) {
   return typeof value === "string" || (typeof value === "object" && value !== null);
 }
 
-function Artifact({ runId, name, spec, value, steps, busy, onEdit }: ArtifactProps) {
+function Artifact({ runId, name, spec, value, steps, busy, onEdit, readOnly = false }: ArtifactProps) {
   const label = spec?.label ?? name;
   const stepId = sourceStep(spec);
-  const editable = Boolean(onEdit && stepId && kindIsEditable(spec?.type, value));
+  const editable = !readOnly && Boolean(onEdit && stepId && kindIsEditable(spec?.type, value));
   const [editing, setEditing] = useState(false);
   const dependents = stepId ? dependentsOf(steps, stepId).map((s) => s.name ?? s.id) : [];
   const kind = spec?.type ?? (typeof value === "string" ? "text" : "json");
@@ -99,7 +101,7 @@ function Artifact({ runId, name, spec, value, steps, busy, onEdit }: ArtifactPro
         <h2 style={{ margin: 0 }}>{label} <span className="muted">(artifact · {kind})</span></h2>
         <span className="row">
           {editable && !editing && <button disabled={busy} onClick={() => setEditing(true)}>Edit…</button>}
-          {value != null && exports.map((opt) => (
+          {value != null && !readOnly && exports.map((opt) => (
             <button key={opt.ext} disabled={busy || exporting} onClick={() => exportWith(opt)}>{opt.label}</button>
           ))}
         </span>
@@ -139,9 +141,11 @@ interface PanelProps {
   steps: StepInfo[];
   busy: boolean;
   onEdit?: (stepId: string, output: unknown) => void;
+  /** A saved example, not a run on your files: look only, nothing to edit or save. */
+  readOnly?: boolean;
 }
 
-export function ArtifactsPanel({ run, outputs, steps, busy, onEdit, groups }: PanelProps & { groups?: { label: string | null; names: string[] }[] }) {
+export function ArtifactsPanel({ run, outputs, steps, busy, onEdit, readOnly, groups }: PanelProps & { groups?: { label: string | null; names: string[] }[] }) {
   const entries = Object.entries(run.outputs ?? {});
   const groupOf = (n: string) => groups?.find((g) => g.names.includes(n))?.label ?? null;
   const [active, setActive] = useState(0);
@@ -163,7 +167,7 @@ export function ArtifactsPanel({ run, outputs, steps, busy, onEdit, groups }: Pa
           ))}
         </nav>
       )}
-      <Artifact key={`${run.id}:${name}`} runId={run.id} name={name} spec={outputs[name]} value={value} steps={steps} busy={busy} onEdit={onEdit} />
+      <Artifact key={`${run.id}:${name}`} runId={run.id} name={name} spec={outputs[name]} value={value} steps={steps} busy={busy} onEdit={onEdit} readOnly={readOnly} />
     </>
   );
 }

@@ -6,11 +6,15 @@ import { Empty, Zone } from "@overtone-foundry/app-kit";
 import { WatchPanel } from "./WatchPanel";
 import { keepHeldWord } from "../stages";
 import { sourceWord } from "../catalog";
+import { needsPermission } from "../consent";
+import { ExampleButton, ExampleZone } from "./ExampleZone";
 import type { InstalledModel, JournalEntry, KeepState, RecipeInfo, RunSummary, StepInfo, WatchView } from "../types";
 
 /* The recipe's own page: what it does, what it needs, its runs, its watches, how it works. The same
    page serves the catalog's Look in a read-only form: Add to shelf stands where Set up a run would,
-   and nothing that would change or run the recipe is offered until it is shelved. */
+   and nothing that would change or run the recipe is offered until it is shelved. It also serves the
+   import's preview (`preview`): a recipe not in the app yet, so no runs, no watches, no map, and the
+   import's own buttons in place of the action row. */
 interface Props {
   recipe: RecipeInfo;
   models: InstalledModel[];
@@ -34,11 +38,17 @@ interface Props {
   origin?: RecipeInfo | null;
   /** Open a catalog recipe's page (Look). */
   onLook?: (id: string) => void;
+  /** The import's preview: the recipe is not in the app yet. */
+  preview?: boolean;
+  /** Stands in place of the action row (the import's Add and Discard). */
+  actions?: ReactNode;
 }
 
 const RUN_WORD: Record<string, string> = { succeeded: "done", failed: "failed", cancelled: "stopped", needs_review: "needs you", running: "running" };
 
-export function RecipePage({ recipe, models, history, watches, map, onSetup, onDoor, onOpenRun, onDuplicate, onRename, onDelete, onWatchesChanged, onError, keeps, readOnly = false, onAddToShelf, origin, onLook }: Props) {
+export function RecipePage({ recipe, models, history, watches, map, onSetup, onDoor, onOpenRun, onDuplicate, onRename, onDelete, onWatchesChanged, onError, keeps, readOnly = false, onAddToShelf, origin, onLook, preview = false, actions }: Props) {
+  const [exampleOpen, setExampleOpen] = useState(false);
+  useEffect(() => setExampleOpen(false), [recipe.id]);
   const [journalFor, setJournalFor] = useState<string | null>(null);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   useEffect(() => {
@@ -63,7 +73,8 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
         aside={<>
           <span className="tag">{sourceWord(recipe.source)}</span>
           {recipe.source === "community" && recipe.author?.name && <span className="tag" title="Contributed through the repository and reviewed before it shipped">by {recipe.author.name}</span>}
-          {readOnly && <span className="tag">in the catalog</span>}
+          {preview ? <span className="tag amber">not added yet</span> : readOnly && <span className="tag">in the catalog</span>}
+          {needsPermission(recipe) && !preview && <span className="tag amber" title="Set up asks you to tick what it may touch before it runs">needs your permission</span>}
           <span className="tag">v{recipe.version ?? "0"}</span><span className="tag">{recipe.steps.length} steps</span>
         </>}>
         {recipe.description && <p>{recipe.description}</p>}
@@ -130,6 +141,7 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
           <span className="label">May touch</span>
           <span className="muted">{describePermissions(recipe.permissions, recipe.inputs)}. Nothing else.</span>
         </div>
+        {actions !== undefined ? actions : (
         <div className="row" style={{ marginTop: 18 }}>
           {readOnly ? (
             <>
@@ -147,7 +159,9 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
           {yours && (confirmDelete
             ? <><button className="danger" onClick={() => { setConfirmDelete(false); onDelete(); }}>Really delete</button><button onClick={() => setConfirmDelete(false)}>Keep it</button></>
             : <button onClick={() => setConfirmDelete(true)}><Glyph name="delete" /> Delete…</button>)}
+          {recipe.example && !preview && <ExampleButton open={exampleOpen} onToggle={() => setExampleOpen((o) => !o)} />}
         </div>
+        )}
         {renaming && (
           <div className="row">
             <input type="text" value={newName} autoFocus onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && newName.trim()) { onRename(newName.trim()); setRenaming(false); } if (e.key === "Escape") setRenaming(false); }} style={{ flex: 1, minWidth: 240 }} />
@@ -157,6 +171,9 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
         )}
       </Zone>
 
+      {exampleOpen && recipe.example && !preview && <ExampleZone recipe={recipe} onError={onError} />}
+
+      {preview ? null : <>
       <Zone title="Runs of this recipe" sub="newest first" aside={<>{runs.length} run{runs.length === 1 ? "" : "s"}</>}>
         {runs.length === 0 ? (
           <Empty word="No runs yet"><p>{readOnly ? "Add it to the shelf, then set up a run; the results land here." : "Set up a run and the results land here."}</p></Empty>
@@ -181,6 +198,7 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
       <Zone title="How it works" sub="the recipe as a map" aside={readOnly ? undefined : <button className="quiet" onClick={onDoor}>Open the recipe card to edit</button>}>
         {map}
       </Zone>
+      </>}
     </>
   );
 }

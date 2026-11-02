@@ -241,6 +241,25 @@ export interface OutputSpec {
   description?: string;
 }
 
+/** One literal permission entry that needs the user's tick before the recipe runs: what kind of access,
+ *  the entry as written in recipe.yaml, and the sentence to show for it. `grantedAt` comes back on a
+ *  granted entry when the engine remembers when. */
+export interface Grant {
+  kind: GrantKind;
+  entry: string;
+  text: string;
+  grantedAt?: string | null;
+}
+
+export type GrantKind = "read" | "write" | "network" | "shell" | "cloudModels" | "credentials";
+
+/** The consent step: entries still needing a tick, and those the user already allowed. Both are empty
+ *  for a built-in, and for a recipe that touches only its inputs and its own results. */
+export interface Consent {
+  needed: Grant[];
+  granted: Grant[];
+}
+
 export interface RecipeInfo {
   id: string;
   name: string;
@@ -256,6 +275,10 @@ export interface RecipeInfo {
   tags?: string[];
   /** Set on a duplicate of a catalog recipe; absent or null otherwise. */
   from?: RecipeOrigin | null;
+  /** The consent step. Absent from an older engine: read as nothing needed, nothing granted. */
+  consent?: Consent | null;
+  /** True when the recipe ships a saved example result to look at (no model needed). */
+  example?: boolean;
   path: string;
   inputs: Record<string, InputSpec>;
   modelSlots: Record<string, ModelSlot>;
@@ -292,6 +315,14 @@ export interface KeepState {
   fresh: boolean | null;
   refresh: "always" | "when_sources_change" | "manual";
   last: JournalEntry | null;
+}
+
+/** A recipe picked for import, held in quarantine until the user says Add or Discard. */
+export interface ImportPreview {
+  token: string;
+  info: RecipeInfo;
+  findings: Finding[];
+  sizeBytes: number;
 }
 
 export interface RecipesResponse {

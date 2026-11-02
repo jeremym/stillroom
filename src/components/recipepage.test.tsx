@@ -4,7 +4,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { RecipeInfo } from "../types";
 
-vi.mock("../api", () => ({ api: { keepJournal: vi.fn(() => Promise.resolve([])) }, fmtTokens: (n: number) => String(n) }));
+const exampleRun = {
+  id: "ex", recipeId: "ask", recipeName: "Recipe ask", status: "succeeded", startedAt: "2026-11-02T10:00:00Z", finishedAt: "2026-11-02T10:00:09Z",
+  inputs: {}, resolutions: { writer: { slot: "writer", modelId: "ollama:qwen3:8b", via: "capability" } }, steps: [], outputs: { summary: "# A summary\n\nTwo lines about the document." }, error: null,
+};
+vi.mock("../api", () => ({ api: { keepJournal: vi.fn(() => Promise.resolve([])), exampleResult: vi.fn(() => Promise.resolve(exampleRun)) }, fmtTokens: (n: number) => String(n) }));
+import { api } from "../api";
 import { RecipePage } from "./RecipePage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -53,6 +58,29 @@ describe("RecipePage", () => {
     expect(line).toContain("the catalog now has 0.3.0");
     act(() => button("Look at it")!.click());
     expect(onLook).toHaveBeenCalledWith("ask");
+  });
+
+  it("See an example result loads the saved run and shows it read-only, on the Look page too", async () => {
+    const r = recipe("ask", { example: true, outputs: { summary: { from: "${steps.write.output}", type: "markdown", label: "Summary" } } });
+    act(() => root.render(<RecipePage {...common} recipe={r} readOnly onAddToShelf={() => {}} />));
+    expect(button("Add to shelf")).toBeTruthy();
+    act(() => button("See an example result")!.click());
+    expect(api.exampleResult).toHaveBeenCalledWith("ask");
+    await act(async () => { await Promise.resolve(); });
+    expect(host.textContent).toContain("An example result");
+    expect(host.textContent).toContain("You are looking at a saved example, not a run on your files.");
+    expect(host.textContent).toContain("with qwen3:8b");
+    expect(host.textContent).toContain("Two lines about the document.");
+    // Look only: nothing to edit or save.
+    expect(button("Edit…")).toBeUndefined();
+    expect(button("Save…")).toBeUndefined();
+    act(() => button("Hide the example")!.click());
+    expect(host.textContent).not.toContain("An example result");
+  });
+
+  it("without an example there is no button for one", () => {
+    act(() => root.render(<RecipePage {...common} recipe={recipe("ask", { shelf: "shelf" })} />));
+    expect(button("See an example result")).toBeUndefined();
   });
 
   it("a duplicate still in step with the catalog says only where it came from", () => {

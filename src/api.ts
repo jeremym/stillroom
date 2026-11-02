@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, Finding, Grant, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -61,6 +61,22 @@ export const api = {
    *  came from (its provenance) so the Library can say when the catalog has a newer version. */
   duplicateRecipe: (recipeId: string, newId: string, name: string, icon?: string | null) =>
     invoke<RecipeInfo>("duplicate_recipe", { recipeId, newId, name, icon: icon ?? null }),
+  /** The consent step: allow the literal permission entries the user ticked. Every window hears `recipes:changed`. */
+  grantPermissions: (recipeId: string, entries: Grant[]) => invoke<RecipeInfo>("grant_permissions", { recipeId, entries }),
+  /** Take back every permission granted to a recipe; it will not run until ticked again. */
+  revokePermissions: (recipeId: string) => invoke<RecipeInfo>("revoke_permissions", { recipeId }),
+  /** The saved example result a catalog recipe ships, as a run record for the ordinary viewers. */
+  exampleResult: (recipeId: string) => invoke<Run>("example_result", { recipeId }),
+  /** Get a recipe from a folder or a zip. Rust opens the dialog, copies the pick into quarantine, and
+   *  checks it; null when the user cancelled. Nothing joins your recipes until `confirmImport`. */
+  importRecipe: (): Promise<ImportPreview | null> =>
+    invoke<ImportPreview | null>("import_recipe").then((p) => (p ? { ...p, findings: toFindings(p.findings as (string | Finding)[]) } : null)),
+  /** Move a quarantined recipe into your recipes folder with the permissions ticked. */
+  confirmImport: (token: string, grants: Grant[]) => invoke<RecipeInfo>("confirm_import", { token, grants }),
+  /** Throw a quarantined recipe away. */
+  discardImport: (token: string) => invoke<void>("discard_import", { token }),
+  /** Save a copy of a recipe as a zip where the user chooses (dialog in Rust). The path written, or null when cancelled. */
+  exportRecipe: (recipeId: string) => invoke<string | null>("export_recipe", { recipeId }),
   revealRecipesFolder: () => invoke<void>("reveal_recipes_folder"),
   /** Show the sample folders (the inboxes a sample recipe reads) in the Finder. */
   revealSampleFolders: () => invoke<void>("reveal_sample_folders"),

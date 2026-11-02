@@ -14,7 +14,7 @@ use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
     edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
-    PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, StepEdit, StepRecord, Store, SystemPrompts, Watch,
+    PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
@@ -198,6 +198,29 @@ pub(crate) struct ExecArgs {
     pub trigger: Option<RunTrigger>,
     /// Stages whose run keep is emptied before the run (Rebuild).
     pub rebuild: Vec<String>,
+    /// Called once with the run's id when the run really begins: after its turn at the gate,
+    /// on the first step record. A watch uses it to say "started" no earlier than that.
+    pub on_started: Option<Box<dyn Fn(&str) + Send + Sync>>,
+}
+
+/// `run:started`: the run has its turn and its first step is under way.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RunStarted {
+    run_id: String,
+    recipe_id: String,
+    /// Set when something other than the user (a watch) set the run off.
+    trigger: Option<RunTrigger>,
+}
+
+/// `run:finished`: the summary, with the run's id repeated as `runId` so every run event names
+/// its run the same way.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RunFinished {
+    run_id: String,
+    #[serde(flatten)]
+    summary: RunSummary,
 }
 
 /// Resolve models, run the recipe with live step events, save the run, announce it.
@@ -210,10 +233,23 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
     let installed = router.list_all().await;
     let resolutions = resolve_slots_with(&bundle.recipe, &installed, &args.pins, &state.resolve_defaults()).map_err(err)?;
 
+    // One run at a time. Nothing is announced as started until this turn is ours: a watch that
+    // fires while the user runs something waits here, quietly.
     let _turn = state.run_gate.lock().await;
     let observer = {
         let app = app.clone();
+        let recipe_id = args.recipe_id.clone();
+        let trigger = args.trigger.clone();
+        let on_started = args.on_started;
+        let announced = std::sync::atomic::AtomicBool::new(false);
         Arc::new(move |rec: &StepRecord| {
+            // The executor mints the run id; the first record is the first time the shell sees it.
+            if announced.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_ok() {
+                let _ = app.emit("run:started", RunStarted { run_id: rec.run_id.clone(), recipe_id: recipe_id.clone(), trigger: trigger.clone() });
+                if let Some(f) = &on_started {
+                    f(&rec.run_id);
+                }
+            }
             let _ = app.emit("run:step", rec.clone());
         })
     };
@@ -235,7 +271,7 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
     *state.current_cancel.lock().map_err(err)? = None;
 
     state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
-    let _ = app.emit("run:finished", run.summary());
+    let _ = app.emit("run:finished", RunFinished { run_id: run.id.clone(), summary: run.summary() });
     Ok(run)
 }
 
@@ -515,8 +551,9 @@ struct RecipeLoadError {
 #[tauri::command]
 fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
     let scan = state.library.scan();
+    let placed = state.store.lock().map_err(err)?.shelf_all().map_err(err)?;
     Ok(RecipesResponse {
-        recipes: scan.bundles.iter().map(|b| b.info()).collect(),
+        recipes: scan.bundles.iter().map(|b| b.info().with_shelf(placed.get(&b.recipe.id).copied())).collect(),
         errors: scan
             .errors
             .into_iter()
@@ -558,6 +595,7 @@ async fn run_recipe(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -
             resume_from: None,
             trigger: None,
             rebuild: args.rebuild,
+            on_started: None,
         },
     )
     .await
@@ -607,6 +645,7 @@ async fn rerun_with_edit(app: AppHandle, state: State<'_, AppState>, args: EditA
             edits,
             resume_from: Some(base),
             trigger: None,
+            on_started: None,
         },
     )
     .await?;
@@ -935,7 +974,31 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("the recipe is deleted, but its run keeps could not be removed: {e}")),
     }
+    // Its place on the shelf goes with it; a built-in of the same id, now unshadowed, starts over in the catalog.
+    let _ = state.store.lock().map_err(err)?.remove_shelf(&recipe_id).map_err(err)?;
     let _ = app.emit("watch:changed", ());
+    let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: None });
+    Ok(())
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ShelfChanged {
+    recipe_id: String,
+    /// The new place, or `None` when the recipe is gone.
+    state: Option<ShelfState>,
+}
+
+/// Put a recipe on the shelf, into the archive, or (a built-in only) back in the catalog.
+/// Other windows hear `shelf:changed` and list again.
+#[tauri::command]
+fn set_shelf(app: AppHandle, app_state: State<'_, AppState>, recipe_id: String, state: ShelfState) -> CmdResult<()> {
+    let bundle = app_state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    if bundle.source == RecipeSource::User && state == ShelfState::Catalog {
+        return Err("Your own recipes stay on the shelf or in the archive; delete one to remove it.".into());
+    }
+    app_state.store.lock().map_err(err)?.set_shelf(&recipe_id, state).map_err(err)?;
+    let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: Some(state) });
     Ok(())
 }
 
@@ -1365,6 +1428,7 @@ pub fn run() {
             set_watch_enabled,
             remove_watch,
             delete_recipe,
+            set_shelf,
             reveal_recipes_folder,
             permission_status,
             open_privacy_pane,

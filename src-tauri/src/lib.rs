@@ -7,11 +7,11 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use stillroom_core::store::{ModelUsage, RunEstimate};
+use stillroom_core::store::{ModelUsage, PlannerMeasurement, RunEstimate};
 use stillroom_core::tools::{ToolInfo, ToolRegistry};
 use stillroom_core::trace::RunSummary;
 use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
-use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
+use stillroom_core::planner::{planner_recipe, trial_request, PLANNER_SLOT};
 use stillroom_core::{
     consent, edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, Grant, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest,
     Planner, PromptState, RecipeBundle, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
@@ -546,7 +546,23 @@ fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: Value) -> Cmd
     {
         let store = state.store.lock().map_err(err)?;
         for (k, v) in &checked {
-            store.set_setting(k, v).map_err(err)?;
+            // What Try planning measured is written by the engine, not the screen: a `planner`
+            // patch that leaves it out keeps it.
+            let v = match (k.as_str(), v) {
+                (stillroom_core::store::PLANNER_SETTING, Value::Object(o)) if !o.contains_key(stillroom_core::store::PLANNER_MEASURED_FIELD) => {
+                    let mut o = o.clone();
+                    if let Some(kept) = store
+                        .get_setting(stillroom_core::store::PLANNER_SETTING)
+                        .map_err(err)?
+                        .and_then(|p| p.get(stillroom_core::store::PLANNER_MEASURED_FIELD).cloned())
+                    {
+                        o.insert(stillroom_core::store::PLANNER_MEASURED_FIELD.into(), kept);
+                    }
+                    Value::Object(o)
+                }
+                _ => v.clone(),
+            };
+            store.set_setting(k, &v).map_err(err)?;
         }
     }
     let all = Value::Object(state.settings()?);
@@ -924,6 +940,62 @@ async fn preview_planner(state: State<'_, AppState>, model: Option<String>) -> C
         Ok(mut r) => PlannerPreview { resolution: r.remove(PLANNER_SLOT), problem: None, candidates },
         Err(e) => PlannerPreview { resolution: None, problem: Some(e.to_string()), candidates },
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TryPlanning {
+    /// How long the strip call took.
+    ms: u64,
+    /// Whether the answer checked clean.
+    clean: bool,
+    /// Why not, in the checker's words. Empty when clean.
+    problems: Vec<String>,
+}
+
+/// How long Try planning waits for the strip call before giving up.
+const TRY_PLANNING_CAP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Try planning: the planner's first call (choosing the stages) on a fixed sample goal, with
+/// `model_id`, timed and checked. The result is recorded under `planner.measured.<model id>`,
+/// so Auto can prefer a model that planned clean and quickly. Stop ("plan") cancels it; five
+/// minutes at most, and a model that takes longer is recorded as not clean.
+#[tauri::command]
+async fn try_planning(app: AppHandle, state: State<'_, AppState>, model_id: String) -> CmdResult<TryPlanning> {
+    let router = state.router();
+    let installed = router.list_all().await;
+    let pins: BTreeMap<String, String> = [(PLANNER_SLOT.to_string(), model_id)].into_iter().collect();
+    let resolutions = resolve_slots_with(&planner_recipe(), &installed, &pins, &state.resolve_defaults()).map_err(err)?;
+    let model_id = resolutions.get(PLANNER_SLOT).map(|r| r.model_id.clone()).ok_or("no model for the planner")?;
+    let cancel = Cancel::new();
+    *state.plan_cancel.lock().map_err(err)? = Some(cancel.clone());
+    let planner = Planner {
+        library: Some(state.stage_library.clone()),
+        models: router,
+        model_id: model_id.clone(),
+        tools: state.tools.catalog(),
+        prompt: state.prompts.current_text("planner").map_err(err)?,
+        strip_prompt: state.prompts.current_text("strip").map_err(err)?,
+        timeout: Some(TRY_PLANNING_CAP),
+        cancel: Some(cancel),
+        model_defaults: state.model_defaults(),
+        max_attempts: 1,
+    };
+    let out = planner.try_strip(&trial_request(), None).await;
+    *state.plan_cancel.lock().map_err(err)? = None;
+    let trial = match out {
+        Ok(t) => TryPlanning { ms: t.ms, clean: t.clean, problems: t.problems },
+        Err(stillroom_core::PlanError::Timeout(secs)) => TryPlanning { ms: secs * 1000, clean: false, problems: vec![format!("no answer within {secs} s")] },
+        Err(e) => return Err(e.to_string()),
+    };
+    {
+        let store = state.store.lock().map_err(err)?;
+        store
+            .record_planner_measurement(&model_id, &PlannerMeasurement { ms: trial.ms, clean: trial.clean, at: chrono::Utc::now().to_rfc3339() })
+            .map_err(err)?;
+    }
+    let _ = app.emit("settings:changed", Value::Object(state.settings()?));
+    Ok(trial)
 }
 
 #[derive(Deserialize)]
@@ -1783,6 +1855,7 @@ pub fn run() {
             save_system_prompt,
             use_system_prompt_version,
             preview_planner,
+            try_planning,
             plan_recipe,
             keep_states,
             rebuild_keep,

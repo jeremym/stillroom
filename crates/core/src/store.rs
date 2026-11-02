@@ -9,6 +9,7 @@ use crate::recipe::{Refresh, Stage};
 use crate::trace::{Run, RunStatus, RunSummary};
 use crate::watch::Watch;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -22,6 +23,21 @@ pub enum StoreError {
 
 pub struct Store {
     conn: Connection,
+}
+
+/// The `planner` setting holds the pin (`planner.model`) and, beside it, what Try planning
+/// measured (`planner.measured`): model id → `{ ms, clean, at }`. One setting, no schema bump.
+pub const PLANNER_SETTING: &str = "planner";
+pub const PLANNER_MEASURED_FIELD: &str = "measured";
+
+/// One Try planning result: how long the strip call took, whether its answer checked clean, and
+/// when (RFC 3339).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannerMeasurement {
+    pub ms: u64,
+    pub clean: bool,
+    pub at: String,
 }
 
 /// The store's on-disk layout version, kept in SQLite's `PRAGMA user_version`. Each step of the
@@ -533,6 +549,30 @@ impl Store {
         Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
     }
 
+    /// What Try planning recorded, by model id. An entry that does not parse is skipped.
+    pub fn planner_measured(&self) -> Result<BTreeMap<String, PlannerMeasurement>, StoreError> {
+        let planner = self.get_setting(PLANNER_SETTING)?;
+        let Some(map) = planner.as_ref().and_then(|p| p.get(PLANNER_MEASURED_FIELD)).and_then(serde_json::Value::as_object) else {
+            return Ok(BTreeMap::new());
+        };
+        Ok(map.iter().filter_map(|(k, v)| serde_json::from_value(v.clone()).ok().map(|m| (k.clone(), m))).collect())
+    }
+
+    /// Record one Try planning result under `planner.measured.<model id>`, keeping the rest of
+    /// the `planner` setting (the pin) as it is.
+    pub fn record_planner_measurement(&self, model_id: &str, m: &PlannerMeasurement) -> Result<(), StoreError> {
+        let mut planner = match self.get_setting(PLANNER_SETTING)? {
+            Some(serde_json::Value::Object(o)) => o,
+            _ => serde_json::Map::new(),
+        };
+        let measured = planner.entry(PLANNER_MEASURED_FIELD).or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if !measured.is_object() {
+            *measured = serde_json::Value::Object(Default::default());
+        }
+        measured.as_object_mut().expect("made an object above").insert(model_id.to_string(), serde_json::to_value(m)?);
+        self.set_setting(PLANNER_SETTING, &serde_json::Value::Object(planner))
+    }
+
     /// Set one setting; `null` removes it.
     pub fn set_setting(&self, key: &str, value: &serde_json::Value) -> Result<(), StoreError> {
         if value.is_null() {
@@ -594,6 +634,25 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planner_measurements_sit_beside_the_pin() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.planner_measured().unwrap().is_empty());
+        store.set_setting("planner", &serde_json::json!({ "model": "ollama:glm-4.7-flash" })).unwrap();
+        let m = PlannerMeasurement { ms: 48_000, clean: true, at: "2026-11-02T10:00:00Z".into() };
+        store.record_planner_measurement("ollama:glm-4.7-flash", &m).unwrap();
+        store.record_planner_measurement("ollama:qwen3:32b", &PlannerMeasurement { ms: 130_000, clean: false, at: "2026-11-02T10:05:00Z".into() }).unwrap();
+        let planner = store.get_setting("planner").unwrap().unwrap();
+        assert_eq!(planner["model"], "ollama:glm-4.7-flash", "the pin is kept");
+        assert_eq!(planner["measured"]["ollama:glm-4.7-flash"], serde_json::json!({ "ms": 48000, "clean": true, "at": "2026-11-02T10:00:00Z" }));
+        let all = store.planner_measured().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all["ollama:glm-4.7-flash"], m);
+        // A second trial of the same model replaces the first.
+        store.record_planner_measurement("ollama:glm-4.7-flash", &PlannerMeasurement { ms: 40_000, clean: true, at: "2026-11-02T11:00:00Z".into() }).unwrap();
+        assert_eq!(store.planner_measured().unwrap()["ollama:glm-4.7-flash"].ms, 40_000);
+    }
     use chrono::Utc;
     use indexmap::IndexMap;
 

@@ -453,6 +453,24 @@ pub struct Planner {
 
 pub type PlanObserver = Arc<dyn Fn(PlanEvent) + Send + Sync>;
 
+/// The goal Try planning uses, the same every time so one model's number compares with another's.
+pub const TRIAL_GOAL: &str = "Ask me for a folder of PDFs and a question each time, and answer from the documents with the page it came from.";
+
+/// The request Try planning sends: [`TRIAL_GOAL`], no material.
+pub fn trial_request() -> PlanRequest {
+    PlanRequest { goal: TRIAL_GOAL.into(), material: None, id: "answer-from-pdfs".into(), name: "Answer from PDFs".into(), icon: None }
+}
+
+/// What Try planning measured: the strip call's time and whether its answer checked clean.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StripTrial {
+    pub ms: u64,
+    pub clean: bool,
+    /// Why it was not clean, in the checker's words. Empty when clean.
+    pub problems: Vec<String>,
+}
+
 /// What the first call answers: the strip only.
 #[derive(Debug, Deserialize)]
 struct StripAnswer {
@@ -858,6 +876,37 @@ impl Planner {
         Ok((draft, custom, resp.prompt_tokens.unwrap_or(0), resp.completion_tokens.unwrap_or(0)))
     }
 
+    /// Try planning: the strip call only, timed and checked the way `plan` checks it. Clean means
+    /// the model named at least one stage and, when every stage was ready-made, the draft checks
+    /// clean; a strip with custom stages is not a whole recipe yet, so only the strip itself is
+    /// judged. An answer that is not a strip at all comes back as not clean, not as an error; the
+    /// model being unreachable, the time cap, and Stop are errors. The observer, if any, sees
+    /// the same events a plan emits (Phase, Delta, Done).
+    pub async fn try_strip(&self, req: &PlanRequest, observer: Option<PlanObserver>) -> Result<StripTrial, PlanError> {
+        let lib = self
+            .library
+            .as_deref()
+            .filter(|l| !l.stages.is_empty())
+            .ok_or_else(|| PlanError::Unusable("there are no ready-made stages to choose from".into()))?;
+        let progress = Progress::new(observer);
+        let picked = self.pick_strip(req, lib, &progress).await;
+        let ms = progress.elapsed_ms();
+        let (draft, custom, _, _) = match picked {
+            Ok(x) => x,
+            Err(PlanError::Unusable(why)) => return Ok(StripTrial { ms, clean: false, problems: vec![format!("the answer was not a list of stages: {why}")] }),
+            Err(e) => return Err(e),
+        };
+        let mut problems = Vec::new();
+        let stages = draft.yaml.get("stages").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+        if stages == 0 {
+            problems.push("the answer named no stages".to_string());
+        } else if custom == 0 {
+            let known_tools: Vec<String> = self.tools.iter().map(|t| t.id.clone()).collect();
+            problems.extend(draft.problems(&known_tools));
+        }
+        Ok(StripTrial { ms, clean: problems.is_empty(), problems })
+    }
+
     pub async fn plan(&self, req: &PlanRequest, observer: Option<PlanObserver>) -> Result<PlanOutcome, PlanError> {
         let progress = Progress::new(observer);
         let started = progress.started;
@@ -1091,6 +1140,39 @@ mod tests {
         let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
         assert!(d.check(&known).is_empty(), "{:?}", d.check(&known));
         assert!(d.problems(&known).is_empty());
+    }
+
+    #[tokio::test]
+    async fn try_strip_times_one_call_and_judges_the_strip_only() {
+        let lib = Arc::new(crate::stagelib::StageLibrary::load(&crate::stagelib::repo_stages_dir()).unwrap());
+        // All ready-made: the expanded draft must check clean.
+        let strip = json!({ "stages": [ { "use": "summarize_file", "name": "Read it" } ] }).to_string();
+        let (mut p, script) = planner(vec![strip]);
+        p.library = Some(lib.clone());
+        let t = p.try_strip(&trial_request(), None).await.unwrap();
+        assert!(t.clean, "{:?}", t.problems);
+        assert_eq!(script.seen.lock().unwrap().len(), 1, "the strip call only");
+        let seen = &script.seen.lock().unwrap()[0];
+        assert!(seen.messages[1].content.contains(TRIAL_GOAL));
+        // A custom stage: the strip is judged, not the recipe it has not written yet.
+        let strip = json!({ "stages": [ { "use": "read_folder" }, { "name": "Answer", "why": "Answer from the pages." } ] }).to_string();
+        let (mut p, _) = planner(vec![strip]);
+        p.library = Some(lib.clone());
+        assert!(p.try_strip(&trial_request(), None).await.unwrap().clean);
+        // No stages, or not a strip at all: not clean, with the reason; not an error.
+        let (mut p, _) = planner(vec![json!({ "stages": [] }).to_string()]);
+        p.library = Some(lib.clone());
+        let t = p.try_strip(&trial_request(), None).await.unwrap();
+        assert!(!t.clean);
+        assert_eq!(t.problems, vec!["the answer named no stages"]);
+        let (mut p, _) = planner(vec!["I would rather not.".into()]);
+        p.library = Some(lib.clone());
+        let t = p.try_strip(&trial_request(), None).await.unwrap();
+        assert!(!t.clean);
+        assert!(t.problems[0].starts_with("the answer was not a list of stages"), "{:?}", t.problems);
+        // Without a library there is no strip to try.
+        let (p, _) = planner(vec![]);
+        assert!(matches!(p.try_strip(&trial_request(), None).await, Err(PlanError::Unusable(_))));
     }
 
     #[tokio::test]

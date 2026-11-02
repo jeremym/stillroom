@@ -315,6 +315,17 @@ export interface Draft {
   files: Record<string, string>;
 }
 
+/** What the checker says about a draft. A problem blocks saving; a note is worth a look and may carry a
+ *  fix the engine can apply (`fix` names it, `fixLabel` is the button's wording). */
+export interface Finding {
+  text: string;
+  severity: FindingSeverity;
+  fix?: string | null;
+  fixLabel?: string | null;
+}
+
+export type FindingSeverity = "problem" | "note";
+
 export interface DraftResponse {
   id: string;
   source: RecipeSource;
@@ -445,12 +456,13 @@ export type PlanEvent =
   | { kind: "choosing" }
   | { kind: "thinking"; attempt: number; of: number }
   | { kind: "checking"; attempt: number }
-  | { kind: "fixing"; attempt: number; problems: string[] };
+  | { kind: "fixing"; attempt: number; problems: (string | Finding)[] };
 
 export interface PlanOutcome {
   draft: Draft;
-  /** Problems the checker still finds; empty means the draft can be saved. */
-  problems: string[];
+  /** What the checker still finds; no problems among them means the draft can be saved.
+   *  Older engines send plain strings; `toFindings` reads those as problems. */
+  problems: (string | Finding)[];
   attempts: number;
   modelId: string;
   promptTokens: number;

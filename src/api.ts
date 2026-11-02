@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CodexStatus, Draft, DraftResponse, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
+import { toFindings } from "./flow/findings";
+import type { CodexStatus, Draft, DraftResponse, Finding, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -36,7 +37,11 @@ export const api = {
   clearStepCache: () => invoke<number>("clear_step_cache"),
   listTools: () => invoke<ToolInfo[]>("list_tools"),
   readRecipeDraft: (recipeId: string) => invoke<DraftResponse>("read_recipe_draft", { recipeId }),
-  checkRecipeDraft: (draft: Draft) => invoke<string[]>("check_recipe_draft", { draft }),
+  /** What is wrong (problems) or worth a look (notes) in a draft. An older engine answers with plain
+   *  strings; those are read as problems. */
+  checkRecipeDraft: (draft: Draft): Promise<Finding[]> => invoke<(string | Finding)[]>("check_recipe_draft", { draft }).then(toFindings),
+  /** Apply the named fixes (the `fix` ids from findings) and get the rewritten draft back. Nothing is saved. */
+  fixRecipeDraft: (draft: Draft, fixes: string[]) => invoke<Draft>("fix_recipe_draft", { draft, fixes }),
   saveRecipeDraft: (draft: Draft) => invoke<SaveResponse>("save_recipe_draft", { draft }),
   /** The engine's own prompts (the planner) with their revisions. */
   listSystemPrompts: () => invoke<PromptState[]>("list_system_prompts"),

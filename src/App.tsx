@@ -99,6 +99,7 @@ function App() {
   const [backgroundNote, setBackgroundNote] = useState<{ text: string; runId: string | null } | null>(null);
   // A quiet line for something that went right and left no other trace (Saved to …).
   const [note, setNote] = useState<string | null>(null);
+  useEffect(() => { if (place !== "library") setNote(null); }, [place]);
   // Get a recipe…: the pick, held in quarantine until Add or Discard. Leaving the place discards.
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importing, setImporting] = useState(false);
@@ -703,7 +704,7 @@ function App() {
             </Zone>
           )}
 
-          {note && (
+          {note && place === "library" && (
             <p className="quiet-line" role="status">
               <Glyph name="folder" /> {note}
               <button className="quiet" onClick={() => setNote(null)}>Dismiss</button>

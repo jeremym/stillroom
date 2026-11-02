@@ -936,7 +936,8 @@ struct PlanArgs {
     model: Option<String>,
 }
 
-/// Draft a recipe from a goal. Progress arrives as `plan:progress` events; Stop cancels it.
+/// Draft a recipe from a goal. Progress arrives as `plan:progress` events, including what the
+/// model is writing as it writes it (Phase, Delta, Done); Stop cancels it mid-stream.
 /// Nothing is written: the draft comes back for the user to save.
 #[tauri::command]
 async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs) -> CmdResult<PlanOutcome> {

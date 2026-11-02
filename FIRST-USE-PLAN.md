@@ -16,11 +16,15 @@ A new recipe's id is its name slugified with a suffix until free (`report`, `rep
 
 ## 3. New recipe: the three ways to start become tabs
 
+**Status 2026-11-02: shipped** (kit `dec30ed`, app `b06eab9`; `docs/screenshots/first-use-new-recipe-tabs-cost-line.png`, `first-use-blank-tab.png`). The Draft it button now also says what it still needs (a name, a goal, a recipe to copy) instead of sitting dim.
+
 The three choices (A goal · Blank · A copy of a recipe) are boxes in a row inside the zone. They should read as **tabs that sit on the zone's top edge**: the selected tab joined to the panel below it (no bottom edge, the panel's ground colour, a faint glow), the other two recessed and dimmer, all three touching the zone's border at their outer ends so the row looks cut into the frame rather than placed on it. The one-line hint for each start moves under the tab row as the panel's first line, so the panel always says what the selected start does.
 
 Where it lives: the look comes from the kit, so this is a kit change first: `Zone` gains a `tabs` slot rendered flush with its top border, and a `Tabs` component (`role="tablist"`, arrow keys, `aria-selected`) that the Dial does not already cover (the Dial is a ring of places; this is a tabbed panel). Stillroom then uses `Zone tabs={…}` in `NewRecipe.tsx`; the CSS for `.choices` goes away. Build the kit (`pnpm build` in `../overtone-foundry-app-kit`) before Stillroom. One session. Verified by a screenshot of each tab selected, in the three themes.
 
 ## 4. Which model plans: a suggested planner, and the cost said up front
+
+**Status 2026-11-02: shipped.** Live on this Mac: Auto picked qwen3.8:27b-mlx (18.2 GB, fits); "measure it" recorded 18 s clean; Try planning in Settings recorded GLM 4.7 Flash at 1 m 16 s clean, so the rank's pick stands (`docs/screenshots/first-use-settings-try-planning.png`). Not done: the Settings › Pull a model zone still suggests the generic starter; the welcome has the planner-sized one.
 
 Today "Plan with · Auto" resolves the planner slot like any slot with `preference: accuracy`, which means **the largest installed model that answers in a fixed shape**. On this Mac that is a 49 GB coder model: slow, and not the best drafter. Jeremy reaches for GLM 4.7 Flash (q8, 30 B); the UI gave no reason to.
 
@@ -33,6 +37,8 @@ Rust: `planner_slot()` preference and a `rank_for_planning` in `resolve.rs`; `st
 
 ## 5. The planner at work: show what the model is writing
 
+**Status 2026-11-02: shipped.** Live: the window showed the model's thinking under "Choosing the stages · call 1 of 1 · 10 s · 273 tokens", Stop mid-stream left "stopped" and re-enabled Draft it, "Writing the custom stages · call 1 of 3 · 54 s · 2663 tokens" followed, and the finished card's note offers "show what it wrote" (`docs/screenshots/first-use-stream-*.png`, `first-use-transcript.png`). Thinking deltas are included, marked (thinking) and (answer).
+
 While the planner runs, the button says "Thinking about the steps…" and nothing moves for minutes. The model is writing JSON the whole time; show it.
 
 - **Streaming in the model layer.** `ModelClient` gains `chat_stream(model, req, on_delta)` with a default that calls `chat` and emits once; the Ollama adapter implements it with `stream: true` (NDJSON lines; `thinking` deltas when `think` is on; `format` still applies). Codex and the OpenAI adapter keep the one-shot default for now.
@@ -44,6 +50,8 @@ Rust: `crates/models` (provider trait, ollama), `crates/core/planner.rs` (events
 
 ## 6. The goal screen says what is baked in and what is asked for each run
 
+**Status 2026-11-02: shipped** (app `b06eab9`).
+
 The two fields do not tell a first-time user whether to paste their document or make the recipe ask for one. New wording:
 
 - **What should this recipe do?** · sub: "say what comes in each time and what should come out". Placeholder: "Ask me for a folder of PDFs and a question each time, and answer from the documents with the page it came from." (shorter than today's; the example names an input and an output).
@@ -53,6 +61,8 @@ The two fields do not tell a first-time user whether to paste their document or 
 Frontend only, `NewRecipe.tsx`; the planner prompt's wording for material stays. Half a session. Verified by Jeremy's read-through.
 
 ## 7. Order and release
+
+**2026-11-02:** all six items shipped on `first-use` and merged to `main` as 0.3.1. The goal that failed three times under 0.3.0 (a learning-kit builder that saves into an Obsidian vault) drafted clean on the second try in 4 m 40 s: five stages, thirteen steps, a kept stage, four ready-made stages and a custom one (`docs/screenshots/first-use-drafted-learning-kit.png`). The two planner slips it kept making (bare `${step}` references, a step in no stage) are now repaired by the registry before the checker sees them.
 
 | Step | What | Needs the screen |
 |---|---|---|

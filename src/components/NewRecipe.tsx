@@ -103,7 +103,9 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
   const chosenId = model || picked?.modelId || null;
   const chosen: PlannerCandidate | null = chosenId ? (preview?.candidates ?? []).find((c) => c.modelId === chosenId) ?? null : null;
   const cost = chosen ? costLine(chosen, preview?.memoryBytes) : null;
-  const planLabel = busy && mode === "goal" ? (progress ?? "Planning…") : busy ? "Creating…" : mode === "goal" ? "Draft it" : "Create and open its card";
+  // The button says what it still needs, the way Run does in Set up, instead of sitting dim with no reason.
+  const needs = !name.trim() ? "needs a name" : mode === "goal" && !goal.trim() ? "needs a goal" : mode === "copy" && !sourceId ? "needs a recipe to copy" : null;
+  const planLabel = busy && mode === "goal" ? (progress ?? "Planning…") : busy ? "Creating…" : (mode === "goal" ? "Draft it" : "Create and open its card") + (needs ? ` · ${needs}` : "");
 
   return (
     <Zone className="accent" tabs={<Tabs label="Start from" items={STARTS} value={mode} onChange={(m) => { if (!busy) setMode(m); }} controls="new-recipe-form" />}>

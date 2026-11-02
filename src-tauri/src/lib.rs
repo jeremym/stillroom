@@ -553,7 +553,11 @@ fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
     let scan = state.library.scan();
     let placed = state.store.lock().map_err(err)?.shelf_all().map_err(err)?;
     Ok(RecipesResponse {
-        recipes: scan.bundles.iter().map(|b| b.info().with_shelf(placed.get(&b.recipe.id).copied())).collect(),
+        recipes: scan
+            .bundles
+            .iter()
+            .map(|b| b.info().with_shelf(placed.get(&b.recipe.id).copied()).with_from(stillroom_core::catalog::provenance(b, &scan.bundles)))
+            .collect(),
         errors: scan
             .errors
             .into_iter()

@@ -82,6 +82,11 @@ pub struct RecipeInfo {
     /// store's placement through `with_shelf`.
     #[serde(default)]
     pub shelf: ShelfState,
+    /// For a user recipe made by Duplicate from a catalog recipe: which one, which version was
+    /// copied, and whether the catalog now has a newer version while the steps are still as
+    /// copied. `info()` leaves it empty; the shell fills it through `with_from` from the scan.
+    #[serde(default)]
+    pub from: Option<crate::catalog::CatalogFrom>,
 }
 
 impl RecipeInfo {
@@ -95,6 +100,12 @@ impl RecipeInfo {
             (_, Some(s)) => s,
             (_, None) => ShelfState::Catalog,
         };
+        self
+    }
+
+    /// Record where a duplicated recipe came from (see `catalog::provenance`).
+    pub fn with_from(mut self, from: Option<crate::catalog::CatalogFrom>) -> Self {
+        self.from = from;
         self
     }
 }
@@ -266,6 +277,7 @@ impl RecipeBundle {
             outputs: self.recipe.outputs.clone(),
             stages: self.recipe.stages_or_implied(),
             shelf: ShelfState::Catalog,
+            from: None,
         }
         .with_shelf(None)
     }
@@ -383,6 +395,10 @@ mod tests {
         assert_eq!(sample.shelf, ShelfState::Catalog, "a sample starts in the catalog too");
         assert_eq!(sample.clone().with_shelf(Some(ShelfState::Shelf)).shelf, ShelfState::Shelf);
         assert_eq!(serde_json::to_value(&sample).unwrap()["source"], serde_json::json!("sample"));
+        let json = serde_json::to_value(&sample).unwrap();
+        assert!(json["from"].is_null(), "not a copy of anything: {}", json["from"]);
+        let copied = sample.with_from(Some(crate::catalog::CatalogFrom { catalog: "inbox-triage".into(), version: "0.1.0".into(), newer: true }));
+        assert_eq!(serde_json::to_value(&copied).unwrap()["from"], serde_json::json!({ "catalog": "inbox-triage", "version": "0.1.0", "newer": true }));
     }
 
     #[test]

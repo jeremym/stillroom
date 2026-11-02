@@ -65,6 +65,9 @@ pub struct Recipe {
     /// Paths to test case files, relative to the recipe root.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tests: Vec<String>,
+    /// Experiments: every `x-` key, kept as written and never read by the engine.
+    #[serde(flatten, default, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra: IndexMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -673,6 +676,44 @@ outputs:
         assert_eq!(back["author"]["name"], "Stillroom");
         assert!(back["runtime"].get("maxVersion").is_none(), "an unset field is left out, not written as null");
         assert!(back.get("tests").is_some() && back.get("license").is_some());
+    }
+
+    #[test]
+    fn x_keys_ride_along_at_every_level() {
+        let yaml = r#"
+schemaVersion: "0"
+id: x-everywhere
+name: Experiments everywhere
+x-shelf: { pinned: true }
+inputs:
+  source: { type: text, x-shelf: { pinned: true } }
+modelSlots:
+  writer: { requires: [text], x-shelf: { pinned: true } }
+steps:
+  - id: summarize
+    kind: model
+    slot: writer
+    prompt: prompts/summarize.md
+    inputs: { text: "${inputs.source}" }
+    x-shelf: { pinned: true }
+outputs:
+  summary: { from: "${steps.summarize.output}", type: markdown, x-shelf: { pinned: true } }
+stages:
+  - { id: make, name: Make, steps: [summarize], outputs: [summary], x-shelf: { pinned: true } }
+"#;
+        let r = Recipe::from_yaml(yaml).expect("x- keys are allowed at every level");
+        assert_eq!(r.extra["x-shelf"]["pinned"], true, "the top-level experiment is kept on the typed recipe");
+        let bad = yaml.replace("x-shelf: { pinned: true }
+inputs:", "y-shelf: { pinned: true }
+inputs:");
+        assert!(Recipe::from_yaml(&bad).is_err(), "only the x- prefix is open");
+        let d = crate::draft::Draft { yaml: serde_yaml::from_str(yaml).unwrap(), files: [("prompts/summarize.md".to_string(), "Sum.".to_string())].into_iter().collect() };
+        assert!(d.check(&["file.read".into()]).is_empty(), "{:?}", d.check(&["file.read".into()]));
+        let tmp = std::env::temp_dir().join(format!("stillroom-x-{}", uuid::Uuid::now_v7()));
+        d.write(&tmp, &["file.read".into()]).unwrap();
+        let written = std::fs::read_to_string(tmp.join("recipe.yaml")).unwrap();
+        assert_eq!(written.matches("x-shelf:").count(), 6, "every x- key survives a save:\n{written}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

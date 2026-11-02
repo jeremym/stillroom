@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://stillroom.dev/schemas/recipe/v0.json",
   "title": "Stillroom Recipe",
-  "description": "A complete, reusable process for accomplishing a goal. Version 0: subject to breaking changes until 1.0.",
+  "description": "A complete, reusable process for accomplishing a goal. Version 0: subject to breaking changes until 1.0. Keys that start with x- are experiments: kept, never read by the engine, promoted by a migration once settled.",
   "type": "object",
   "required": [
     "schemaVersion",
@@ -11,6 +11,9 @@
     "steps",
     "outputs"
   ],
+  "patternProperties": {
+    "^x-": {}
+  },
   "additionalProperties": false,
   "properties": {
     "schemaVersion": {
@@ -150,6 +153,9 @@
       "required": [
         "type"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "properties": {
         "type": {
           "type": "string",
@@ -211,6 +217,9 @@
       "required": [
         "requires"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "properties": {
         "requires": {
           "type": "array",
@@ -350,6 +359,9 @@
         "id",
         "kind"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -707,6 +719,9 @@
         "from",
         "type"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "properties": {
         "from": {
           "$ref": "#/$defs/ref"
@@ -780,6 +795,9 @@
         "id",
         "name"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "additionalProperties": false,
       "properties": {
         "id": {

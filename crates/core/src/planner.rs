@@ -53,6 +53,7 @@ pub fn planner_recipe() -> Recipe {
         runtime: None,
         tags: Vec::new(),
         tests: Vec::new(),
+        extra: IndexMap::new(),
     }
 }
 

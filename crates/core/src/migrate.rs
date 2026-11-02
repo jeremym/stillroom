@@ -689,4 +689,144 @@ mod tests {
         assert_eq!(shape, json!({ "text": "Stage “Remember” writes a keep but does not say so.", "severity": "note", "fix": "declare_keep:remember", "fixLabel": "Declare the keep" }));
         assert_eq!(serde_json::to_value(Finding::problem("p")).unwrap(), json!({ "text": "p", "severity": "problem", "fix": null, "fixLabel": null }));
     }
+
+    #[test]
+    fn the_table_runs_step_ref_then_place_step_then_declare_keep() {
+        let ids: Vec<&str> = DEPRECATIONS.iter().map(|d| d.id).collect();
+        assert_eq!(ids, ["step_ref", "place_step", "declare_keep"], "one repair_all pass must see rewritten references before it places, and placed steps before it declares");
+        assert!(DEPRECATIONS.iter().all(|d| !d.since.is_empty() && !d.fix_label.is_empty() && !d.replaced_by.is_empty()));
+    }
+
+    #[test]
+    fn a_bare_step_reference_is_a_note_with_a_fix_that_points_at_the_result() {
+        let mut y = json!({
+            "schemaVersion": "0", "id": "x", "name": "X",
+            "inputs": { "materials": { "type": "files" } },
+            "steps": [
+                { "id": "read_materials", "kind": "map", "over": "${inputs.materials}", "steps": [ { "id": "read", "kind": "tool", "tool": "doc.text", "inputs": { "path": "${item}" } } ] },
+                { "id": "chunk_materials", "name": "Chunk materials", "kind": "tool", "tool": "text.chunk", "inputs": { "text": "${read_materials}" } },
+                { "id": "each", "kind": "map", "over": "${chunk_materials.chunks}", "as": "chunk", "steps": [
+                    { "id": "first", "kind": "tool", "tool": "list.filter", "inputs": { "items": "${chunk}" } },
+                    { "id": "second", "kind": "tool", "tool": "list.table", "inputs": { "items": "${first}", "all": "${chunk_materials}" } }
+                ] },
+                { "id": "synth", "kind": "tool", "tool": "list.table", "inputs": { "items": "${each}" }, "when": "${chunk_materials.ok}" },
+                { "id": "shadow", "kind": "map", "over": "${steps.each.output}", "as": "synth", "steps": [ { "id": "use_it", "kind": "tool", "tool": "list.filter", "inputs": { "items": "${synth}" } } ] }
+            ],
+            "outputs": { "note": { "from": "${synth}", "type": "json" } }
+        });
+        let notes = notes_for(&y);
+        let got: Vec<(&str, &str)> = notes.iter().map(|n| (n.text.as_str(), n.fix.as_deref().unwrap_or(""))).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("“Chunk materials” points at ${read_materials}; a step's result is written ${steps.read_materials.output}.", "step_ref:chunk_materials"),
+                ("“each” points at ${chunk_materials.chunks}; a step's result is written ${steps.chunk_materials.output.chunks}.", "step_ref:each"),
+                ("“second” points at ${first}; a step's result is written ${steps.first.output}.", "step_ref:each/second"),
+                ("“second” points at ${chunk_materials}; a step's result is written ${steps.chunk_materials.output}.", "step_ref:each/second"),
+                ("“synth” points at ${each}; a step's result is written ${steps.each.output}.", "step_ref:synth"),
+                ("“synth” points at ${chunk_materials.ok}; a step's result is written ${steps.chunk_materials.output.ok}.", "step_ref:synth"),
+                ("Result “note” points at ${synth}; a step's result is written ${steps.synth.output}.", "step_ref:result/note"),
+            ],
+            "the loop item, the loop's own as name, and an as name that shadows a step id are all left alone"
+        );
+        assert!(notes.iter().all(|n| n.fix_label.as_deref() == Some("Point at the step's result")));
+        assert!(apply_fix(&mut y, "step_ref:chunk_materials").unwrap());
+        assert_eq!(y["steps"][1]["inputs"]["text"], "${steps.read_materials.output}");
+        assert_eq!(y["steps"][2]["over"], "${chunk_materials.chunks}", "only the named step was fixed");
+        assert_eq!(notes_for(&y).len(), 6);
+        assert!(apply_fix(&mut y, "step_ref:each/second").unwrap());
+        assert_eq!(y["steps"][2]["steps"][1]["inputs"], json!({ "items": "${steps.first.output}", "all": "${steps.chunk_materials.output}" }));
+        assert_eq!(notes_for(&y).len(), 4);
+        assert!(repair_all(&mut y));
+        assert_eq!(y["steps"][2]["over"], "${steps.chunk_materials.output.chunks}", "the path follows the result");
+        assert_eq!(y["steps"][3]["inputs"]["items"], "${steps.each.output}");
+        assert_eq!(y["steps"][3]["when"], "${steps.chunk_materials.output.ok}");
+        assert_eq!(y["outputs"]["note"]["from"], "${steps.synth.output}");
+        assert_eq!(y["steps"][0]["steps"][0]["inputs"]["path"], "${item}", "the loop item stays");
+        assert_eq!(y["steps"][2]["steps"][0]["inputs"]["items"], "${chunk}", "the loop's as name stays");
+        assert_eq!(y["steps"][4]["steps"][0]["inputs"]["items"], "${synth}", "an as name that shadows a step id is the item, not the step");
+        assert!(notes_for(&y).is_empty(), "{:?}", notes_for(&y));
+        assert!(!repair_all(&mut y), "nothing left to repair");
+        assert_eq!(bare_step_ref_text("“A”", "b", &["c".into(), "d".into()]), "“A” points at ${b.c.d}; a step's result is written ${steps.b.output.c.d}.");
+    }
+
+    #[test]
+    fn a_step_in_no_stage_is_a_note_with_a_fix_that_places_it_by_what_it_reads() {
+        let mut y = json!({
+            "schemaVersion": "0", "id": "x", "name": "X",
+            "inputs": { "folder": { "type": "directory" }, "question": { "type": "text" }, "extra": { "type": "json" } },
+            "steps": [
+                { "id": "list", "kind": "tool", "tool": "fs.list", "inputs": { "path": "${inputs.folder}" } },
+                { "id": "chunk", "kind": "tool", "tool": "text.chunk", "inputs": { "text": "${steps.list.output}" } },
+                { "id": "index", "name": "Index passages", "kind": "tool", "tool": "keep.index", "inputs": { "items": "${steps.chunk.output}" } },
+                { "id": "ask", "kind": "tool", "tool": "keep.search", "inputs": { "stage": "gather", "query": "${inputs.question}" } },
+                { "id": "orphan", "kind": "tool", "tool": "list.table", "inputs": { "items": "${inputs.extra}" } },
+                { "id": "loose", "kind": "tool", "tool": "list.table", "inputs": { "items": [] } }
+            ],
+            "outputs": { "answer": { "from": "${steps.ask.output}", "type": "json" }, "table": { "from": "${steps.orphan.output}", "type": "json" } },
+            "stages": [
+                { "id": "gather", "name": "Gather", "inputs": ["folder"], "steps": ["list", "chunk"] },
+                { "id": "ask", "name": "Ask", "inputs": ["question"] }
+            ]
+        });
+        let notes = notes_for(&y);
+        let got: Vec<(&str, &str, &str)> = notes.iter().map(|n| (n.text.as_str(), n.fix.as_deref().unwrap_or(""), n.fix_label.as_deref().unwrap_or(""))).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("“Index passages” is in no stage.", "place_step:index", "Put it in a stage"),
+                ("“ask” is in no stage.", "place_step:ask", "Put it in a stage"),
+                ("“orphan” is in no stage.", "place_step:orphan", "Put it in a stage"),
+                ("“loose” is in no stage.", "place_step:loose", "Put it in a stage"),
+            ]
+        );
+        assert!(apply_fix(&mut y, "place_step:index").unwrap());
+        assert_eq!(y["stages"][0]["steps"], json!(["list", "chunk", "index"]), "it joins the stage of the step it reads");
+        assert_eq!(y["stages"][1].get("steps"), None, "only the named step was placed");
+        assert_eq!(notes_for(&y).len(), 3 + 1, "three steps still to place, and Gather now writes a keep without saying so");
+        assert!(repair_all(&mut y));
+        assert_eq!(y["stages"][1]["steps"], json!(["ask", "orphan", "loose"]), "an input it reads places it; nothing to go on means the last stage");
+        assert_eq!(y["stages"][1]["inputs"], json!(["question", "extra"]), "an input nobody listed joins the first stage whose steps read it");
+        assert_eq!(y["stages"][1]["outputs"], json!(["answer", "table"]), "results go with the step they come from");
+        assert_eq!(y["stages"][0]["keep"]["refresh"], "when_sources_change", "the same pass declares the keep of the stage the step landed in");
+        assert!(notes_for(&y).is_empty(), "{:?}", notes_for(&y));
+        assert!(!repair_all(&mut y), "nothing left to repair");
+        // No stages, or an empty list of them: nothing to place a step into.
+        let mut plain = y.clone();
+        plain.as_object_mut().unwrap().remove("stages");
+        assert!(notes_for(&plain).is_empty());
+        assert!(!repair_all(&mut plain));
+        plain["stages"] = json!([]);
+        assert!(notes_for(&plain).is_empty());
+        assert!(!repair_all(&mut plain));
+    }
+
+    #[test]
+    fn one_repair_pass_fixes_a_bare_reference_the_placement_it_decides_and_the_keep() {
+        // The run that motivated this: the unlisted keep.index step reads ${chunk} bare, so its
+        // stage can only be found once the reference is rewritten; then the keep follows.
+        let mut y = json!({
+            "schemaVersion": "0", "id": "x", "name": "X",
+            "inputs": { "folder": { "type": "directory" } },
+            "steps": [
+                { "id": "list", "kind": "tool", "tool": "fs.list", "inputs": { "path": "${inputs.folder}" } },
+                { "id": "chunk", "kind": "tool", "tool": "text.chunk", "inputs": { "text": "${list}" } },
+                { "id": "index", "kind": "tool", "tool": "keep.index", "inputs": { "items": "${chunk.chunks}" } },
+                { "id": "ask", "kind": "tool", "tool": "keep.search", "inputs": { "stage": "gather", "query": "x" } }
+            ],
+            "outputs": { "answer": { "from": "${ask}", "type": "json" } },
+            "stages": [
+                { "id": "gather", "name": "Gather", "inputs": ["folder"], "steps": ["list", "chunk"] },
+                { "id": "ask", "name": "Ask", "steps": ["ask"], "outputs": ["answer"] }
+            ]
+        });
+        assert_eq!(notes_for(&y).len(), 4, "{:?}", notes_for(&y));
+        assert!(repair_all(&mut y));
+        assert_eq!(y["steps"][2]["inputs"]["items"], "${steps.chunk.output.chunks}");
+        assert_eq!(y["stages"][0]["steps"], json!(["list", "chunk", "index"]));
+        assert_eq!(y["stages"][0]["keep"]["refresh"], "when_sources_change");
+        assert_eq!(y["outputs"]["answer"]["from"], "${steps.ask.output}");
+        assert!(notes_for(&y).is_empty(), "{:?}", notes_for(&y));
+        assert!(!repair_all(&mut y));
+    }
 }

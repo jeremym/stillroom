@@ -1,0 +1,37 @@
+{
+  "about": "A single-call plan with the two slips a model keeps making together (recorded from a qwen3-coder-next run that never came clean through three fix rounds): five steps and the result point at a step by its bare id (${read_materials}, ${chunk_materials.chunks}, ${query_index}, ${extract_findings}, ${synth}), and the keep.index step is listed in no stage, so it fell into the implied Make stage where no keep could be declared. One repair pass points every reference at the step's result, puts Index passages in Gather (the stage of the step it reads), and declares Gather's keep (when_sources_change, since it indexes).",
+  "request": { "goal": "Index my reading materials, answer a question from them, and save the findings to my Obsidian vault", "id": "materials-to-obsidian", "name": "Materials to Obsidian", "icon": "notes" },
+  "strip": null,
+  "answer": {
+    "recipe": {
+      "id": "x", "name": "X", "description": "Reads your materials, indexes their passages, answers a question from them, and saves the findings as a note.",
+      "inputs": {
+        "materials": { "type": "files", "label": "Materials" },
+        "question": { "type": "text", "label": "Question" },
+        "vault": { "type": "directory", "label": "Obsidian vault folder" }
+      },
+      "modelSlots": { "writer": { "requires": ["text"] } },
+      "permissions": { "filesystem": { "read": ["input"], "write": ["${inputs.vault}"] } },
+      "steps": [
+        { "id": "read_materials", "name": "Read each material", "kind": "map", "over": "${inputs.materials}", "steps": [
+          { "id": "read", "name": "Read", "kind": "tool", "tool": "doc.text", "inputs": { "path": "${item}" } }
+        ] },
+        { "id": "chunk_materials", "name": "Chunk materials", "kind": "tool", "tool": "text.chunk", "inputs": { "text": "${read_materials}" } },
+        { "id": "index_passages", "name": "Index passages", "kind": "tool", "tool": "keep.index", "inputs": { "items": "${chunk_materials.chunks}" } },
+        { "id": "query_index", "name": "Query the index", "kind": "tool", "tool": "keep.search", "inputs": { "stage": "gather", "query": "${inputs.question}" } },
+        { "id": "extract_findings", "name": "Extract findings", "kind": "model", "slot": "writer", "prompt": "prompts/extract.md", "inputs": { "passages": "${query_index}", "question": "${inputs.question}" } },
+        { "id": "synth", "name": "Synthesize", "kind": "model", "slot": "writer", "prompt": "prompts/synth.md", "inputs": { "findings": "${extract_findings}" } },
+        { "id": "save_to_obsidian", "name": "Save to Obsidian", "kind": "tool", "tool": "fs.write", "inputs": { "path": "${inputs.vault}", "text": "${synth}" } }
+      ],
+      "outputs": { "note": { "from": "${synth}", "type": "markdown" } },
+      "stages": [
+        { "id": "gather", "name": "Gather", "why": "Read and chunk the materials.", "inputs": ["materials"], "steps": ["read_materials", "chunk_materials"] },
+        { "id": "ask", "name": "Ask", "why": "Find the passages, extract findings, write the note.", "inputs": ["question", "vault"], "steps": ["query_index", "extract_findings", "synth", "save_to_obsidian"], "outputs": ["note"] }
+      ]
+    },
+    "files": [
+      { "path": "prompts/extract.md", "text": "Extract the findings that answer the question from these passages." },
+      { "path": "prompts/synth.md", "text": "Write the findings up as one note." }
+    ]
+  }
+}

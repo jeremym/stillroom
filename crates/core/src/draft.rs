@@ -849,4 +849,26 @@ mod tests {
         assert_eq!(std::fs::read_link(tmp.join("prompts/summarize.md")).unwrap(), Path::new("/etc/hosts"), "the link was not followed or replaced");
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn a_bare_step_id_and_a_stray_item_are_explained_as_the_fix_reads() {
+        let mut d = Draft::read(&repo_recipes().join("summarize-file")).unwrap();
+        d.yaml["steps"][1]["inputs"]["text"] = Value::String("${read.text}".into());
+        d.yaml["outputs"]["summary"]["from"] = Value::String("${summarize}".into());
+        let findings = d.check(&tools());
+        let problems: Vec<&str> = findings.iter().filter(|f| f.is_problem()).map(|f| f.text.as_str()).collect();
+        assert_eq!(problems, vec![
+            "“Write the summary” points at ${read.text}; a step's result is written ${steps.read.output.text}.",
+            "Result “summary” points at ${summarize}; a step's result is written ${steps.summarize.output}.",
+        ]);
+        let notes: Vec<(&str, &str)> = findings.iter().filter(|f| !f.is_problem()).map(|f| (f.text.as_str(), f.fix.as_deref().unwrap_or(""))).collect();
+        assert_eq!(notes, vec![(problems[0], "step_ref:summarize"), (problems[1], "step_ref:result/summary")], "the Problem and its Fix read as one thing");
+        let fixed = d.fix(&["step_ref:summarize".to_string(), "step_ref:result/summary".to_string()]).unwrap();
+        assert!(fixed.check(&tools()).is_empty(), "{:?}", fixed.check(&tools()));
+        // A variable that is no step: outside a loop it is told so; inside one, what the loop calls each item.
+        d.yaml["steps"][1]["inputs"]["text"] = Value::String("${item}".into());
+        d.yaml["outputs"]["summary"]["from"] = Value::String("${steps.summarize.output}".into());
+        let text = d.problems(&tools()).join("\n");
+        assert_eq!(text, "“Write the summary” uses ${item}, but it is not inside a for-each loop (a map step). To work on each entry, put the step inside a map; for one value, write ${inputs.<name>} or ${steps.<id>.output}.");
+    }
 }

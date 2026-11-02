@@ -162,6 +162,12 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .flow-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; }
 .flow-toolbar-gap { flex: 1; }
 .flow-problems { margin: 0 0 10px; max-height: 160px; }
+.flow-problems .head:not(:first-child) { margin-top: 10px; }
+.flow-problems .finding-note button.link { padding: 0; }
+
+/* A recipe the Library could not open: one quiet line per folder, the full path on hover. */
+.load-error { color: var(--red); border-left: 2px solid var(--red); padding-left: 10px; margin: 8px 0 0; font-size: var(--size-small); }
+.load-error strong { font-weight: 600; }
 .flow-details .field { margin: 10px 0; }
 .flow-details .field label { display: block; }
 .flow-details input[type="text"], .flow-details input[type="number"], .flow-details textarea, .flow-details select { width: 100%; margin: 3px 0; }

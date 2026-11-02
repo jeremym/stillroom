@@ -4,6 +4,8 @@ import "@xyflow/react/dist/style.css";
 import { api } from "../api";
 import { buildGraph, type FlowNode } from "./graph";
 import { StepDetails } from "./StepDetails";
+import { FindingsPanel } from "./FindingsPanel";
+import { problemsOf } from "./findings";
 import { addStep, connect, disconnect, docToInfo, mutate, removeStep, stepPathOf } from "./draft";
 import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../brand";
 import { isLocalModel } from "../models";
@@ -11,7 +13,7 @@ import { fmtElapsed, useElapsed } from "@overtone-foundry/app-kit";
 import {
   AddStepSelect, ConnectionPanel, InputForm, OutputForm, PermissionsEditor, SaveDialog, SlotsEditor, StagesEditor, StepForm, WirePrompt, newInput, newOutput, withPrompt,
 } from "./RecipeEditor";
-import type { InstalledModel, RecipeDoc, RecipeInfo, RecipeSource, Run, StepRecord, ToolInfo } from "../types";
+import type { Finding, InstalledModel, RecipeDoc, RecipeInfo, RecipeSource, Run, StepRecord, ToolInfo } from "../types";
 
 /* Flow View: the recipe drawn as connected nodes, with the current run's state painted on top.
    Edit mode swaps the run overlay for a draft of the recipe: click a node to change it, drag
@@ -39,7 +41,8 @@ interface EditState {
   source: RecipeSource;
   doc: RecipeDoc;
   files: Record<string, string>;
-  problems: string[];
+  /** What the checker said about this doc and these files: problems block Save, notes do not. */
+  findings: Finding[];
   dirty: boolean;
 }
 
@@ -188,8 +191,8 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     const { doc, files } = edit;
     const t = setTimeout(() => {
       api.checkRecipeDraft({ yaml: doc, files })
-        .then((problems) => setEdit((e) => (e && e.doc === doc && e.files === files ? { ...e, problems } : e)))
-        .catch((err) => setEdit((e) => (e ? { ...e, problems: [String(err)] } : e)));
+        .then((findings) => setEdit((e) => (e && e.doc === doc && e.files === files ? { ...e, findings } : e)))
+        .catch((err) => setEdit((e) => (e ? { ...e, findings: [{ text: String(err), severity: "problem" }] } : e)));
     }, 350);
     return () => clearTimeout(t);
   }, [edit?.doc, edit?.files]);
@@ -201,7 +204,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     try {
       const [r, t] = await Promise.all([api.readRecipeDraft(recipe.id), api.listTools()]);
       setTools(t);
-      setEdit({ sourceId: r.id, source: r.source, doc: r.draft.yaml, files: r.draft.files, problems: [], dirty: false });
+      setEdit({ sourceId: r.id, source: r.source, doc: r.draft.yaml, files: r.draft.files, findings: [], dirty: false });
       setSelectedId(null);
       setSelectedEdge(null);
       setPanel("node");
@@ -276,6 +279,7 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
     return isLocalModel(id) ? "local" : "cloud";
   };
 
+  const problemCount = edit ? problemsOf(edit.findings).length : 0;
   const shownRecipe = edit ? docToInfo(edit.doc, recipe) : recipe;
   const shownRun = edit ? null : run;
   const shownRecords = edit ? [] : records;
@@ -333,17 +337,15 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
           <button onClick={() => { setPanel("permissions"); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Permissions</button>
           <button onClick={() => { setPanel("stages"); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Stages</button>
           <span className="flow-toolbar-gap" />
-          <button className="primary" style={{ marginTop: 0 }} disabled={edit.problems.length > 0} title={edit.problems.length ? "Fix the problems first" : ""}
+          <button className="primary" style={{ marginTop: 0 }} disabled={problemCount > 0} title={problemCount ? "Fix the problems first" : ""}
             onClick={() => { setPanel("save"); setSaveError(null); setSelectedId(null); setSelectedEdge(null); setWire(null); }}>Save…</button>
           {confirmDiscard
             ? <><button className="danger" onClick={stopEditing}>Yes, discard</button><button onClick={() => setConfirmDiscard(false)}>Keep editing</button></>
             : <button onClick={() => (edit.dirty ? setConfirmDiscard(true) : stopEditing())}>{edit.dirty ? "Discard…" : "Done"}</button>}
         </div>
       )}
-      {edit && edit.problems.length > 0 && (
-        <div className="tty flow-problems" role="log">
-          {edit.problems.map((p, i) => <div key={i} className="red"><span className="mark">✗ </span>{p}</div>)}
-        </div>
+      {edit && (
+        <FindingsPanel findings={edit.findings} draft={{ yaml: edit.doc, files: edit.files }} onDraft={(d) => change(d.yaml, d.files)} />
       )}
 
       <div className={`flow-layout ${hasPanel ? "with-details" : ""}`}>

@@ -25,6 +25,8 @@ pub enum DraftError {
     Yaml(#[from] serde_yaml::Error),
     #[error("path {0} escapes the recipe directory")]
     Escape(String),
+    #[error("{0}")]
+    Migrate(#[from] crate::migrate::MigrateError),
     #[error("the draft has problems:\n{}", .0.join("\n"))]
     Invalid(Vec<String>),
 }
@@ -64,11 +66,13 @@ fn walk(dir: &Path, rel: &str, out: &mut BTreeMap<String, String>) -> Result<(),
 }
 
 impl Draft {
-    /// Read `root/recipe.yaml` and every text file under `prompts/` and `schemas/`.
+    /// Read `root/recipe.yaml` (brought up to the current format) and every text file under
+    /// `prompts/` and `schemas/`.
     pub fn read(root: &Path) -> Result<Self, DraftError> {
         let yaml_path = root.join("recipe.yaml");
         let text = std::fs::read_to_string(&yaml_path).map_err(io(&yaml_path))?;
         let yaml: Value = serde_yaml::from_str(&text)?;
+        let yaml = crate::migrate::migrate(yaml)?.yaml;
         let mut files = BTreeMap::new();
         for d in FILE_DIRS {
             walk(&root.join(d), d, &mut files)?;
@@ -348,7 +352,11 @@ impl Draft {
             return Err(DraftError::Invalid(problems));
         }
         std::fs::create_dir_all(dir).map_err(io(dir))?;
-        let yaml = serde_yaml::to_string(&self.yaml)?;
+        let mut stamped = self.yaml.clone();
+        if let Some(o) = stamped.as_object_mut() {
+            o.insert("schemaVersion".into(), Value::String(crate::migrate::CURRENT_SCHEMA_VERSION.into()));
+        }
+        let yaml = serde_yaml::to_string(&stamped)?;
         let yaml_path = dir.join("recipe.yaml");
         std::fs::write(&yaml_path, yaml).map_err(io(&yaml_path))?;
         for (rel, text) in &self.files {

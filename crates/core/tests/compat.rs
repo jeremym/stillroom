@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use stillroom_core::planner::{answer_schema, draft_from_answers, strip_schema, PlanRequest};
 use stillroom_core::stagelib::{repo_stages_dir, StageLibrary};
 use stillroom_core::tools::ToolRegistry;
-use stillroom_core::{Draft, RecipeBundle, RecipeSource, RECIPE_SCHEMA};
+use stillroom_core::{migrate, Draft, RecipeBundle, RecipeSource, CURRENT_SCHEMA_VERSION, RECIPE_SCHEMA};
 
 fn compat_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/compat")
@@ -47,6 +47,16 @@ fn every_fixture_recipe_loads_and_checks_without_problems() {
         let draft = Draft::read(&dir).unwrap_or_else(|e| panic!("{set}/{name}: {e}"));
         let problems = draft.check(&tools);
         assert!(problems.is_empty(), "{set}/{name} has problems: {problems:#?}");
+
+        // Migration is idempotent on the fixture's YAML as written: a second pass changes nothing
+        // and has nothing to say.
+        let raw: Value = serde_yaml::from_str(&std::fs::read_to_string(dir.join("recipe.yaml")).unwrap()).unwrap();
+        let once = migrate(raw.clone()).unwrap_or_else(|e| panic!("{set}/{name}: {e}"));
+        assert_eq!(once.yaml["schemaVersion"], CURRENT_SCHEMA_VERSION, "{set}/{name}");
+        let twice = migrate(once.yaml.clone()).unwrap();
+        assert_eq!(twice.yaml, once.yaml, "{set}/{name}: migrate is idempotent");
+        assert!(twice.notes.is_empty(), "{set}/{name}: a migrated recipe has nothing left to note: {:?}", twice.notes);
+        assert_eq!(draft.yaml, once.yaml, "{set}/{name}: Draft::read is migrate");
     }
 }
 

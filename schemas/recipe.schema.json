@@ -15,8 +15,10 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "0",
-      "description": "Recipe format version. Bumped on breaking changes."
+      "enum": [
+        "0"
+      ],
+      "description": "Recipe format version, as text. Every version listed here is read; older ones are rewritten to the current shape by the migrate chain before anything else reads them."
     },
     "id": {
       "type": "string",

@@ -236,7 +236,10 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
     for (k, val) in recipe {
         yaml.insert(k, val);
     }
-    declare_keeps(&mut yaml);
+    let mut yaml = crate::migrate::migrate(Value::Object(yaml)).map_err(|e| e.to_string())?.yaml;
+    if let Some(o) = yaml.as_object_mut() {
+        declare_keeps(o);
+    }
     let mut files = BTreeMap::new();
     match v.get("files") {
         Some(Value::Array(items)) => {
@@ -258,7 +261,7 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
         }
         _ => {}
     }
-    Ok(Draft { yaml: Value::Object(yaml), files })
+    Ok(Draft { yaml, files })
 }
 
 /// A stage whose steps touch a keep without naming another stage's gets a keep declared when

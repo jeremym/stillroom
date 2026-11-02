@@ -18,6 +18,8 @@ pub enum RecipeError {
     Json(#[from] serde_json::Error),
     #[error("schema compile error: {0}")]
     SchemaCompile(String),
+    #[error("{0}")]
+    Migrate(#[from] crate::migrate::MigrateError),
     #[error("recipe failed schema validation:\n{0}")]
     Invalid(String),
 }
@@ -430,9 +432,11 @@ pub struct OpaqueStep {
 }
 
 impl Recipe {
-    /// Parse a `recipe.yaml` string, validate it against the JSON Schema, and return typed data.
+    /// Parse a `recipe.yaml` string, bring it up to the current format, validate it against the
+    /// JSON Schema, and return typed data.
     pub fn from_yaml(yaml: &str) -> Result<Self, RecipeError> {
         let value: Value = serde_yaml::from_str(yaml)?;
+        let value = crate::migrate::migrate(value)?.yaml;
         Self::validate_value(&value)?;
         Ok(serde_json::from_value(value)?)
     }

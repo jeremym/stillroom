@@ -12,20 +12,22 @@ Local models by default. No Docker, no account, no mandatory cloud. Optional, of
 
 Pre-alpha, macOS, developed in the open on a private repository. What works today:
 
-- **Seven built-in recipes, each a strip of stages.** Summarize a File; Learning Kit (notes, flashcards, concept map, process diagram, slides, narrated audio from one document, with the Knowledge Spine kept between runs); Research Brief (fetch pages, extract quoted findings, write a cited brief, remembering what it read); Daily News Log (watch links and log only what is new); Ask Your Documents (index a folder once, then ask it anything with cited passages); Batch Briefing (a folder plus links into one brief with a gaps section). Inbox Triage (sort saved emails, file them with an agent, draft replies, approve before anything is written) is a sample in `samples/inbox-triage`, to copy into your recipes folder.
+- **A shelf and a catalog.** A fresh install puts one recipe on the shelf, *Describe a document*; the catalog (⌘B) holds the rest, each with what it needs, what it may touch, and an example result where one ships. Add a recipe to the shelf to use it, archive it to put it away, get one from a zip or folder (it is held in quarantine, checked, and asks for any permission beyond your own inputs before it runs), or save a copy as a zip. Community recipes arrive by pull request (see `CONTRIBUTING.md`) and ship with the app.
+- **Seven built-in recipes, each a strip of stages.** Describe a document; Summarize a File; Learning Kit (notes, flashcards, concept map, process diagram, slides, narrated audio from one document, with the Knowledge Spine kept between runs); Research Brief (fetch pages, extract quoted findings, write a cited brief, remembering what it read); Daily News Log (watch links and log only what is new); Ask Your Documents (index a folder once, then ask it anything with cited passages); Batch Briefing (a folder plus links into one brief with a gaps section). Inbox Triage (sort saved emails, file them with an agent, draft replies, approve before anything is written) is a sample in `samples/inbox-triage`, to copy into your recipes folder.
 - **A planner.** Type a goal and the app drafts a recipe from a library of ready-made stages, composing new ones only where nothing fits; the prompts it uses are visible, editable, versioned, and resettable in Settings › Prompts.
 - **Run keeps.** A stage can remember what it built (an index, parsed pages, a log) in a per-recipe SQLite store and skip itself next run until its sources change, with a journal of what each run changed.
 - **An engine that is general.** Tool, model, agent, map, and review steps; model slots resolved from what is installed (pin, recommendation, or capability); schema-constrained outputs; filesystem and network permissions enforced per recipe; selective rerun from a step cache; edit any artifact and only downstream steps regenerate; continuing a run never repeats a side effect.
 - **Flow View.** The recipe as a readable top-down map with the run's state on it, and an edit mode with forms per step, drag-to-wire, live checks from the runtime, and save as a copy or in place.
 - **Folder watches.** Point a recipe at a folder and it runs whenever something lands there, while the app is open. Each run continues the last, so files handled before are not handled again and reviews only ask about what is new.
 
-Not yet: sharing, MCP and Agent Skills, voices other than the system one. The API-key provider is verified only against a local OpenAI-compatible server. The design and roadmap are in [PLAN.md](PLAN.md).
+Not yet: fetching the catalog from the repository at run time, MCP and Agent Skills, voices other than the system one. The API-key provider is verified only against a local OpenAI-compatible server. The design and roadmap are in [PLAN.md](PLAN.md).
 
 ## Layout
 
 ```
 schemas/        Recipe format v0 (JSON Schema)
-recipes/        Built-in recipes: recipe.yaml, prompts/, schemas/
+recipes/        Built-in recipes: recipe.yaml, prompts/, schemas/, example/
+community/      Community recipes, reviewed before they ship (see CONTRIBUTING.md)
 stages/         The stage library the planner draws on: stage.yaml, prompts/, schemas/
 samples/        The Inbox Triage recipe and its fixtures (copy them before running against them)
 crates/core     Recipe types, executor, tools, step cache, propagation, draft editing, folder watcher, SQLite store

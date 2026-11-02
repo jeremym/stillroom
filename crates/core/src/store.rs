@@ -1,9 +1,10 @@
-//! SQLite persistence for runs, folder watches, and the shelf. One file, no server.
+//! SQLite persistence for runs, folder watches, the shelf, and permission grants. One file, no server.
 //!
 //! Runs are stored as a JSON document plus a few indexed columns for listing.
 //! Proper per-step and per-artifact tables arrive with Flow Studio.
 
 use crate::cache::{CachedStep, StepCache};
+use crate::consent::{Grant, GrantKind, Granted};
 use crate::recipe::{Refresh, Stage};
 use crate::trace::{Run, RunStatus, RunSummary};
 use crate::watch::Watch;
@@ -25,7 +26,7 @@ pub struct Store {
 
 /// The store's on-disk layout version, kept in SQLite's `PRAGMA user_version`. Each step of the
 /// ladder in `init` brings a file up one version: one `CREATE`, `ALTER`, or backfill per step.
-pub const STORE_SCHEMA_VERSION: i64 = 2;
+pub const STORE_SCHEMA_VERSION: i64 = 3;
 
 /// The one recipe a fresh shelf starts with (the example, *Describe a document*).
 pub const EXAMPLE_RECIPE_ID: &str = "describe-document";
@@ -138,6 +139,8 @@ impl Store {
                     self.create_v2()?;
                     self.seed_shelf()?;
                 }
+                // Version 3: permission grants, one row per literal entry the user said yes to.
+                2 => self.create_v3()?,
                 _ => break,
             }
             v += 1;
@@ -200,6 +203,21 @@ impl Store {
         Ok(())
     }
 
+    fn create_v3(&self) -> Result<(), StoreError> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS grants (
+                recipe_id  TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                entry      TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                PRIMARY KEY (recipe_id, kind, entry)
+            );
+            "#,
+        )?;
+        Ok(())
+    }
+
     /// Put the example recipe on the shelf, plus every recipe that has at least one run on
     /// record: whoever has run a built-in keeps it in front of them, while a fresh database has
     /// no runs and ends up with the example alone. The store does not know which ids are
@@ -254,6 +272,51 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// The permission entries the user has granted a recipe: kind, entry, and when.
+    pub fn grants(&self, recipe_id: &str) -> Result<Vec<Granted>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT kind, entry, granted_at FROM grants WHERE recipe_id = ?1 ORDER BY rowid")?;
+        let rows = stmt.query_map(params![recipe_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (kind, entry, at) = row?;
+            if let Some(kind) = GrantKind::parse(&kind) {
+                out.push((kind, entry, at));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every grant for every recipe, by recipe id.
+    pub fn grants_all(&self) -> Result<BTreeMap<String, Vec<Granted>>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT recipe_id, kind, entry, granted_at FROM grants ORDER BY rowid")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?;
+        let mut out: BTreeMap<String, Vec<Granted>> = BTreeMap::new();
+        for row in rows {
+            let (id, kind, entry, at) = row?;
+            if let Some(kind) = GrantKind::parse(&kind) {
+                out.entry(id).or_default().push((kind, entry, at));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Record that the user granted these entries to a recipe. Granting again changes nothing.
+    pub fn grant(&self, recipe_id: &str, grants: &[Grant]) -> Result<(), StoreError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        for g in grants {
+            self.conn.execute(
+                "INSERT INTO grants (recipe_id, kind, entry, granted_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(recipe_id, kind, entry) DO NOTHING",
+                params![recipe_id, g.kind.as_str(), g.entry, now],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Forget every grant for a recipe. Returns how many there were.
+    pub fn revoke_grants(&self, recipe_id: &str) -> Result<usize, StoreError> {
+        Ok(self.conn.execute("DELETE FROM grants WHERE recipe_id = ?1", params![recipe_id])?)
     }
 
     pub fn save_run(&self, run: &Run) -> Result<(), StoreError> {
@@ -602,6 +665,25 @@ mod tests {
         assert_eq!(store.shelf_state("research-brief").unwrap(), None);
         assert_eq!(serde_json::to_value(ShelfState::Archive).unwrap(), serde_json::json!("archive"));
         assert_eq!(serde_json::from_value::<ShelfState>(serde_json::json!("catalog")).unwrap(), ShelfState::Catalog);
+    }
+
+    #[test]
+    fn grants_are_recorded_once_listed_and_revoked() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.grants("mine").unwrap().is_empty());
+        store.grant("mine", &[Grant::new(GrantKind::Read, "~/Documents"), Grant::new(GrantKind::Network, "example.com")]).unwrap();
+        store.grant("mine", &[Grant::new(GrantKind::Read, "~/Documents")]).unwrap();
+        store.grant("other", &[Grant::new(GrantKind::Shell, "true")]).unwrap();
+        let mine = store.grants("mine").unwrap();
+        assert_eq!(mine.iter().map(|(k, e, _)| (*k, e.as_str())).collect::<Vec<_>>(), vec![(GrantKind::Read, "~/Documents"), (GrantKind::Network, "example.com")]);
+        assert!(chrono::DateTime::parse_from_rfc3339(&mine[0].2).is_ok(), "granted_at is a timestamp: {}", mine[0].2);
+        let all = store.grants_all().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!((all["other"][0].0, all["other"][0].1.as_str()), (GrantKind::Shell, "true"));
+        assert_eq!(store.revoke_grants("mine").unwrap(), 2);
+        assert!(store.grants("mine").unwrap().is_empty());
+        assert_eq!(store.grants("other").unwrap().len(), 1, "another recipe's grants stay");
+        assert_eq!(store.revoke_grants("mine").unwrap(), 0);
     }
 
     #[test]

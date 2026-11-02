@@ -1,5 +1,6 @@
 //! A recipe as it lives on disk: `recipe.yaml` plus its prompt and schema files.
 
+use crate::consent::Consent;
 use crate::recipe::{Recipe, RecipeError, Step};
 use crate::resolve::Resolution;
 use crate::store::ShelfState;
@@ -87,6 +88,11 @@ pub struct RecipeInfo {
     /// copied. `info()` leaves it empty; the shell fills it through `with_from` from the scan.
     #[serde(default)]
     pub from: Option<crate::catalog::CatalogFrom>,
+    /// What the recipe still needs the user's yes for, and what it has (see `consent`). Both
+    /// empty for a built-in. `info()` lists every literal entry as needed; the shell applies the
+    /// store's grants through `with_consent`.
+    #[serde(default)]
+    pub consent: Consent,
 }
 
 impl RecipeInfo {
@@ -106,6 +112,12 @@ impl RecipeInfo {
     /// Record where a duplicated recipe came from (see `catalog::provenance`).
     pub fn with_from(mut self, from: Option<crate::catalog::CatalogFrom>) -> Self {
         self.from = from;
+        self
+    }
+
+    /// Apply the store's grants: what is still needed and what the user has said yes to.
+    pub fn with_consent(mut self, consent: Consent) -> Self {
+        self.consent = consent;
         self
     }
 }
@@ -278,6 +290,7 @@ impl RecipeBundle {
             stages: self.recipe.stages_or_implied(),
             shelf: ShelfState::Catalog,
             from: None,
+            consent: crate::consent::consent_for(&self.recipe, self.source, &[]),
         }
         .with_shelf(None)
     }
@@ -400,6 +413,33 @@ mod tests {
         assert!(json["from"].is_null(), "not a copy of anything: {}", json["from"]);
         let copied = sample.with_from(Some(crate::catalog::CatalogFrom { catalog: "inbox-triage".into(), version: "0.1.0".into(), newer: true }));
         assert_eq!(serde_json::to_value(&copied).unwrap()["from"], serde_json::json!({ "catalog": "inbox-triage", "version": "0.1.0", "newer": true }));
+    }
+
+    #[test]
+    fn consent_lists_literal_entries_for_anything_but_a_built_in() {
+        let builtin = RecipeBundle::load(repo_recipes().join("summarize-file"), RecipeSource::Builtin).unwrap().info();
+        assert_eq!(builtin.consent, Consent::default());
+        // The sample reads and writes only the folders the user picks: nothing literal.
+        let sample = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::Sample).unwrap().info();
+        assert!(sample.consent.needed.is_empty(), "{:?}", sample.consent);
+        // A user recipe with a literal path needs a yes until the shell applies a grant.
+        let tmp = std::env::temp_dir().join(format!("stillroom-consent-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(tmp.join("prompts")).unwrap();
+        std::fs::write(tmp.join("prompts/summarize.md"), "Summarize.").unwrap();
+        let yaml = std::fs::read_to_string(repo_recipes().join("summarize-file/recipe.yaml")).unwrap().replace("read: [input]", "read: [input, \"~/Documents\"]");
+        std::fs::write(tmp.join("recipe.yaml"), &yaml).unwrap();
+        let yours = RecipeBundle::load(&tmp, RecipeSource::User).unwrap().info();
+        assert_eq!(yours.consent.needed.len(), 1);
+        assert_eq!(yours.consent.needed[0].text, "Read everything under ~/Documents");
+        let json = serde_json::to_value(&yours).unwrap();
+        assert_eq!(json["consent"]["needed"][0]["kind"], "read");
+        assert_eq!(json["consent"]["granted"], serde_json::json!([]));
+        let granted = yours.clone().with_consent(crate::consent::consent_for(&RecipeBundle::load(&tmp, RecipeSource::User).unwrap().recipe, RecipeSource::User, &[(crate::consent::GrantKind::Read, "~/Documents".into(), "2026-11-02T18:00:00+00:00".into())]));
+        assert!(granted.consent.needed.is_empty());
+        assert_eq!(granted.consent.granted.len(), 1);
+        // The same recipe shipped as a built-in needs nothing.
+        assert_eq!(RecipeBundle::load(&tmp, RecipeSource::Builtin).unwrap().info().consent, Consent::default());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

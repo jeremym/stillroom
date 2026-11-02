@@ -13,8 +13,8 @@ use stillroom_core::trace::RunSummary;
 use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
-    PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
+    consent, edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, Grant, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest,
+    Planner, PromptState, RecipeBundle, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
@@ -147,6 +147,34 @@ impl AppState {
             .and_then(|m| serde_json::from_value(m).ok())
             .unwrap_or_default()
     }
+
+    /// Where a recipe stands with the user: its literal permission entries against the store's grants.
+    fn consent_of(&self, bundle: &RecipeBundle) -> CmdResult<consent::Consent> {
+        let granted = self.store.lock().map_err(err)?.grants(&bundle.recipe.id).map_err(err)?;
+        Ok(consent::consent_for(&bundle.recipe, bundle.source, &granted))
+    }
+
+    /// Refuse, in words, while the recipe still needs the user's yes for anything.
+    fn check_consent(&self, bundle: &RecipeBundle) -> CmdResult<()> {
+        match consent::refusal(&self.consent_of(bundle)?) {
+            Some(text) => Err(text),
+            None => Ok(()),
+        }
+    }
+
+    /// A recipe as the Library lists it: its placement, where a copy came from, and its consent.
+    fn info_of(&self, bundle: &RecipeBundle) -> CmdResult<RecipeInfo> {
+        let scan = self.library.scan();
+        let (placed, granted) = {
+            let store = self.store.lock().map_err(err)?;
+            (store.shelf_state(&bundle.recipe.id).map_err(err)?, store.grants(&bundle.recipe.id).map_err(err)?)
+        };
+        Ok(bundle
+            .info()
+            .with_shelf(placed)
+            .with_from(stillroom_core::catalog::provenance(bundle, &scan.bundles))
+            .with_consent(consent::consent_for(&bundle.recipe, bundle.source, &granted)))
+    }
 }
 
 const KEYCHAIN_SERVICE: &str = "com.jeremym.stillroom";
@@ -229,6 +257,9 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
         .library
         .find(&args.recipe_id)
         .ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    // Consent first: a recipe that is not built-in runs only once every literal permission entry
+    // has the user's yes. Watches come through here too, so they obey as well.
+    state.check_consent(&bundle)?;
     let router = state.router();
     let installed = router.list_all().await;
     let resolutions = resolve_slots_with(&bundle.recipe, &installed, &args.pins, &state.resolve_defaults()).map_err(err)?;
@@ -551,12 +582,21 @@ struct RecipeLoadError {
 #[tauri::command]
 fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
     let scan = state.library.scan();
-    let placed = state.store.lock().map_err(err)?.shelf_all().map_err(err)?;
+    let (placed, grants) = {
+        let store = state.store.lock().map_err(err)?;
+        (store.shelf_all().map_err(err)?, store.grants_all().map_err(err)?)
+    };
+    let none = Vec::new();
     Ok(RecipesResponse {
         recipes: scan
             .bundles
             .iter()
-            .map(|b| b.info().with_shelf(placed.get(&b.recipe.id).copied()).with_from(stillroom_core::catalog::provenance(b, &scan.bundles)))
+            .map(|b| {
+                b.info()
+                    .with_shelf(placed.get(&b.recipe.id).copied())
+                    .with_from(stillroom_core::catalog::provenance(b, &scan.bundles))
+                    .with_consent(consent::consent_for(&b.recipe, b.source, grants.get(&b.recipe.id).unwrap_or(&none)))
+            })
             .collect(),
         errors: scan
             .errors
@@ -991,7 +1031,11 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
         Err(e) => return Err(format!("the recipe is deleted, but its run keeps could not be removed: {e}")),
     }
     // Its place on the shelf goes with it; a catalog recipe of the same id, now unshadowed, starts over in the catalog.
-    let _ = state.store.lock().map_err(err)?.remove_shelf(&recipe_id).map_err(err)?;
+    {
+        let store = state.store.lock().map_err(err)?;
+        let _ = store.remove_shelf(&recipe_id).map_err(err)?;
+        let _ = store.revoke_grants(&recipe_id).map_err(err)?;
+    }
     let _ = app.emit("watch:changed", ());
     let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: None });
     Ok(())
@@ -1016,6 +1060,28 @@ fn set_shelf(app: AppHandle, app_state: State<'_, AppState>, recipe_id: String, 
     app_state.store.lock().map_err(err)?.set_shelf(&recipe_id, state).map_err(err)?;
     let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: Some(state) });
     Ok(())
+}
+
+/// Record the user's yes to permission entries of a recipe (the consent step at Set up or on
+/// import). Only entries the recipe really lists as literal are recorded; the rest are ignored.
+/// Every window hears `recipes:changed`.
+#[tauri::command]
+fn grant_permissions(app: AppHandle, state: State<'_, AppState>, recipe_id: String, entries: Vec<Grant>) -> CmdResult<RecipeInfo> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    let literal = consent::literal_entries(&bundle.recipe);
+    let accepted: Vec<Grant> = literal.into_iter().filter(|l| entries.iter().any(|e| e.kind == l.kind && e.entry == l.entry)).collect();
+    state.store.lock().map_err(err)?.grant(&recipe_id, &accepted).map_err(err)?;
+    let _ = app.emit("recipes:changed", ());
+    state.info_of(&bundle)
+}
+
+/// Forget every grant for a recipe; it needs the consent step again before it runs.
+#[tauri::command]
+fn revoke_permissions(app: AppHandle, state: State<'_, AppState>, recipe_id: String) -> CmdResult<RecipeInfo> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    state.store.lock().map_err(err)?.revoke_grants(&recipe_id).map_err(err)?;
+    let _ = app.emit("recipes:changed", ());
+    state.info_of(&bundle)
 }
 
 #[derive(Serialize, Clone)]
@@ -1147,6 +1213,7 @@ struct AddWatchArgs {
 #[tauri::command]
 fn add_watch(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, args: AddWatchArgs) -> CmdResult<WatchView> {
     let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    state.check_consent(&bundle)?;
     let folder = args.inputs.get(&args.input).and_then(Value::as_str).ok_or_else(|| format!("choose a folder for {}", args.input))?;
     let mut watch = Watch::new(&bundle.recipe, &args.input, folder, args.inputs.clone(), args.pins).map_err(err)?;
     {
@@ -1307,6 +1374,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .build()?;
     let file = SubmenuBuilder::new(app, "File")
         .item(&item("new-recipe", "New Recipe…", Some("CmdOrCtrl+N"))?)
+        .item(&item("get-recipe", "Get a recipe…", None)?)
         .item(&item("reveal-recipes", "Show Recipes Folder", None)?)
         .separator()
         .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
@@ -1473,6 +1541,8 @@ pub fn run() {
             duplicate_recipe,
             delete_recipe,
             set_shelf,
+            grant_permissions,
+            revoke_permissions,
             reveal_recipes_folder,
             reveal_sample_folders,
             permission_status,

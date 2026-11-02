@@ -765,26 +765,32 @@ fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResult<Vec
     Ok(out)
 }
 
+/// Open the keep of one stage of a known recipe. The stage id is checked against the recipe before
+/// it becomes part of a path, so the webview cannot name a folder the recipe does not have.
+fn open_keep(state: &AppState, recipe_id: &str, stage: &str) -> CmdResult<Keep> {
+    let bundle = state.library.find(recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    if !bundle.recipe.stages.iter().any(|s| s.id == stage) {
+        return Err(format!("recipe {recipe_id} has no stage named {stage}"));
+    }
+    Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, stage)).map_err(err)
+}
+
 /// Empty a stage's run keep now; the next run builds it again from scratch.
 #[tauri::command]
 fn rebuild_keep(state: State<'_, AppState>, recipe_id: String, stage: String) -> CmdResult<()> {
-    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
-    let keep = Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, &stage)).map_err(err)?;
-    keep.clear("you").map_err(err)
+    open_keep(&state, &recipe_id, &stage)?.clear("you").map_err(err)
 }
 
 /// The journal of a stage's keep, newest first.
 #[tauri::command]
 fn keep_journal(state: State<'_, AppState>, recipe_id: String, stage: String, limit: Option<usize>) -> CmdResult<Vec<JournalEntry>> {
-    let keep = Keep::open(keep_dir(&state.keep_base, &recipe_id, &stage)).map_err(err)?;
-    keep.journal(limit.unwrap_or(50)).map_err(err)
+    open_keep(&state, &recipe_id, &stage)?.journal(limit.unwrap_or(50)).map_err(err)
 }
 
 /// Records in a stage's keep, newest first.
 #[tauri::command]
 fn keep_records(state: State<'_, AppState>, recipe_id: String, stage: String, limit: Option<usize>) -> CmdResult<Vec<KeepRecord>> {
-    let keep = Keep::open(keep_dir(&state.keep_base, &recipe_id, &stage)).map_err(err)?;
-    keep.query(None, true, limit.unwrap_or(200)).map_err(err)
+    open_keep(&state, &recipe_id, &stage)?.query(None, true, limit.unwrap_or(200)).map_err(err)
 }
 
 /// The recipe as it is on disk, for editing.
@@ -832,7 +838,7 @@ fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Save
     Ok(SaveResponse { recipe: bundle.info(), path: dir.to_string_lossy().into_owned(), shadows_builtin })
 }
 
-/// Delete one of the user's recipes (its folder) and any watches bound to it. Built-ins cannot be deleted.
+/// Delete one of the user's recipes (its folder), its run keeps, and any watches bound to it. Built-ins cannot be deleted.
 #[tauri::command]
 fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, recipe_id: String) -> CmdResult<()> {
     let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
@@ -859,6 +865,12 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
         }
     }
     std::fs::remove_dir_all(&dir).map_err(err)?;
+    // Set up promises that deleting the recipe deletes what its kept stages built (recipe-data/<id>/).
+    match std::fs::remove_dir_all(state.keep_base.join(&bundle.recipe.id)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("the recipe is deleted, but its run keeps could not be removed: {e}")),
+    }
     let _ = app.emit("watch:changed", ());
     Ok(())
 }

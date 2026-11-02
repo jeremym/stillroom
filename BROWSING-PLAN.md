@@ -46,6 +46,8 @@ Status: proposal, revision 1, 2026-11-02, written after the review of the `stage
 
 ## 2. Fix first (before `stages` merges)
 
+**Status 2026-11-02: shipped on `stages`** (commits fb30d53 … 145bbab). Live: the app boots with the Rust-built windows, Settings opens, a result's remote image renders as text, a link opens the browser while the window stays put, the Rust save dialog cancels and saves (`docs/screenshots/phase0-*.png`); 78 Rust and 80 frontend tests. Also found and fixed on the way: `crates/models` had never been committed (the `models/` ignore line matched it), so no clone could build; the `.gitignore` is now `/models/`. Rulesets protecting the default branch were added to all ten public repositories.
+
 From the review. Each is a confirmed defect with a reproduction or a verified code path. File and line are as of `35911a8`.
 
 | # | Defect | Where | Fix |

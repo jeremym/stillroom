@@ -97,7 +97,7 @@ impl PlanPhase {
 /// `tokens`, the completion tokens written so far across calls (counted as they stream, then
 /// settled from the provider's count when a call ends).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
 pub enum PlanEvent {
     /// The first call: choosing the stages.
     Choosing { elapsed_ms: u64, tokens: u64 },
@@ -994,6 +994,20 @@ mod tests {
             let content = if a.is_empty() { "{}".to_string() } else { a.remove(0) };
             Ok(ChatResponse { content, tool_calls: vec![], prompt_tokens: Some(10), completion_tokens: Some(5) })
         }
+
+        /// Streams the answer in three pieces, as a provider would.
+        async fn chat_stream(&self, model_id: &str, req: ChatRequest, on_delta: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<ChatResponse, ModelError> {
+            let resp = self.chat(model_id, req).await?;
+            let n = resp.content.len();
+            let cuts = [0, n / 3, 2 * n / 3, n];
+            for w in cuts.windows(2) {
+                let piece = &resp.content[w[0]..w[1]];
+                if !piece.is_empty() {
+                    on_delta(piece);
+                }
+            }
+            Ok(resp)
+        }
     }
 
     fn req() -> PlanRequest {
@@ -1265,5 +1279,78 @@ mod tests {
         assert_eq!(out.problems.len(), 1);
         let (p, _) = planner(vec!["not json".into(), "still not".into(), "no".into()]);
         assert!(matches!(p.plan(&req(), None).await, Err(PlanError::Unusable(_))));
+    }
+
+    #[tokio::test]
+    async fn the_stream_is_shown_as_phases_deltas_and_done_and_kept_as_a_transcript() {
+        let (p, _) = planner(vec![answer("file.readd"), answer("file.read")]);
+        let events = Arc::new(Mutex::new(Vec::<PlanEvent>::new()));
+        let sink = events.clone();
+        let out = p.plan(&req(), Some(Arc::new(move |e| sink.lock().unwrap().push(e)))).await.unwrap();
+        let events = events.lock().unwrap();
+
+        // The order, with the deltas of each call folded into one marker.
+        let mut order = Vec::new();
+        let mut deltas: Vec<String> = Vec::new();
+        for e in events.iter() {
+            match e {
+                PlanEvent::Delta { text, .. } => {
+                    if order.last() != Some(&"delta".to_string()) {
+                        order.push("delta".into());
+                        deltas.push(String::new());
+                    }
+                    deltas.last_mut().unwrap().push_str(text);
+                }
+                PlanEvent::Thinking { attempt, .. } => order.push(format!("thinking {attempt}")),
+                PlanEvent::Phase { which, attempt, of, .. } => order.push(format!("phase {} {attempt}/{of}", which.as_str())),
+                PlanEvent::Checking { attempt, .. } => order.push(format!("checking {attempt}")),
+                PlanEvent::Fixing { attempt, .. } => order.push(format!("fixing {attempt}")),
+                PlanEvent::Done { .. } => order.push("done".into()),
+                PlanEvent::Choosing { .. } => order.push("choosing".into()),
+            }
+        }
+        assert_eq!(
+            order,
+            vec!["thinking 1", "phase steps 1/3", "delta", "checking 1", "fixing 1", "thinking 2", "phase fix 2/3", "delta", "checking 2", "done"],
+            "{events:#?}"
+        );
+        assert_eq!(deltas, vec![answer("file.readd"), answer("file.read")], "the deltas of a call add up to what the model wrote");
+        let delta_count = events.iter().filter(|e| matches!(e, PlanEvent::Delta { .. })).count();
+        assert!(delta_count >= 2 && delta_count < 6, "chunks are coalesced, not dropped: {delta_count}");
+
+        // Elapsed never goes backwards; tokens come from the provider's count once a call ends.
+        let stamps: Vec<(u64, u64)> = events
+            .iter()
+            .map(|e| match e {
+                PlanEvent::Choosing { elapsed_ms, tokens }
+                | PlanEvent::Thinking { elapsed_ms, tokens, .. }
+                | PlanEvent::Checking { elapsed_ms, tokens, .. }
+                | PlanEvent::Fixing { elapsed_ms, tokens, .. }
+                | PlanEvent::Phase { elapsed_ms, tokens, .. }
+                | PlanEvent::Delta { elapsed_ms, tokens, .. }
+                | PlanEvent::Done { elapsed_ms, tokens } => (*elapsed_ms, *tokens),
+            })
+            .collect();
+        assert!(stamps.windows(2).all(|w| w[0].0 <= w[1].0), "{stamps:?}");
+        assert!(matches!(events.iter().find(|e| matches!(e, PlanEvent::Checking { attempt: 1, .. })), Some(PlanEvent::Checking { tokens: 5, .. })));
+        assert!(matches!(events.last(), Some(PlanEvent::Done { tokens: 10, .. })), "{:?}", events.last());
+
+        // The transcript: every call, headed.
+        assert!(out.transcript.starts_with("── call 1 (steps) ──\n"), "{}", out.transcript);
+        assert!(out.transcript.contains("\n\n── call 2 (fix) ──\n"), "{}", out.transcript);
+        assert!(out.transcript.contains(&answer("file.readd")) && out.transcript.ends_with(&answer("file.read")));
+    }
+
+    #[test]
+    fn events_serialize_for_the_window() {
+        let s = |e: PlanEvent| serde_json::to_string(&e).unwrap();
+        assert_eq!(s(PlanEvent::Choosing { elapsed_ms: 1, tokens: 0 }), r#"{"kind":"choosing","elapsedMs":1,"tokens":0}"#);
+        assert_eq!(s(PlanEvent::Thinking { attempt: 1, of: 3, elapsed_ms: 2, tokens: 0 }), r#"{"kind":"thinking","attempt":1,"of":3,"elapsedMs":2,"tokens":0}"#);
+        assert_eq!(s(PlanEvent::Checking { attempt: 1, elapsed_ms: 3, tokens: 5 }), r#"{"kind":"checking","attempt":1,"elapsedMs":3,"tokens":5}"#);
+        assert_eq!(s(PlanEvent::Fixing { attempt: 1, problems: vec!["p".into()], elapsed_ms: 4, tokens: 5 }), r#"{"kind":"fixing","attempt":1,"problems":["p"],"elapsedMs":4,"tokens":5}"#);
+        assert_eq!(s(PlanEvent::Phase { which: PlanPhase::Strip, attempt: 1, of: 1, elapsed_ms: 5, tokens: 0 }), r#"{"kind":"phase","which":"strip","attempt":1,"of":1,"elapsedMs":5,"tokens":0}"#);
+        assert_eq!(s(PlanEvent::Phase { which: PlanPhase::Fix, attempt: 2, of: 3, elapsed_ms: 5, tokens: 9 }), r#"{"kind":"phase","which":"fix","attempt":2,"of":3,"elapsedMs":5,"tokens":9}"#);
+        assert_eq!(s(PlanEvent::Delta { text: "{\"a\"".into(), elapsed_ms: 6, tokens: 7 }), r#"{"kind":"delta","text":"{\"a\"","elapsedMs":6,"tokens":7}"#);
+        assert_eq!(s(PlanEvent::Done { elapsed_ms: 8, tokens: 9 }), r#"{"kind":"done","elapsedMs":8,"tokens":9}"#);
     }
 }

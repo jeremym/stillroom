@@ -324,3 +324,6 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .plan-stream-text.tall { max-height: 60vh; }
 .plan-stream .cursor { background: var(--phos-dim); box-shadow: none; }
 .plan-note .hint-line button.quiet { margin-left: 6px; vertical-align: baseline; }
+
+/* New recipe: the quiet line under Built into the recipe. */
+.material-note { margin: 6px 0 0; font-size: var(--size-small); }

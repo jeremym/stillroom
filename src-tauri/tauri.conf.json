@@ -44,6 +44,8 @@
     ],
     "resources": {
       "../recipes/": "recipes/",
+      "../community/": "community/",
+      "../samples/": "samples/",
       "../stages/": "stages/"
     }
   }

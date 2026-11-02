@@ -13,8 +13,21 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipeSource {
+    /// Ships with the app, written here (`recipes/`).
     Builtin,
+    /// Ships with the app, contributed through the repository and reviewed before it shipped (`community/`).
+    Community,
+    /// Ships with the app as a worked example that needs its sample folders copied first (`samples/`).
+    Sample,
+    /// The user's own, in the app data folder.
     User,
+}
+
+impl RecipeSource {
+    /// The user's own recipe, as opposed to one from the catalog (built-in, community, or sample).
+    pub fn is_user(self) -> bool {
+        self == RecipeSource::User
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,22 +71,23 @@ pub struct RecipeInfo {
     pub outputs: IndexMap<String, crate::recipe::OutputSpec>,
     /// The strip as drawn: declared stages with anything unassigned placed, or one implied stage.
     pub stages: Vec<crate::recipe::Stage>,
-    /// Where the recipe sits for the Library: on the shelf, in the archive, or (a built-in only)
-    /// in the catalog. `info()` gives the default for the source; the shell applies the store's
-    /// placement through `with_shelf`.
+    /// Where the recipe sits for the Library: on the shelf, in the archive, or (a catalog recipe
+    /// only) in the catalog. `info()` gives the default for the source; the shell applies the
+    /// store's placement through `with_shelf`.
     #[serde(default)]
     pub shelf: ShelfState,
 }
 
 impl RecipeInfo {
     /// Apply what the shelf table says, if anything. A recipe of the user's own is on the shelf
-    /// unless archived (never in the catalog); a built-in is in the catalog unless placed.
+    /// unless archived (never in the catalog); a catalog recipe (built-in, community, sample) is
+    /// in the catalog unless placed.
     pub fn with_shelf(mut self, placed: Option<ShelfState>) -> Self {
         self.shelf = match (self.source, placed) {
             (RecipeSource::User, Some(ShelfState::Archive)) => ShelfState::Archive,
             (RecipeSource::User, _) => ShelfState::Shelf,
-            (RecipeSource::Builtin, Some(s)) => s,
-            (RecipeSource::Builtin, None) => ShelfState::Catalog,
+            (_, Some(s)) => s,
+            (_, None) => ShelfState::Catalog,
         };
         self
     }
@@ -352,6 +366,10 @@ mod tests {
         assert_eq!(yours.clone().with_shelf(Some(ShelfState::Archive)).shelf, ShelfState::Archive);
         assert_eq!(yours.clone().with_shelf(Some(ShelfState::Catalog)).shelf, ShelfState::Shelf, "never in the catalog");
         assert_eq!(serde_json::to_value(&builtin).unwrap()["shelf"], serde_json::json!("catalog"));
+        let sample = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::Sample).unwrap().info();
+        assert_eq!(sample.shelf, ShelfState::Catalog, "a sample starts in the catalog too");
+        assert_eq!(sample.clone().with_shelf(Some(ShelfState::Shelf)).shelf, ShelfState::Shelf);
+        assert_eq!(serde_json::to_value(&sample).unwrap()["source"], serde_json::json!("sample"));
     }
 
     #[test]

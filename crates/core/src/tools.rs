@@ -101,30 +101,74 @@ impl Default for DocText {
     }
 }
 
+/// The most text a Word document may unpack to. A .docx is a zip, and a small file can
+/// inflate to hundreds of megabytes of XML; past this, the file is refused rather than read.
+pub const DOCX_TEXT_CAP: u64 = 32 * 1024 * 1024;
+
 fn docx_text(bytes: &[u8]) -> Result<String, String> {
     use std::io::Read;
     let cursor = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
-    let mut file = zip.by_name("word/document.xml").map_err(|_| "not a Word document (no word/document.xml)".to_string())?;
-    let mut xml = String::new();
-    file.read_to_string(&mut xml).map_err(|e| e.to_string())?;
-    // Paragraph and break ends become newlines; every other tag goes; entities are decoded.
-    let mut out = String::with_capacity(xml.len() / 2);
-    let mut rest = xml.as_str();
+    let file = zip.by_name("word/document.xml").map_err(|_| "not a Word document (no word/document.xml)".to_string())?;
+    let too_large = || format!("this Word file is too large to read (over {} MB of text)", DOCX_TEXT_CAP / (1024 * 1024));
+    if file.size() > DOCX_TEXT_CAP {
+        return Err(too_large());
+    }
+    // The declared size is only a claim: read through a cap so a lying header cannot inflate past it.
+    let mut raw = Vec::with_capacity(file.size() as usize);
+    file.take(DOCX_TEXT_CAP + 1).read_to_end(&mut raw).map_err(|e| e.to_string())?;
+    if raw.len() as u64 > DOCX_TEXT_CAP {
+        return Err(too_large());
+    }
+    let xml = String::from_utf8(raw).map_err(|e| e.to_string())?;
+    Ok(strip_word_xml(&xml))
+}
+
+/// Word XML to text in one pass: paragraph and break ends become newlines, every other tag
+/// goes, entities are decoded, and trailing spaces on each line are dropped.
+fn strip_word_xml(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len() / 4);
+    let mut rest = xml;
+    let push_text = |out: &mut String, mut text: &str| {
+        while let Some(i) = text.find('&') {
+            out.push_str(&text[..i]);
+            let after = &text[i..];
+            let known = [("&amp;", '&'), ("&lt;", '<'), ("&gt;", '>'), ("&quot;", '"'), ("&apos;", '\'')];
+            match known.iter().find(|(e, _)| after.starts_with(e)) {
+                Some((e, c)) => {
+                    out.push(*c);
+                    text = &after[e.len()..];
+                }
+                None => {
+                    out.push('&');
+                    text = &after[1..];
+                }
+            }
+        }
+        out.push_str(text);
+    };
+    let end_line = |out: &mut String| {
+        let keep = out.trim_end_matches([' ', '\t', '\r']).len();
+        out.truncate(keep);
+        out.push('\n');
+    };
     while let Some(i) = rest.find('<') {
-        out.push_str(&rest[..i]);
+        push_text(&mut out, &rest[..i]);
         let Some(j) = rest[i..].find('>') else { break };
         let tag = &rest[i + 1..i + j];
         if tag.starts_with("/w:p") || tag.starts_with("w:br") || tag.starts_with("w:cr") {
-            out.push('\n');
+            end_line(&mut out);
         } else if tag.starts_with("w:tab") {
             out.push('\t');
         }
         rest = &rest[i + j + 1..];
     }
-    out.push_str(rest);
-    let decoded = out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'");
-    Ok(decoded.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string())
+    push_text(&mut out, rest);
+    let keep = out.trim_end().len();
+    out.truncate(keep);
+    let skip = out.len() - out.trim_start().len();
+    out.drain(..skip);
+    out
 }
 
 #[async_trait::async_trait]
@@ -1625,6 +1669,37 @@ mod tests {
         assert!(chunks[0]["text"].as_str().unwrap().ends_with('.'), "ends at a sentence: {}", chunks[0]["text"]);
         let paged = TextChunk.call(&ctx(), json!({ "pages": [{ "number": 1, "text": "Page one text." }, { "number": 2, "text": "Page two text." }] })).await.unwrap();
         assert_eq!(paged["chunks"][1]["page"], 2);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A tiny .docx that unpacks to more text than the cap is refused with a plain message,
+    /// and one just under it is read. Deflate makes 33 MB of spaces a few kilobytes on disk.
+    #[tokio::test]
+    async fn a_word_file_that_inflates_past_the_cap_is_refused() {
+        let dir = std::env::temp_dir().join(format!("stillroom-docxcap-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, filler: usize| {
+            let f = std::fs::File::create(dir.join(name)).unwrap();
+            let mut z = zip::ZipWriter::new(f);
+            z.start_file("word/document.xml", zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut z, b"<w:document><w:body><w:p><w:r><w:t>Start").unwrap();
+            let spaces = vec![b' '; 1024 * 1024];
+            for _ in 0..filler {
+                std::io::Write::write_all(&mut z, &spaces).unwrap();
+            }
+            std::io::Write::write_all(&mut z, b"end</w:t></w:r></w:p></w:body></w:document>").unwrap();
+            z.finish().unwrap();
+        };
+        write("big.docx", 33);
+        write("ok.docx", 1);
+        assert!(std::fs::metadata(dir.join("big.docx")).unwrap().len() < 200 * 1024, "the test file itself stays small");
+        let t = DocText::default();
+        let err = t.call(&ctx(), json!({ "path": dir.join("big.docx") })).await.unwrap_err().to_string();
+        assert_eq!(err, "this Word file is too large to read (over 32 MB of text)");
+        let ok = t.call(&ctx(), json!({ "path": dir.join("ok.docx") })).await.unwrap();
+        let text = ok["text"].as_str().unwrap();
+        assert!(text.starts_with("Start") && text.ends_with("end"), "{}", text.len());
+        assert_eq!(strip_word_xml("<w:p><w:t>a &amp; b   </w:t></w:p><w:p>c &#169; d<w:tab/>e</w:p>"), "a & b\nc &#169; d\te");
         std::fs::remove_dir_all(dir).ok();
     }
 

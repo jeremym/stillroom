@@ -121,7 +121,7 @@ pub struct ChatRequest {
     pub think: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub content: String,
     /// Tool calls the model wants made before it can continue.
@@ -129,6 +129,91 @@ pub struct ChatResponse {
     pub tool_calls: Vec<ToolCall>,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    /// How fast the model wrote its answer, in tokens per second, when the provider says how long
+    /// generation took (Ollama does). What this Mac manages with this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens_per_second: Option<f64>,
+}
+
+/// Tokens per second from a count and a duration in nanoseconds; `None` when either is missing
+/// or the duration is zero.
+pub fn tokens_per_second(tokens: Option<u64>, nanos: Option<u64>) -> Option<f64> {
+    match (tokens, nanos) {
+        (Some(t), Some(ns)) if ns > 0 => Some(t as f64 / (ns as f64 / 1e9)),
+        _ => None,
+    }
+}
+
+/// What this Mac runs models on: the chip, its memory (shared by the CPU and GPU on Apple
+/// silicon), its cores, and the room [`fits_in_memory`] allows a model. Anything that could not
+/// be read is `None`; nothing here fails.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hardware {
+    /// `sysctl -n machdep.cpu.brand_string`, e.g. "Apple M3 Max".
+    pub chip: Option<String>,
+    /// Physical RAM, `hw.memsize`.
+    pub memory_bytes: Option<u64>,
+    /// GPU cores, from `ioreg` (the AGXAccelerator's `gpu-core-count`) or `system_profiler`.
+    pub gpu_cores: Option<u32>,
+    /// CPU cores, `hw.ncpu`.
+    pub cpu_cores: Option<u32>,
+    /// The most a model's weights may take and still run comfortably: [`MEMORY_CEILING`] of memory.
+    pub model_ceiling_bytes: Option<u64>,
+}
+
+/// Read this Mac's hardware facts. Slow (system_profiler may run); call once and keep the answer.
+/// Off a Mac every field is `None`.
+pub fn detect_hardware() -> Hardware {
+    if !cfg!(target_os = "macos") {
+        return Hardware::default();
+    }
+    let memory_bytes = physical_memory_bytes();
+    let gpu_cores = command_output("/usr/sbin/ioreg", &["-rc", "AGXAccelerator", "-d", "1"])
+        .and_then(|s| parse_ioreg_gpu_cores(&s))
+        .or_else(|| command_output("/usr/sbin/system_profiler", &["SPDisplaysDataType", "-json"]).and_then(|s| parse_profiler_gpu_cores(&s)));
+    Hardware {
+        chip: sysctl("machdep.cpu.brand_string").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        memory_bytes,
+        gpu_cores,
+        cpu_cores: sysctl("hw.ncpu").and_then(|s| s.trim().parse().ok()),
+        model_ceiling_bytes: model_ceiling_bytes(memory_bytes),
+    }
+}
+
+/// The room [`fits_in_memory`] allows: [`MEMORY_CEILING`] of `memory_bytes`.
+pub fn model_ceiling_bytes(memory_bytes: Option<u64>) -> Option<u64> {
+    memory_bytes.map(|m| (m as f64 * MEMORY_CEILING) as u64)
+}
+
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(program).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn sysctl(key: &str) -> Option<String> {
+    command_output("/usr/sbin/sysctl", &["-n", key])
+}
+
+/// The GPU core count from `ioreg -rc AGXAccelerator -d 1`: the line `"gpu-core-count" = 40`.
+pub fn parse_ioreg_gpu_cores(text: &str) -> Option<u32> {
+    text.lines()
+        .find(|l| l.contains("\"gpu-core-count\""))
+        .and_then(|l| l.rsplit('=').next())
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// The GPU core count from `system_profiler SPDisplaysDataType -json`: the first display
+/// adapter's `sppci_cores`, a string such as "40".
+pub fn parse_profiler_gpu_cores(json: &str) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v.get("SPDisplaysDataType")?
+        .as_array()?
+        .iter()
+        .find_map(|gpu| gpu.get("sppci_cores").and_then(|c| c.as_str()).and_then(|c| c.trim().parse().ok()))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -203,6 +288,54 @@ mod tests {
     fn physical_memory_reads_on_a_mac() {
         if cfg!(target_os = "macos") {
             assert!(physical_memory_bytes().unwrap_or(0) >= 4 << 30, "a Mac has at least 4 GB");
+        }
+    }
+
+    #[test]
+    fn tokens_per_second_from_a_count_and_nanoseconds() {
+        assert_eq!(tokens_per_second(Some(300), Some(5_000_000_000)), Some(60.0));
+        assert_eq!(tokens_per_second(Some(300), Some(0)), None, "a zero duration is not a speed");
+        assert_eq!(tokens_per_second(None, Some(1)), None);
+        assert_eq!(tokens_per_second(Some(1), None), None);
+    }
+
+    #[test]
+    fn gpu_cores_parse_from_ioreg_and_system_profiler() {
+        let ioreg = concat!(
+            "+-o AGXAcceleratorG15X  <class AGXAcceleratorG15X, id 0x1000002f3, registered, matched, active, busy 0 (12 ms), retain 150>\n",
+            "    {\n",
+            "      \"IOClass\" = \"AGXAcceleratorG15X\"\n",
+            "      \"gpu-core-count\" = 40\n",
+            "      \"IOMatchCategory\" = \"IODefault\"\n",
+            "    }\n"
+        );
+        assert_eq!(parse_ioreg_gpu_cores(ioreg), Some(40));
+        assert_eq!(parse_ioreg_gpu_cores("nothing here"), None);
+        assert_eq!(parse_ioreg_gpu_cores("\"gpu-core-count\" = lots"), None);
+
+        let profiler = r#"{"SPDisplaysDataType":[{"_name":"Apple M3 Ultra","spdisplays_vendor":"sppci_vendor_Apple","sppci_cores":"60","sppci_device_type":"spdisplays_gpu","sppci_model":"Apple M3 Ultra"}]}"#;
+        assert_eq!(parse_profiler_gpu_cores(profiler), Some(60));
+        assert_eq!(parse_profiler_gpu_cores(r#"{"SPDisplaysDataType":[{"_name":"x"}]}"#), None);
+        assert_eq!(parse_profiler_gpu_cores("not json"), None);
+    }
+
+    #[test]
+    fn the_model_ceiling_is_the_memory_ceiling_share() {
+        assert_eq!(model_ceiling_bytes(Some(100 << 30)), Some(60 << 30));
+        assert_eq!(model_ceiling_bytes(None), None);
+    }
+
+    #[test]
+    fn hardware_reads_on_a_mac_and_never_fails() {
+        let h = detect_hardware();
+        if cfg!(target_os = "macos") {
+            assert!(h.chip.as_deref().is_some_and(|c| c.contains("Apple") || c.contains("Intel")), "{h:?}");
+            assert!(h.memory_bytes.unwrap_or(0) >= 4 << 30);
+            assert!(h.cpu_cores.unwrap_or(0) >= 1);
+            assert_eq!(h.model_ceiling_bytes, model_ceiling_bytes(h.memory_bytes));
+            eprintln!("hardware on this Mac: {}", serde_json::to_string(&h).unwrap());
+        } else {
+            assert_eq!(h, Hardware::default());
         }
     }
 

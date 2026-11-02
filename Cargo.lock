@@ -4323,6 +4323,7 @@ checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 name = "stillroom"
 version = "0.3.1"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "indexmap 2.14.2",
@@ -4337,6 +4338,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-window-state",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

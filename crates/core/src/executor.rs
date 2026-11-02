@@ -1365,6 +1365,7 @@ outputs:
                 tool_calls: Vec::new(),
                 prompt_tokens: Some(10),
                 completion_tokens: Some(5),
+                completion_tokens_per_second: None,
             })
         }
         /// A letter histogram, so texts that share words land near each other.
@@ -2007,7 +2008,7 @@ outputs:
         async fn chat(&self, _model_id: &str, req: ChatRequest) -> Result<ChatResponse, ModelError> {
             let system = &req.messages[0].content;
             let last = req.messages.last().unwrap();
-            let reply = |content: String, tool_calls: Vec<crate::model::ToolCall>| ChatResponse { content, tool_calls, prompt_tokens: Some(1), completion_tokens: Some(1) };
+            let reply = |content: String, tool_calls: Vec<crate::model::ToolCall>| ChatResponse { content, tool_calls, prompt_tokens: Some(1), completion_tokens: Some(1), completion_tokens_per_second: None };
             if system.starts_with("CLASSIFY") {
                 let needs = last.content.contains('?');
                 return Ok(reply(format!("{{\"needsReply\": {needs}, \"category\": \"{}\"}}", if needs { "question" } else { "fyi" }), vec![]));

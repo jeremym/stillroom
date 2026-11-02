@@ -4,7 +4,7 @@
 
 use crate::provider::*;
 use serde::Deserialize;
-use stillroom_core::model::{ChatRequest, ChatResponse, InstalledModel, ToolCall};
+use stillroom_core::model::{tokens_per_second, ChatRequest, ChatResponse, InstalledModel, ToolCall};
 use stillroom_core::recipe::Capability;
 
 pub struct Ollama {
@@ -124,6 +124,10 @@ struct ChatResponseWire {
     prompt_eval_count: Option<u64>,
     #[serde(default)]
     eval_count: Option<u64>,
+    /// How long writing the answer took, in nanoseconds (`prompt_eval_duration` is reading
+    /// time, which is not a speed the table shows). With `eval_count`, the speed.
+    #[serde(default)]
+    eval_duration: Option<u64>,
 }
 #[derive(Deserialize)]
 struct WireMessage {
@@ -278,6 +282,7 @@ impl Provider for Ollama {
             tool_calls: wire_tool_calls(wire.message.tool_calls),
             prompt_tokens: wire.prompt_eval_count,
             completion_tokens: wire.eval_count,
+            completion_tokens_per_second: tokens_per_second(wire.eval_count, wire.eval_duration),
         })
     }
 
@@ -397,6 +402,9 @@ struct StreamLine {
     prompt_eval_count: Option<u64>,
     #[serde(default)]
     eval_count: Option<u64>,
+    /// Nanoseconds spent writing the answer; on the `done` line.
+    #[serde(default)]
+    eval_duration: Option<u64>,
 }
 #[derive(Deserialize)]
 struct StreamMessage {
@@ -418,6 +426,7 @@ struct StreamAccumulator {
     tool_calls: Vec<ToolCall>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    eval_nanos: Option<u64>,
     thinking_shown: bool,
     answer_shown: bool,
 }
@@ -442,6 +451,9 @@ impl StreamAccumulator {
         if let Some(n) = v.eval_count {
             self.completion_tokens = Some(n);
         }
+        if let Some(ns) = v.eval_duration {
+            self.eval_nanos = Some(ns);
+        }
         let Some(m) = v.message else { return Ok(None) };
         self.tool_calls.extend(wire_tool_calls(m.tool_calls));
         let mut shown = String::new();
@@ -464,7 +476,13 @@ impl StreamAccumulator {
     }
 
     fn finish(self) -> ChatResponse {
-        ChatResponse { content: self.content, tool_calls: self.tool_calls, prompt_tokens: self.prompt_tokens, completion_tokens: self.completion_tokens }
+        ChatResponse {
+            content: self.content,
+            tool_calls: self.tool_calls,
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            completion_tokens_per_second: tokens_per_second(self.completion_tokens, self.eval_nanos),
+        }
     }
 }
 
@@ -480,7 +498,7 @@ mod tests {
         "\n",
         r#"{"model":"t","message":{"role":"assistant","content":" 1}"},"done":false}"#,
         "\n\n",
-        r#"{"model":"t","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":12,"eval_count":3}"#,
+        r#"{"model":"t","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":12,"eval_count":3,"prompt_eval_duration":200000000,"eval_duration":50000000}"#,
         "\n"
     );
 
@@ -493,7 +511,17 @@ mod tests {
         assert_eq!(resp.content, "{\"a\": 1}", "thinking text stays out of the answer");
         assert_eq!(resp.prompt_tokens, Some(12));
         assert_eq!(resp.completion_tokens, Some(3));
+        assert_eq!(resp.completion_tokens_per_second, Some(60.0), "3 tokens in 50 ms");
         assert!(resp.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn a_one_shot_answer_carries_its_speed_when_ollama_says_how_long() {
+        let wire: ChatResponseWire =
+            serde_json::from_str(r#"{"message":{"role":"assistant","content":"pong"},"done":true,"prompt_eval_count":8,"eval_count":120,"prompt_eval_duration":100000000,"eval_duration":2000000000}"#).unwrap();
+        assert_eq!(tokens_per_second(wire.eval_count, wire.eval_duration), Some(60.0));
+        let old: ChatResponseWire = serde_json::from_str(r#"{"message":{"role":"assistant","content":"pong"},"done":true,"eval_count":120}"#).unwrap();
+        assert_eq!(tokens_per_second(old.eval_count, old.eval_duration), None, "no duration, no speed");
     }
 
     #[test]
@@ -561,6 +589,7 @@ mod tests {
         let resp = ollama.chat_stream("t", req, &|d: &str| seen.lock().unwrap().push(d.to_string())).await.unwrap();
         assert_eq!(resp.content, "{\"a\": 1}");
         assert_eq!(resp.completion_tokens, Some(3));
+        assert_eq!(resp.completion_tokens_per_second, Some(60.0));
         let seen = seen.lock().unwrap();
         assert_eq!(seen.concat(), "(thinking)\nLet me see.\n(answer)\n{\"a\": 1}");
         assert!(seen.len() >= 2, "more than one delta: {seen:?}");

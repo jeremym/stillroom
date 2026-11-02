@@ -1,5 +1,6 @@
 //! Stillroom desktop shell: wires the recipe library, executor, model router, and store to the webview.
 
+mod plan_journal;
 mod watches;
 
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use stillroom_core::model::{Hardware, ModelClient};
 use stillroom_core::store::{ModelUsage, PlannerMeasurement, RunEstimate};
 use stillroom_core::tools::{ToolInfo, ToolRegistry};
 use stillroom_core::trace::RunSummary;
@@ -49,6 +51,88 @@ pub(crate) struct AppState {
     quarantine_dir: PathBuf,
     /// Physical RAM of this Mac, read once at startup; `None` when it could not be read.
     memory_bytes: Option<u64>,
+    /// The planner's journal: one Markdown file per plan, `<data>/plans/`.
+    plans_dir: PathBuf,
+}
+
+/// The setting under `models` that holds what each model managed last time: `speed.<model id>`.
+const MODELS_SETTING: &str = "models";
+const SPEED_FIELD: &str = "speed";
+
+/// What one model managed last time it answered on this Mac.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelSpeed {
+    tokens_per_second: f64,
+    /// When, RFC 3339.
+    at: String,
+}
+
+/// Every model call the shell makes goes through this: it answers from the router and, when the
+/// provider said how fast the model wrote, remembers it under `models.speed.<model id>`. One place,
+/// so a run, a plan, Try, and Try planning all keep the table fresh.
+struct SpeedRecorder {
+    inner: Arc<ModelRouter>,
+    store: Arc<Mutex<Store>>,
+}
+
+impl SpeedRecorder {
+    fn record(&self, model_id: &str, resp: &stillroom_core::model::ChatResponse) {
+        let Some(tps) = resp.completion_tokens_per_second.filter(|t| t.is_finite() && *t > 0.0) else { return };
+        if let Ok(store) = self.store.lock() {
+            if let Err(e) = record_speed(&store, model_id, tps) {
+                tracing::warn!("could not record {model_id}'s speed: {e}");
+            }
+        }
+    }
+}
+
+/// Write `models.speed.<model id>` without touching the rest of `models`.
+fn record_speed(store: &Store, model_id: &str, tokens_per_second: f64) -> Result<(), stillroom_core::store::StoreError> {
+    let mut models = match store.get_setting(MODELS_SETTING)? {
+        Some(Value::Object(o)) => o,
+        _ => serde_json::Map::new(),
+    };
+    let speed = models.entry(SPEED_FIELD).or_insert_with(|| Value::Object(Default::default()));
+    if !speed.is_object() {
+        *speed = Value::Object(Default::default());
+    }
+    let entry = ModelSpeed { tokens_per_second: (tokens_per_second * 10.0).round() / 10.0, at: chrono::Utc::now().to_rfc3339() };
+    speed.as_object_mut().expect("just made an object").insert(model_id.to_string(), serde_json::to_value(entry)?);
+    store.set_setting(MODELS_SETTING, &Value::Object(models))
+}
+
+/// `models.speed`, by model id.
+fn speeds_of(store: &Store) -> BTreeMap<String, ModelSpeed> {
+    store
+        .get_setting(MODELS_SETTING)
+        .ok()
+        .flatten()
+        .and_then(|m| m.get(SPEED_FIELD).cloned())
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+#[async_trait::async_trait]
+impl ModelClient for SpeedRecorder {
+    async fn chat(&self, model_id: &str, req: stillroom_core::model::ChatRequest) -> Result<stillroom_core::model::ChatResponse, stillroom_core::model::ModelError> {
+        let resp = self.inner.chat(model_id, req).await?;
+        self.record(model_id, &resp);
+        Ok(resp)
+    }
+    async fn chat_stream(
+        &self,
+        model_id: &str,
+        req: stillroom_core::model::ChatRequest,
+        on_delta: &(dyn for<'a> Fn(&'a str) + Send + Sync),
+    ) -> Result<stillroom_core::model::ChatResponse, stillroom_core::model::ModelError> {
+        let resp = self.inner.chat_stream(model_id, req, on_delta).await?;
+        self.record(model_id, &resp);
+        Ok(resp)
+    }
+    async fn embed(&self, model_id: &str, texts: Vec<String>) -> Result<Vec<Vec<f32>>, stillroom_core::model::ModelError> {
+        self.inner.embed(model_id, texts).await
+    }
 }
 
 impl AppState {
@@ -123,6 +207,11 @@ impl AppState {
             providers.push(Arc::new(o));
         }
         Arc::new(ModelRouter::new(providers))
+    }
+
+    /// The router as the engine should call it: every answer's speed is remembered on the way back.
+    fn models(&self, router: Arc<ModelRouter>) -> Arc<dyn ModelClient> {
+        Arc::new(SpeedRecorder { inner: router, store: self.store.clone() })
     }
 
     /// Seconds one model call may take; `models.timeoutSecs`, default 600, 0 means no limit.
@@ -306,7 +395,7 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
             let _ = app.emit("run:step", rec.clone());
         })
     };
-    let executor = Executor::new(state.tools.clone(), router).with_cache(state.store.clone());
+    let executor = Executor::new(state.tools.clone(), state.models(router)).with_cache(state.store.clone());
     let mut request = bundle.request(args.inputs, resolutions);
     request.artifact_base = Some(state.artifacts_dir.clone());
     request.keep_base = Some(state.keep_base.clone());
@@ -365,12 +454,29 @@ fn runtime_status(state: State<'_, AppState>) -> CmdResult<RuntimeStatus> {
 struct ModelsResponse {
     providers: Vec<ProviderStatus>,
     models: Vec<InstalledModel>,
+    /// What each model managed last time on this Mac, by model id; absent when it has not answered yet.
+    speeds: BTreeMap<String, ModelSpeed>,
 }
 
 #[tauri::command]
 async fn list_models(state: State<'_, AppState>) -> CmdResult<ModelsResponse> {
     let router = state.router();
-    Ok(ModelsResponse { providers: router.statuses().await, models: router.list_all().await })
+    let speeds = state.store.lock().map(|s| speeds_of(&s)).unwrap_or_default();
+    Ok(ModelsResponse { providers: router.statuses().await, models: router.list_all().await, speeds })
+}
+
+/// This Mac's hardware, read once and kept: the chip, the memory the CPU and GPU share, the
+/// cores, and the room a model has before it is swapped through memory. Never fails; what could
+/// not be read is null.
+#[tauri::command]
+async fn hardware() -> CmdResult<Hardware> {
+    static HARDWARE: std::sync::OnceLock<Hardware> = std::sync::OnceLock::new();
+    if let Some(h) = HARDWARE.get() {
+        return Ok(h.clone());
+    }
+    // system_profiler can take seconds; keep it off the UI thread.
+    let h = tokio::task::spawn_blocking(stillroom_core::model::detect_hardware).await.unwrap_or_default();
+    Ok(HARDWARE.get_or_init(|| h).clone())
 }
 
 /// What Settings shows about the Codex CLI, independent of the opt-in.
@@ -388,13 +494,15 @@ struct TryResult {
     error: Option<String>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    /// How fast the model wrote, when the provider said (Ollama does).
+    completion_tokens_per_second: Option<f64>,
 }
 
 /// One tiny call to a model, so Settings can show it answers and how fast. Two minutes at most.
 #[tauri::command]
 async fn try_model(state: State<'_, AppState>, model_id: String) -> CmdResult<TryResult> {
-    use stillroom_core::model::{ChatMessage, ChatRequest, ModelClient};
-    let router = state.router();
+    use stillroom_core::model::{ChatMessage, ChatRequest};
+    let router = state.models(state.router());
     let req = ChatRequest {
         messages: vec![ChatMessage::new("user", "Reply with the single word pong and nothing else.")],
         think: Some(Value::Bool(false)),
@@ -404,9 +512,17 @@ async fn try_model(state: State<'_, AppState>, model_id: String) -> CmdResult<Tr
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(120), router.chat(&model_id, req)).await;
     let duration_ms = started.elapsed().as_millis() as u64;
     Ok(match outcome {
-        Ok(Ok(r)) => TryResult { ok: true, duration_ms, answer: Some(r.content.trim().chars().take(120).collect()), error: None, prompt_tokens: r.prompt_tokens, completion_tokens: r.completion_tokens },
-        Ok(Err(e)) => TryResult { ok: false, duration_ms, answer: None, error: Some(e.to_string()), prompt_tokens: None, completion_tokens: None },
-        Err(_) => TryResult { ok: false, duration_ms, answer: None, error: Some("no answer within 120 s".into()), prompt_tokens: None, completion_tokens: None },
+        Ok(Ok(r)) => TryResult {
+            ok: true,
+            duration_ms,
+            answer: Some(r.content.trim().chars().take(120).collect()),
+            error: None,
+            prompt_tokens: r.prompt_tokens,
+            completion_tokens: r.completion_tokens,
+            completion_tokens_per_second: r.completion_tokens_per_second,
+        },
+        Ok(Err(e)) => TryResult { ok: false, duration_ms, answer: None, error: Some(e.to_string()), prompt_tokens: None, completion_tokens: None, completion_tokens_per_second: None },
+        Err(_) => TryResult { ok: false, duration_ms, answer: None, error: Some("no answer within 120 s".into()), prompt_tokens: None, completion_tokens: None, completion_tokens_per_second: None },
     })
 }
 
@@ -566,17 +682,19 @@ fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: Value) -> Cmd
     {
         let store = state.store.lock().map_err(err)?;
         for (k, v) in &checked {
-            // What Try planning measured is written by the engine, not the screen: a `planner`
-            // patch that leaves it out keeps it.
-            let v = match (k.as_str(), v) {
-                (stillroom_core::store::PLANNER_SETTING, Value::Object(o)) if !o.contains_key(stillroom_core::store::PLANNER_MEASURED_FIELD) => {
+            // What the engine measured (Try planning under `planner.measured`, each model's speed
+            // under `models.speed`) is written by the engine, not the screen: a patch that leaves
+            // it out keeps it.
+            let engine_field = match k.as_str() {
+                stillroom_core::store::PLANNER_SETTING => Some(stillroom_core::store::PLANNER_MEASURED_FIELD),
+                MODELS_SETTING => Some(SPEED_FIELD),
+                _ => None,
+            };
+            let v = match (engine_field, v) {
+                (Some(field), Value::Object(o)) if !o.contains_key(field) => {
                     let mut o = o.clone();
-                    if let Some(kept) = store
-                        .get_setting(stillroom_core::store::PLANNER_SETTING)
-                        .map_err(err)?
-                        .and_then(|p| p.get(stillroom_core::store::PLANNER_MEASURED_FIELD).cloned())
-                    {
-                        o.insert(stillroom_core::store::PLANNER_MEASURED_FIELD.into(), kept);
+                    if let Some(kept) = store.get_setting(k).map_err(err)?.and_then(|p| p.get(field).cloned()) {
+                        o.insert(field.into(), kept);
                     }
                     Value::Object(o)
                 }
@@ -1125,7 +1243,7 @@ async fn try_planning(app: AppHandle, state: State<'_, AppState>, model_id: Stri
     *state.plan_cancel.lock().map_err(err)? = Some(cancel.clone());
     let planner = Planner {
         library: Some(state.stage_library.clone()),
-        models: router,
+        models: state.models(router),
         model_id: model_id.clone(),
         tools: state.tools.catalog(),
         prompt: state.prompts.current_text("planner").map_err(err)?,
@@ -1176,8 +1294,8 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
     *state.plan_cancel.lock().map_err(err)? = Some(cancel.clone());
     let planner = Planner {
         library: Some(state.stage_library.clone()),
-        models: router,
-        model_id,
+        models: state.models(router),
+        model_id: model_id.clone(),
         tools: state.tools.catalog(),
         prompt: state.prompts.current_text("planner").map_err(err)?,
         strip_prompt: state.prompts.current_text("strip").map_err(err)?,
@@ -1186,15 +1304,51 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
         model_defaults: state.model_defaults(),
         max_attempts: 3,
     };
+    // The journal watches the same events the window does, so a plan that never returns (stopped,
+    // out of time) still leaves its transcript and the checker's problems behind.
+    let log = Arc::new(Mutex::new(plan_journal::EventLog::default()));
     let observer = {
         let app = app.clone();
+        let log = log.clone();
         Arc::new(move |e: PlanEvent| {
+            if let Ok(mut l) = log.lock() {
+                l.see(&e);
+            }
             let _ = app.emit("plan:progress", e);
         })
     };
+    let started_at = chrono::Local::now();
     let out = planner.plan(&args.request, Some(observer)).await;
     *state.plan_cancel.lock().map_err(err)? = None;
+    let revisions: Vec<(String, u32)> = ["strip", "planner"].iter().filter_map(|n| state.prompts.state(n).ok().map(|s| (n.to_string(), s.current))).collect();
+    let log = log.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
+    let record = match &out {
+        Ok(o) => plan_journal::PlanRecord::from_outcome(&args.request, o, revisions, log.fix_rounds, started_at),
+        Err(e) => plan_journal::PlanRecord {
+            request: args.request.clone(),
+            model_id,
+            prompt_revisions: revisions,
+            attempts: log.attempts,
+            duration_ms: log.last_elapsed_ms,
+            prompt_tokens: 0,
+            completion_tokens: log.tokens,
+            fix_rounds: log.fix_rounds,
+            result: plan_journal::PlanResult::Failed(e.to_string()),
+            transcript: log.transcript,
+            started_at,
+        },
+    };
+    if let Err(e) = plan_journal::write(&state.plans_dir, &record) {
+        tracing::warn!("could not write the planner's journal: {e}");
+    }
     out.map_err(err)
+}
+
+/// Show the planner's journal (`<data>/plans/`, one Markdown file per plan) in the Finder.
+#[tauri::command]
+fn reveal_plans_folder(state: State<'_, AppState>) -> CmdResult<()> {
+    std::fs::create_dir_all(&state.plans_dir).map_err(err)?;
+    tauri_plugin_opener::reveal_item_in_dir(&state.plans_dir).map_err(err)
 }
 
 #[derive(Serialize)]
@@ -1938,6 +2092,8 @@ pub fn run() {
             std::fs::create_dir_all(&keep_base)?;
             let quarantine_dir = data_dir.join("quarantine");
             std::fs::create_dir_all(&quarantine_dir)?;
+            let plans_dir = data_dir.join("plans");
+            std::fs::create_dir_all(&plans_dir)?;
             // An import the user never confirmed is forgotten after a day.
             stillroom_core::catalog::prune_quarantine(&quarantine_dir, std::time::Duration::from_secs(24 * 3600));
             let db_path = data_dir.join("stillroom.db");
@@ -1960,6 +2116,7 @@ pub fn run() {
                 run_gate: tokio::sync::Mutex::new(()),
                 quarantine_dir,
                 memory_bytes: stillroom_core::model::physical_memory_bytes(),
+                plans_dir,
             });
             app.manage(WatchRuntime::default());
             let rt = app.state::<WatchRuntime>();
@@ -1983,6 +2140,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             list_models,
+            hardware,
             codex_status,
             try_model,
             stop_run,
@@ -2031,6 +2189,7 @@ pub fn run() {
             discard_import,
             export_recipe,
             reveal_recipes_folder,
+            reveal_plans_folder,
             reveal_sample_folders,
             permission_status,
             open_privacy_pane,

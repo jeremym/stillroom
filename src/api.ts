@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, Finding, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -57,7 +57,13 @@ export const api = {
     invoke<PlanOutcome>("plan_recipe", { args }),
   /** Delete one of your recipes and the watches bound to it. Built-ins refuse. */
   deleteRecipe: (recipeId: string) => invoke<void>("delete_recipe", { recipeId }),
+  /** A copy of a recipe under a new id and name, in your recipes folder. The engine writes where it
+   *  came from (its provenance) so the Library can say when the catalog has a newer version. */
+  duplicateRecipe: (recipeId: string, newId: string, name: string, icon?: string | null) =>
+    invoke<RecipeInfo>("duplicate_recipe", { recipeId, newId, name, icon: icon ?? null }),
   revealRecipesFolder: () => invoke<void>("reveal_recipes_folder"),
+  /** Show the sample folders (the inboxes a sample recipe reads) in the Finder. */
+  revealSampleFolders: () => invoke<void>("reveal_sample_folders"),
   /** Put a recipe on the shelf, in the archive, or back in the catalog. Every window hears `shelf:changed`. */
   setShelf: (recipeId: string, state: ShelfState) => invoke<void>("set_shelf", { recipeId, state }),
   /** What macOS may ask for and where each stands. `probe` tests the folders, which is what makes macOS ask. */

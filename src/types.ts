@@ -172,7 +172,23 @@ export interface RuntimeStatus {
   recipeRoots: string[];
 }
 
-export type RecipeSource = "builtin" | "user";
+/** Where a recipe came from: written here (built-in), contributed through the repository and reviewed
+ *  before it shipped (community), one of the sample recipes that need the sample folders, or yours. */
+export type RecipeSource = "builtin" | "community" | "sample" | "user";
+
+/** Who wrote a recipe, as its recipe.yaml says. */
+export interface RecipeAuthor {
+  name: string;
+  url?: string | null;
+}
+
+/** A duplicate's provenance: the catalog recipe it was made from and its version then. `newer` is
+ *  true when the catalog has moved on and the copy's steps were never edited. */
+export interface RecipeOrigin {
+  catalog: string;
+  version: string;
+  newer: boolean;
+}
 
 /** Where a recipe sits for the user: on the shelf (the Library's Recipes zone), in the archive (taken
  *  off the shelf, Restore puts it back), or in the catalog (a built-in that is neither). A recipe of
@@ -235,6 +251,11 @@ export interface RecipeInfo {
   source: RecipeSource;
   /** Absent from an older engine: read as "shelf". */
   shelf?: ShelfState;
+  author?: RecipeAuthor | null;
+  /** Absent from an older engine: read as none. */
+  tags?: string[];
+  /** Set on a duplicate of a catalog recipe; absent or null otherwise. */
+  from?: RecipeOrigin | null;
   path: string;
   inputs: Record<string, InputSpec>;
   modelSlots: Record<string, ModelSlot>;

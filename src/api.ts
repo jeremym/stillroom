@@ -69,8 +69,8 @@ export const api = {
   exampleResult: (recipeId: string) => invoke<Run>("example_result", { recipeId }),
   /** Get a recipe from a folder or a zip. Rust opens the dialog, copies the pick into quarantine, and
    *  checks it; null when the user cancelled. Nothing joins your recipes until `confirmImport`. */
-  importRecipe: (): Promise<ImportPreview | null> =>
-    invoke<ImportPreview | null>("import_recipe").then((p) => (p ? { ...p, findings: toFindings(p.findings as (string | Finding)[]) } : null)),
+  importRecipe: (kind: "folder" | "zip" = "zip"): Promise<ImportPreview | null> =>
+    invoke<ImportPreview | null>("import_recipe", { kind }).then((p) => (p ? { ...p, findings: toFindings(p.findings as (string | Finding)[]) } : null)),
   /** Move a quarantined recipe into your recipes folder with the permissions ticked. */
   confirmImport: (token: string, grants: Grant[]) => invoke<RecipeInfo>("confirm_import", { token, grants }),
   /** Throw a quarantined recipe away. */

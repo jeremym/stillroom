@@ -212,10 +212,10 @@ function App() {
   // Get a recipe…: Rust opens the dialog and quarantines the pick; the preview is its own place.
   const importRef = useRef<ImportPreview | null>(null);
   importRef.current = importPreview;
-  const getRecipe = useCallback(async () => {
+  const getRecipe = useCallback(async (kind: "folder" | "zip" = "zip") => {
     setError(null);
     try {
-      const p = await api.importRecipe();
+      const p = await api.importRecipe(kind);
       if (!p) return;
       // A pick made while another preview was open replaces it; the earlier copy is thrown away.
       const before = importRef.current;
@@ -357,7 +357,7 @@ function App() {
       case "about": case "settings": api.openSettings().catch((e) => setError(String(e))); break;
       case "new-recipe": setCreateError(null); setPlace("new"); break;
       case "reveal-recipes": api.revealRecipesFolder().catch((e) => setError(String(e))); break;
-      case "get-recipe": getRecipe(); break;
+      case "get-recipe": getRecipe("zip"); break;
       case "place-library": setPlace("library"); break;
       case "place-browse": setPlace("browse"); break;
       case "place-recipe": goRecipe("recipe"); break;
@@ -732,7 +732,8 @@ function App() {
                 aside={<>
                   <span>{shelf.shelf.length} on the shelf</span>
                   <button className="quiet" onClick={browseCatalog} title="The catalog (⌘B)"><Glyph name="search" /> Browse the catalog</button>
-                  <button className="quiet" onClick={getRecipe} title="Add a recipe from a folder or a zip someone gave you"><Glyph name="folder" /> Get a recipe…</button>
+                  <button className="quiet" onClick={() => getRecipe("zip")} title="Add a recipe from a zip someone gave you"><Glyph name="folder" /> Get a recipe from a zip…</button>
+                  <button className="quiet" onClick={() => getRecipe("folder")} title="Add a recipe from a folder on this Mac"><Glyph name="folder" /> …or from a folder</button>
                   <button className="quiet" onClick={() => { setCreateError(null); setPlace("new"); }}><Glyph name="plus" /> New recipe</button>
                 </>}>
                 {shelf.shelf.length === 0 && recipes ? (

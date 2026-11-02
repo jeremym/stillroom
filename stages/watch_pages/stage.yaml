@@ -1,4 +1,5 @@
 id: watch_pages
+version: 1
 name: Read the pages
 summary: Fetch each page the user follows about a topic and list the items on it (title, link, one line, date), as one tidy list; the first half of a 'what is new' recipe, pair with remember_seen and brief_new.
 why: Each page is fetched and an AI step lists the items on it (title, link, one line), so the rest works from one tidy list.

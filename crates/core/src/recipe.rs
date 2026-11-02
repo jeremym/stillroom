@@ -124,6 +124,27 @@ pub struct Stage {
     /// A run keep: what this stage holds on to between runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<KeepSpec>,
+    /// Where the stage was copied from, when it came from a ready-made stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<StageSource>,
+}
+
+impl Stage {
+    /// The name of the stage's keep on disk: `keep.id` when set, else the stage id, so a stage
+    /// can be renamed without orphaning what it kept.
+    pub fn keep_id(&self) -> &str {
+        self.keep.as_ref().and_then(|k| k.id.as_deref()).unwrap_or(&self.id)
+    }
+}
+
+/// Provenance of a stage copied from the ready-made library: which one, which version, and a
+/// digest of the steps as copied, so an edited copy is told apart from an untouched one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageSource {
+    pub stage: String,
+    pub version: u32,
+    pub digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -131,6 +152,9 @@ pub struct Stage {
 pub struct KeepSpec {
     #[serde(default)]
     pub refresh: Refresh,
+    /// The keep's own name on disk; defaults to the stage id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// When a stage with a keep runs again.
@@ -524,7 +548,7 @@ impl Recipe {
         let steps: Vec<String> = self.steps.iter().map(|s| s.id().to_string()).filter(|k| !assigned(&|s| &s.steps, k)).collect();
         let outputs: Vec<String> = self.outputs.keys().filter(|k| !assigned(&|s| &s.outputs, k)).cloned().collect();
         if stages.is_empty() {
-            let mut make = Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs, keep: None };
+            let mut make = Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs, keep: None, source: None };
             make.why = Some(self.plain_why(&make));
             return vec![make];
         }
@@ -537,7 +561,7 @@ impl Recipe {
                     make.steps.extend(steps);
                     make.outputs.extend(outputs);
                 }
-                None => stages.push(Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs: Vec::new(), steps, outputs, keep: None }),
+                None => stages.push(Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs: Vec::new(), steps, outputs, keep: None, source: None }),
             }
         }
         for st in stages.iter_mut() {

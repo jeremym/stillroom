@@ -451,9 +451,9 @@ mod tests {
         run("r1", vec![step("r1", "index", 4000, 100, None), step("r1", "answer", 1000, 50, None)]);
         run("r2", vec![step("r2", "index", 0, 0, Some("keep:build")), step("r2", "answer", 3000, 70, None)]);
         let stages = vec![
-            Stage { id: "build".into(), name: "Build".into(), why: None, inputs: vec![], steps: vec!["index".into()], outputs: vec![], keep: Some(crate::recipe::KeepSpec { refresh: Refresh::WhenSourcesChange }) },
-            Stage { id: "ask".into(), name: "Ask".into(), why: None, inputs: vec![], steps: vec!["answer".into()], outputs: vec![], keep: None },
-            Stage { id: "never".into(), name: "Never ran".into(), why: None, inputs: vec![], steps: vec!["nope".into()], outputs: vec![], keep: None },
+            Stage { id: "build".into(), name: "Build".into(), why: None, inputs: vec![], steps: vec!["index".into()], outputs: vec![], keep: Some(crate::recipe::KeepSpec { refresh: Refresh::WhenSourcesChange, id: None }), source: None },
+            Stage { id: "ask".into(), name: "Ask".into(), why: None, inputs: vec![], steps: vec!["answer".into()], outputs: vec![], keep: None, source: None },
+            Stage { id: "never".into(), name: "Never ran".into(), why: None, inputs: vec![], steps: vec!["nope".into()], outputs: vec![], keep: None, source: None },
         ];
         let e = store.estimate_for_recipe("x", &stages).unwrap().unwrap();
         assert_eq!(e.based_on_runs, 2);

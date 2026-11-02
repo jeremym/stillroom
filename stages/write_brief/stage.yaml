@@ -1,4 +1,5 @@
 id: write_brief
+version: 1
 name: Write the brief
 summary: Turn the findings from read_folder and/or read_links into one brief that answers the focus and cites every point by file, page, or link. Requires read_folder or read_links earlier.
 why: The findings become one brief that answers your focus and cites each point by file and page or by link.

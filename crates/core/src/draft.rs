@@ -91,9 +91,33 @@ impl Draft {
     /// in a way the app can repair; each carries a fix id for `Draft::fix`). No findings means
     /// it loads, every reference points at something that exists, and nothing depends on itself.
     pub fn check(&self, known_tools: &[String]) -> Vec<Finding> {
+        self.check_with(known_tools, None)
+    }
+
+    /// `check`, with the ready-made stage library in hand, so a stage copied from it can be
+    /// told when a newer version exists: a Note "Update it", only while the copied steps are
+    /// still as copied (the digest in the stage's `source` matches). An edited copy is never touched.
+    pub fn check_with(&self, known_tools: &[String], library: Option<&crate::stagelib::StageLibrary>) -> Vec<Finding> {
         let mut findings: Vec<Finding> = self.problem_texts(known_tools).into_iter().map(Finding::problem).collect();
-        if format_problems(&self.yaml).is_empty() {
-            findings.extend(crate::migrate::notes_for(&self.yaml));
+        if !format_problems(&self.yaml).is_empty() {
+            return findings;
+        }
+        findings.extend(crate::migrate::notes_for(&self.yaml));
+        if let Some(lib) = library {
+            let steps = self.yaml.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
+            for st in self.yaml.get("stages").and_then(Value::as_array).into_iter().flatten() {
+                let Some(src) = st.get("source") else { continue };
+                let (Some(from), Some(version), Some(digest)) = (src.get("stage").and_then(Value::as_str), src.get("version").and_then(Value::as_u64), src.get("digest").and_then(Value::as_str)) else { continue };
+                let Some(def) = lib.get(from) else { continue };
+                if u64::from(def.version) <= version {
+                    continue;
+                }
+                let ids: Vec<String> = st.get("steps").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+                if crate::stagelib::steps_digest(&crate::stagelib::steps_named(&steps, &ids)) == digest {
+                    let id = st.get("id").and_then(Value::as_str).unwrap_or(from);
+                    findings.push(Finding::note(format!("A newer version of the ready-made stage “{}” exists.", def.name)).with_fix(format!("update_stage:{id}"), "Update it"));
+                }
+            }
         }
         findings
     }
@@ -106,8 +130,22 @@ impl Draft {
     /// The draft with the named fixes applied (see `migrate::DEPRECATIONS`). An unknown fix id
     /// is an error in words; a fix that finds nothing to change is not.
     pub fn fix(&self, fixes: &[FixId]) -> Result<Draft, String> {
+        self.fix_with(fixes, None)
+    }
+
+    /// `fix`, with the library in hand for `update_stage:<stage id>`, which copies the current
+    /// version of a ready-made stage over the one in the draft.
+    pub fn fix_with(&self, fixes: &[FixId], library: Option<&crate::stagelib::StageLibrary>) -> Result<Draft, String> {
         let mut out = self.clone();
         for f in fixes {
+            if let Some(stage_id) = f.strip_prefix("update_stage:") {
+                let lib = library.ok_or_else(|| format!("“{f}” needs the ready-made stage library, which was not given."))?;
+                let stages = out.yaml.get("stages").and_then(Value::as_array).ok_or_else(|| format!("There is no stage “{stage_id}” to update."))?;
+                let index = stages.iter().position(|s| s.get("id").and_then(Value::as_str) == Some(stage_id)).ok_or_else(|| format!("There is no stage “{stage_id}” to update."))?;
+                let from = stages[index].get("source").and_then(|s| s.get("stage")).and_then(Value::as_str).ok_or_else(|| format!("Stage “{stage_id}” was not copied from a ready-made stage."))?.to_string();
+                lib.update_into(&mut out, index, &from)?;
+                continue;
+            }
             crate::migrate::apply_fix(&mut out.yaml, f)?;
         }
         Ok(out)

@@ -1,4 +1,5 @@
 id: read_folder
+version: 1
 name: Read the files
 summary: Read every PDF, Word, Markdown, or text file in a folder and pull out what each says about a focus, with quotes and page numbers; kept between runs so unchanged files are not read again.
 why: Each file is read and an AI step pulls out what it says about your focus, with exact quotes and page numbers. What it found is remembered, so unchanged files are not read again next time.

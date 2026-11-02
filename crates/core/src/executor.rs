@@ -526,7 +526,7 @@ impl Executor {
         let mut keep_plans: HashMap<String, KeepPlan> = HashMap::new();
         if let Some(base) = &req.keep_base {
             for st in req.recipe.stages.iter().filter(|s| s.keep.is_some()) {
-                let keep = match Keep::open(keep_dir(base, &req.recipe.id, &st.id)) {
+                let keep = match Keep::open(keep_dir(base, &req.recipe.id, st.keep_id())) {
                     Ok(k) => Arc::new(k),
                     Err(e) => return finish(run, Err(ExecError::Keep { stage: st.id.clone(), message: e.to_string() })),
                 };

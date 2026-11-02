@@ -90,6 +90,8 @@ pub struct PlanOutcome {
     pub draft: Draft,
     /// Problems the checker still finds. Empty means the draft can be saved as it is.
     pub problems: Vec<String>,
+    /// The recipe format version the answer was written against.
+    pub schema_version: String,
     pub attempts: u32,
     pub model_id: String,
     pub prompt_tokens: u64,
@@ -110,8 +112,37 @@ pub enum PlanError {
 }
 
 /// What the model is asked to answer with. Loose on purpose: the real recipe schema is applied by
-/// the draft checker afterwards, and its problems go back to the model in words.
+/// the draft checker afterwards, and its problems go back to the model in words. The property
+/// lists of a step and a stage come from the recipe schema's `$defs`, so a field added there
+/// is offered to the model without anyone copying its name here; the constrained enums (step
+/// kind, keep refresh) are kept as the schema has them.
 pub fn answer_schema() -> Value {
+    let schema: Value = serde_json::from_str(crate::recipe::RECIPE_SCHEMA).unwrap_or(Value::Null);
+    let defs = &schema["$defs"];
+    let mut step_props = serde_json::Map::new();
+    let mut add = |props: Option<&Value>| {
+        for (k, v) in props.and_then(Value::as_object).into_iter().flatten() {
+            let keep_as_is = k == "kind" && v.get("enum").is_some();
+            step_props.entry(k.clone()).or_insert_with(|| if keep_as_is { v.clone() } else { json!({}) });
+        }
+    };
+    add(defs["stepBase"].get("properties"));
+    for kind in ["toolStep", "modelStep", "agentStep", "recipeStep", "branchStep", "mapStep", "reviewStep"] {
+        for part in defs[kind]["allOf"].as_array().into_iter().flatten() {
+            add(part.get("properties"));
+        }
+    }
+    let mut stage_props = serde_json::Map::new();
+    for (k, v) in defs["stage"]["properties"].as_object().into_iter().flatten() {
+        let v = match k.as_str() {
+            "keep" => json!({ "type": "object", "properties": { "refresh": v["properties"]["refresh"].clone() } }),
+            "source" => continue, // provenance is written by the app when a ready-made stage is copied, never by the model
+            "inputs" | "steps" | "outputs" => json!({ "type": "array", "items": { "type": "string" } }),
+            _ => json!({ "type": "string" }),
+        };
+        stage_props.insert(k.clone(), v);
+    }
+    stage_props.insert("use".into(), json!({ "type": "string", "description": "The id of a ready-made stage to use instead of steps" }));
     json!({
         "type": "object",
         "required": ["recipe", "files"],
@@ -126,24 +157,9 @@ pub fn answer_schema() -> Value {
                     "inputs": { "type": "object" },
                     "modelSlots": { "type": "object" },
                     "permissions": { "type": "object" },
-                    "steps": { "type": "array", "items": { "type": "object" } },
+                    "steps": { "type": "array", "items": { "type": "object", "properties": step_props } },
                     "outputs": { "type": "object" },
-                    "stages": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string" },
-                                "name": { "type": "string" },
-                                "why": { "type": "string" },
-                                "inputs": { "type": "array", "items": { "type": "string" } },
-                                "steps": { "type": "array", "items": { "type": "string" } },
-                                "outputs": { "type": "array", "items": { "type": "string" } },
-                                "keep": { "type": "object", "properties": { "refresh": { "type": "string", "enum": ["always", "when_sources_change", "manual"] } } },
-                                "use": { "type": "string", "description": "The id of a ready-made stage to use instead of steps" }
-                            }
-                        }
-                    }
+                    "stages": { "type": "array", "items": { "type": "object", "properties": stage_props } }
                 }
             },
             "files": {
@@ -648,7 +664,16 @@ impl Planner {
                     completion_tokens += ct;
                     if custom == 0 && draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
                         let problems = draft.problems(&known_tools);
-                        return Ok(PlanOutcome { draft, problems, attempts: 1, model_id: self.model_id.clone(), prompt_tokens, completion_tokens, duration_ms: started.elapsed().as_millis() as u64 });
+                        return Ok(PlanOutcome {
+                            draft,
+                            problems,
+                            schema_version: crate::migrate::CURRENT_SCHEMA_VERSION.into(),
+                            attempts: 1,
+                            model_id: self.model_id.clone(),
+                            prompt_tokens,
+                            completion_tokens,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                        });
                     }
                     if draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
                         skeleton = Some(draft);
@@ -721,6 +746,7 @@ impl Planner {
         Ok(PlanOutcome {
             draft,
             problems,
+            schema_version: crate::migrate::CURRENT_SCHEMA_VERSION.into(),
             attempts: attempts + if skeleton.is_some() { 1 } else { 0 },
             model_id: self.model_id.clone(),
             prompt_tokens,
@@ -855,6 +881,7 @@ mod tests {
         p.library = Some(lib.clone());
         let out = p.plan(&req(), None).await.unwrap();
         assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert_eq!(out.schema_version, "0");
         assert_eq!(out.attempts, 2, "one strip call, one composing call");
         let y = &out.draft.yaml;
         assert_eq!(y["stages"][0]["id"], "summarize_file");
@@ -922,6 +949,23 @@ mod tests {
         assert!(out.draft.yaml["outputs"].get("answer").is_some());
         let s = assemble_system_with("P", &ToolRegistry::builtin().catalog(), Some(&lib));
         assert!(s.contains("- `summarize_file`:") && s.contains("use after `index_folder`"));
+    }
+
+    #[test]
+    fn the_answer_schema_follows_the_recipe_schema() {
+        let s = answer_schema();
+        let step = &s["properties"]["recipe"]["properties"]["steps"]["items"]["properties"];
+        for k in ["id", "kind", "tool", "slot", "prompt", "over", "as", "items", "allowedTools", "outputSchema", "when", "dependsOn"] {
+            assert!(step.get(k).is_some(), "step property {k} missing");
+        }
+        assert_eq!(step["kind"]["enum"].as_array().unwrap().len(), 7, "the kind enum is kept");
+        let stage = &s["properties"]["recipe"]["properties"]["stages"]["items"]["properties"];
+        for k in ["id", "name", "why", "inputs", "steps", "outputs", "keep", "use"] {
+            assert!(stage.get(k).is_some(), "stage property {k} missing");
+        }
+        assert!(stage.get("source").is_none(), "provenance is the app's to write");
+        assert_eq!(stage["keep"]["properties"]["refresh"]["enum"], json!(["always", "when_sources_change", "manual"]));
+        assert_eq!(serde_json::to_value(crate::migrate::CURRENT_SCHEMA_VERSION).unwrap(), "0");
     }
 
     #[test]

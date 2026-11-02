@@ -795,7 +795,7 @@ async fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResu
     }
     let mut out = Vec::new();
     for st in bundle.recipe.stages.iter().filter(|s| s.keep.is_some()) {
-        let keep = Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, &st.id)).map_err(err)?;
+        let keep = Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, st.keep_id())).map_err(err)?;
         let manifest = keep.manifest().map_err(err)?;
         let built = manifest.built_at.is_some() && st.steps.iter().all(|s| manifest.outputs.contains_key(s));
         let refresh = st.keep.as_ref().map(|k| k.refresh).unwrap_or_default();
@@ -823,10 +823,10 @@ async fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResu
 /// it becomes part of a path, so the webview cannot name a folder the recipe does not have.
 fn open_keep(state: &AppState, recipe_id: &str, stage: &str) -> CmdResult<Keep> {
     let bundle = state.library.find(recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
-    if !bundle.recipe.stages.iter().any(|s| s.id == stage) {
+    let Some(st) = bundle.recipe.stages.iter().find(|s| s.id == stage) else {
         return Err(format!("recipe {recipe_id} has no stage named {stage}"));
-    }
-    Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, stage)).map_err(err)
+    };
+    Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, st.keep_id())).map_err(err)
 }
 
 /// Empty a stage's run keep now; the next run builds it again from scratch.
@@ -864,14 +864,14 @@ fn known_tools(state: &AppState) -> Vec<String> {
 /// load and run as it is.
 #[tauri::command]
 fn check_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Vec<Finding>> {
-    Ok(draft.check(&known_tools(&state)))
+    Ok(draft.check_with(&known_tools(&state), Some(&state.stage_library)))
 }
 
 /// Apply the named fixes (the ids on the Notes `check_recipe_draft` returned) and hand back the
 /// rewritten draft. Nothing is written to disk. An unknown fix id is an error.
 #[tauri::command]
-fn fix_recipe_draft(draft: Draft, fixes: Vec<String>) -> CmdResult<Draft> {
-    draft.fix(&fixes)
+fn fix_recipe_draft(state: State<'_, AppState>, draft: Draft, fixes: Vec<String>) -> CmdResult<Draft> {
+    draft.fix_with(&fixes, Some(&state.stage_library))
 }
 
 #[derive(Serialize)]

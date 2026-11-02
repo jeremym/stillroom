@@ -1,4 +1,5 @@
 id: remember_seen
+version: 1
 name: Remember what was seen
 summary: Keep one record per page of the items it showed, between runs (a keep that runs every time), and hand later stages both what earlier runs saw and everything seen now. Requires watch_pages before it.
 why: Each page's items are written to this recipe's run keep (what it remembers between runs), one record per page, so the next run can tell what is new.

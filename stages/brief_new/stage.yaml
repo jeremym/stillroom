@@ -1,4 +1,5 @@
 id: brief_new
+version: 1
 name: Write the brief
 summary: Compare today's items with what earlier runs saw and write a short brief of only the new ones, plus a table of everything seen. Requires watch_pages and remember_seen before it.
 why: Comparing today's items with what was already seen, an AI step writes a short brief of only the new ones; the log table shows everything the recipe has seen.

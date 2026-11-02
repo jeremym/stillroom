@@ -1,4 +1,5 @@
 id: answer_from_index
+version: 1
 name: Ask and answer
 summary: Take a question, find the passages that match it in the index built by index_folder, and write an answer that cites them by file and page. Requires index_folder earlier in the recipe.
 why: Your question is turned into numbers the same way and matched against the index; only the eight closest passages go to the model, and the answer is written from those alone and cites them by number, so you can check every claim against its file and page.

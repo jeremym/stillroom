@@ -836,11 +836,40 @@
           "uniqueItems": true,
           "description": "Output names this stage delivers."
         },
+        "source": {
+          "type": "object",
+          "description": "Where this stage came from, when it was copied from a ready-made stage: its id, its version then, and a digest of the steps as copied. Lets the app say a newer version exists, and never touch an edited copy.",
+          "required": [
+            "stage",
+            "version",
+            "digest"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "stage": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
         "keep": {
           "type": "object",
           "additionalProperties": false,
           "description": "A run keep: what this stage holds on to between runs (records, files). Built by runs, mutable, journaled.",
           "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+              "description": "The keep's own name on disk, so a stage can be renamed without orphaning what it kept. Defaults to the stage id."
+            },
             "refresh": {
               "type": "string",
               "enum": [

@@ -191,7 +191,15 @@ async fn run_once(app: &AppHandle, id: &str, changed: Vec<String>) {
         status,
         error,
     };
-    let _ = app.emit("watch:run", event("started", None, None, None));
+    // "started" is said only once the run has its turn at the gate and an id: a watch that fires
+    // while the user runs something waits in `execute`, and the UI must not show it running yet.
+    let on_started: Box<dyn Fn(&str) + Send + Sync> = {
+        let app = app.clone();
+        let started = event("started", None, None, None);
+        Box::new(move |run_id: &str| {
+            let _ = app.emit("watch:run", WatchRunEvent { run_id: Some(run_id.to_string()), ..started.clone() });
+        })
+    };
     let trigger = RunTrigger { kind: "watch".into(), watch_id: watch.id.clone(), folder: watch.folder.clone(), changed };
     let result = execute(
         app,
@@ -205,6 +213,7 @@ async fn run_once(app: &AppHandle, id: &str, changed: Vec<String>) {
             edits: Default::default(),
             resume_from: prior,
             trigger: Some(trigger),
+            on_started: Some(on_started),
         },
     )
     .await;

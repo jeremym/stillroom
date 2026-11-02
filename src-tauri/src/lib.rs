@@ -198,6 +198,29 @@ pub(crate) struct ExecArgs {
     pub trigger: Option<RunTrigger>,
     /// Stages whose run keep is emptied before the run (Rebuild).
     pub rebuild: Vec<String>,
+    /// Called once with the run's id when the run really begins: after its turn at the gate,
+    /// on the first step record. A watch uses it to say "started" no earlier than that.
+    pub on_started: Option<Box<dyn Fn(&str) + Send + Sync>>,
+}
+
+/// `run:started`: the run has its turn and its first step is under way.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RunStarted {
+    run_id: String,
+    recipe_id: String,
+    /// Set when something other than the user (a watch) set the run off.
+    trigger: Option<RunTrigger>,
+}
+
+/// `run:finished`: the summary, with the run's id repeated as `runId` so every run event names
+/// its run the same way.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RunFinished {
+    run_id: String,
+    #[serde(flatten)]
+    summary: RunSummary,
 }
 
 /// Resolve models, run the recipe with live step events, save the run, announce it.
@@ -210,10 +233,23 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
     let installed = router.list_all().await;
     let resolutions = resolve_slots_with(&bundle.recipe, &installed, &args.pins, &state.resolve_defaults()).map_err(err)?;
 
+    // One run at a time. Nothing is announced as started until this turn is ours: a watch that
+    // fires while the user runs something waits here, quietly.
     let _turn = state.run_gate.lock().await;
     let observer = {
         let app = app.clone();
+        let recipe_id = args.recipe_id.clone();
+        let trigger = args.trigger.clone();
+        let on_started = args.on_started;
+        let announced = std::sync::atomic::AtomicBool::new(false);
         Arc::new(move |rec: &StepRecord| {
+            // The executor mints the run id; the first record is the first time the shell sees it.
+            if announced.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_ok() {
+                let _ = app.emit("run:started", RunStarted { run_id: rec.run_id.clone(), recipe_id: recipe_id.clone(), trigger: trigger.clone() });
+                if let Some(f) = &on_started {
+                    f(&rec.run_id);
+                }
+            }
             let _ = app.emit("run:step", rec.clone());
         })
     };
@@ -235,7 +271,7 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
     *state.current_cancel.lock().map_err(err)? = None;
 
     state.store.lock().map_err(err)?.save_run(&run).map_err(err)?;
-    let _ = app.emit("run:finished", run.summary());
+    let _ = app.emit("run:finished", RunFinished { run_id: run.id.clone(), summary: run.summary() });
     Ok(run)
 }
 
@@ -559,6 +595,7 @@ async fn run_recipe(app: AppHandle, state: State<'_, AppState>, args: RunArgs) -
             resume_from: None,
             trigger: None,
             rebuild: args.rebuild,
+            on_started: None,
         },
     )
     .await
@@ -608,6 +645,7 @@ async fn rerun_with_edit(app: AppHandle, state: State<'_, AppState>, args: EditA
             edits,
             resume_from: Some(base),
             trigger: None,
+            on_started: None,
         },
     )
     .await?;

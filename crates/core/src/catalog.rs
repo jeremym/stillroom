@@ -1,6 +1,7 @@
 //! The catalog side of the Library: copying a recipe into the user's folder (Duplicate) and
 //! remembering where the copy came from (`x-source`), so the app can say "a newer version
-//! exists" while the copy is still as copied, and never after the user has edited its steps.
+//! exists" while the copy is still as copied, and never after the user has edited its steps;
+//! a bundle's saved example run; and getting a recipe from a folder or a zip through quarantine.
 
 use crate::bundle::RecipeBundle;
 use crate::draft::{Draft, DraftError};
@@ -40,6 +41,29 @@ pub enum CatalogError {
     NoExample,
     #[error("{path}: the example result is not a run record: {source}")]
     BadExample { path: PathBuf, source: serde_json::Error },
+    #[error("This recipe is larger than {} MB, which is more than a recipe should be; nothing was copied.", IMPORT_CAP / (1024 * 1024))]
+    TooLarge,
+    #[error("{path}: a hidden file or folder, which a recipe does not carry")]
+    Hidden { path: PathBuf },
+    #[error("{0}: a path that would land outside the recipe")]
+    Escape(String),
+    #[error("No recipe.yaml here: pick the folder (or zip) that holds one.")]
+    NoRecipeYaml,
+    #[error("that import is gone")]
+    BadToken,
+    #[error("{path}: not a zip Stillroom can read: {source}")]
+    Zip { path: PathBuf, source: zip::result::ZipError },
+}
+
+/// The most a recipe may weigh when it comes in from a folder or a zip, unpacked.
+pub const IMPORT_CAP: u64 = 64 * 1024 * 1024;
+
+/// A recipe copied into quarantine: where it sits and how much it weighs.
+#[derive(Debug, Clone)]
+pub struct Imported {
+    pub token: String,
+    pub root: PathBuf,
+    pub size_bytes: u64,
 }
 
 /// Where a user recipe was copied from, as `list_recipes` reports it.
@@ -157,6 +181,200 @@ pub fn duplicate(library: &RecipeLibrary, recipe_id: &str, new_id: &str, name: &
         return Err(e);
     }
     library.find(new_id).ok_or_else(|| CatalogError::LoadBack(new_id.into()))
+}
+
+fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> CatalogError + '_ {
+    move |source| CatalogError::Io { path: path.to_path_buf(), source }
+}
+
+/// What a Mac adds to every folder and zip, skipped quietly rather than refused.
+fn is_mac_litter(name: &str) -> bool {
+    name == ".DS_Store" || name == "__MACOSX"
+}
+
+/// Copy a folder file by file into `to`, checking as it goes: a link is refused, a hidden entry
+/// is refused (Finder litter is skipped), and the running total is held under the cap.
+fn copy_checked(from: &Path, to: &Path, total: &mut u64) -> Result<(), CatalogError> {
+    std::fs::create_dir_all(to).map_err(io_at(to))?;
+    let mut entries: Vec<_> = std::fs::read_dir(from).map_err(io_at(from))?.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let path = e.path();
+        if is_mac_litter(&name) {
+            continue;
+        }
+        if name.starts_with('.') {
+            return Err(CatalogError::Hidden { path });
+        }
+        let meta = std::fs::symlink_metadata(&path).map_err(io_at(&path))?;
+        if meta.file_type().is_symlink() {
+            return Err(CatalogError::Symlink { path });
+        }
+        let dest = to.join(&name);
+        if meta.is_dir() {
+            copy_checked(&path, &dest, total)?;
+        } else if meta.is_file() {
+            *total += meta.len();
+            if *total > IMPORT_CAP {
+                return Err(CatalogError::TooLarge);
+            }
+            std::fs::copy(&path, &dest).map_err(io_at(&path))?;
+        }
+    }
+    Ok(())
+}
+
+/// Unpack a zip into `to` with the same checks: an entry that is a link, lands outside `to`
+/// (`..`, an absolute path), or is hidden is refused; the unpacked total is held under the cap
+/// by reading through it, since an entry's declared size is only a claim.
+fn unzip_checked(zip_path: &Path, to: &Path, total: &mut u64) -> Result<(), CatalogError> {
+    use std::io::Read;
+    let zip_err = |source| CatalogError::Zip { path: zip_path.to_path_buf(), source };
+    let file = std::fs::File::open(zip_path).map_err(io_at(zip_path))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(zip_err)?;
+    std::fs::create_dir_all(to).map_err(io_at(to))?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(zip_err)?;
+        let raw = entry.name().map(|n| n.into_owned()).unwrap_or_default();
+        let Some(rel) = entry.enclosed_name() else {
+            return Err(CatalogError::Escape(raw));
+        };
+        let names: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        if names.iter().any(|n| is_mac_litter(n)) {
+            continue;
+        }
+        if let Some(hidden) = names.iter().find(|n| n.starts_with('.')) {
+            let _ = hidden;
+            return Err(CatalogError::Hidden { path: rel });
+        }
+        if entry.is_symlink() || entry.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000) {
+            return Err(CatalogError::Symlink { path: rel });
+        }
+        let dest = to.join(&rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&dest).map_err(io_at(&dest))?;
+            continue;
+        }
+        if entry.size() > IMPORT_CAP || *total + entry.size() > IMPORT_CAP {
+            return Err(CatalogError::TooLarge);
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(io_at(parent))?;
+        }
+        let room = IMPORT_CAP - *total;
+        let mut out = std::fs::File::create(&dest).map_err(io_at(&dest))?;
+        let written = std::io::copy(&mut (&mut entry).take(room + 1), &mut out).map_err(io_at(&dest))?;
+        *total += written;
+        if *total > IMPORT_CAP {
+            return Err(CatalogError::TooLarge);
+        }
+    }
+    Ok(())
+}
+
+/// The folder inside an unpacked import that holds `recipe.yaml`: the top itself, or its one
+/// subfolder when the zip was made of a folder (as the Finder does).
+fn bundle_dir(unpacked: &Path) -> Result<PathBuf, CatalogError> {
+    if unpacked.join("recipe.yaml").is_file() {
+        return Ok(unpacked.to_path_buf());
+    }
+    let entries: Vec<PathBuf> = std::fs::read_dir(unpacked).map_err(io_at(unpacked))?.flatten().map(|e| e.path()).collect();
+    match entries.as_slice() {
+        [one] if one.is_dir() && one.join("recipe.yaml").is_file() => Ok(one.clone()),
+        _ => Err(CatalogError::NoRecipeYaml),
+    }
+}
+
+/// A quarantine token: the uuid the import was given, and nothing that could be a path.
+pub fn valid_token(token: &str) -> bool {
+    token.len() == 36 && token.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// Where an import sits in quarantine, once the token is known to be one.
+pub fn quarantine_dir(quarantine_root: &Path, token: &str) -> Result<PathBuf, CatalogError> {
+    if !valid_token(token) {
+        return Err(CatalogError::BadToken);
+    }
+    let dir = quarantine_root.join(token);
+    if !dir.join("recipe.yaml").is_file() {
+        return Err(CatalogError::BadToken);
+    }
+    Ok(dir)
+}
+
+/// Copy a recipe from a folder or a `.zip` into `quarantine_root/<token>/`, where `recipe.yaml`
+/// sits at the top. Everything is checked on the way in (see `copy_checked` and
+/// `unzip_checked`); a refused import leaves nothing behind. The recipe is not yet read: the
+/// caller migrates and checks it next.
+pub fn import(src: &Path, quarantine_root: &Path) -> Result<Imported, CatalogError> {
+    let token = uuid::Uuid::now_v7().to_string();
+    let tmp = quarantine_root.join(format!("{token}.unpacking"));
+    let dest = quarantine_root.join(&token);
+    let mut total = 0u64;
+    let result = (|| {
+        std::fs::create_dir_all(quarantine_root).map_err(io_at(quarantine_root))?;
+        let meta = std::fs::symlink_metadata(src).map_err(io_at(src))?;
+        if meta.file_type().is_symlink() {
+            return Err(CatalogError::Symlink { path: src.to_path_buf() });
+        }
+        if meta.is_dir() {
+            copy_checked(src, &tmp, &mut total)?;
+        } else if src.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("zip")).unwrap_or(false) {
+            unzip_checked(src, &tmp, &mut total)?;
+        } else {
+            return Err(CatalogError::NoRecipeYaml);
+        }
+        let bundle = bundle_dir(&tmp)?;
+        std::fs::rename(&bundle, &dest).map_err(io_at(&bundle))?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&tmp);
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
+    }
+    Ok(Imported { token, root: dest, size_bytes: total })
+}
+
+/// Remove quarantine folders older than `max_age` (an import never confirmed). Returns how many.
+pub fn prune_quarantine(quarantine_root: &Path, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(quarantine_root) else { return 0 };
+    let now = std::time::SystemTime::now();
+    let mut n = 0;
+    for e in entries.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| now.duration_since(t).ok()).map(|age| age > max_age).unwrap_or(false);
+        if old && std::fs::remove_dir_all(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Move a quarantined import into the user's recipes folder as `<id>/`. An id that is taken,
+/// in the catalog or among the user's own, is refused and the import stays where it is.
+pub fn install(quarantine_root: &Path, token: &str, library: &RecipeLibrary) -> Result<RecipeBundle, CatalogError> {
+    let root = quarantine_dir(quarantine_root, token)?;
+    let bundle = RecipeBundle::load_for(&root, crate::bundle::RecipeSource::User, library.app_version()).map_err(|e| CatalogError::LoadBack(e.to_string()))?;
+    let id = bundle.recipe.id.clone();
+    if !valid_id(&id) {
+        return Err(CatalogError::BadId(id));
+    }
+    if library.find(&id).is_some() {
+        return Err(CatalogError::Taken(id));
+    }
+    let user_root = library.roots().iter().find(|(_, s)| s.is_user()).map(|(r, _)| r.clone()).ok_or(CatalogError::NoUserRoot)?;
+    let dest = user_root.join(&id);
+    if dest.exists() {
+        return Err(CatalogError::Taken(id));
+    }
+    std::fs::create_dir_all(&user_root).map_err(io_at(&user_root))?;
+    if std::fs::rename(&root, &dest).is_err() {
+        // Another volume: copy, then drop the quarantine copy.
+        copy_tree(&root, &dest, &[])?;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    library.find(&id).ok_or_else(|| CatalogError::LoadBack(id))
 }
 
 /// Rewrite every `example/...` path in a value to its absolute place under `root`: a `path`
@@ -406,6 +624,178 @@ mod tests {
         assert!(!kit.info().example);
         assert!(matches!(example_result(&kit), Err(CatalogError::NoExample)));
         assert_eq!(serde_json::to_value(kit.info()).unwrap()["example"], Value::Bool(false));
+    }
+
+    /// A zip of these entries: a name ending in `/` is a folder, `Some(target)` makes a symbolic link.
+    fn zip_of(entries: &[(&str, &[u8], Option<&str>)]) -> PathBuf {
+        use std::io::Write;
+        let path = fresh("zip").join("recipe.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (name, bytes, link) in entries {
+            let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            if let Some(target) = link {
+                w.add_symlink(*name, *target, opts).unwrap();
+            } else if name.ends_with('/') {
+                w.add_directory(*name, opts).unwrap();
+            } else {
+                w.start_file(*name, opts).unwrap();
+                w.write_all(bytes).unwrap();
+            }
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    fn summarize_yaml() -> String {
+        std::fs::read_to_string(repo().join("recipes/summarize-file/recipe.yaml")).unwrap().replace("id: summarize-file", "id: got-this").replace("tags: [built-in, text]", "tags: [text]")
+    }
+
+    #[test]
+    fn a_zipped_folder_imports_through_quarantine_and_installs_once() {
+        let q = fresh("quarantine");
+        let yaml = summarize_yaml();
+        let zip = zip_of(&[
+            ("got-this/", b"", None),
+            ("got-this/recipe.yaml", yaml.as_bytes(), None),
+            ("got-this/prompts/summarize.md", b"Summarize it.", None),
+            ("__MACOSX/got-this/._recipe.yaml", b"litter", None),
+            ("got-this/.DS_Store", b"litter", None),
+        ]);
+        let got = import(&zip, &q).unwrap();
+        assert!(valid_token(&got.token));
+        assert_eq!(got.root, q.join(&got.token));
+        assert!(got.root.join("recipe.yaml").is_file(), "the single top folder was stripped");
+        assert!(got.root.join("prompts/summarize.md").is_file());
+        assert!(!got.root.join(".DS_Store").exists() && !q.join("__MACOSX").exists(), "Finder litter is left out");
+        assert_eq!(got.size_bytes, yaml.len() as u64 + "Summarize it.".len() as u64);
+        assert!(!q.join(format!("{}.unpacking", got.token)).exists());
+        assert_eq!(quarantine_dir(&q, &got.token).unwrap(), got.root);
+
+        let user = fresh("user");
+        let lib = library(&user);
+        let installed = install(&q, &got.token, &lib).unwrap();
+        assert_eq!(installed.recipe.id, "got-this");
+        assert_eq!(installed.source, RecipeSource::User);
+        assert!(user.join("got-this/prompts/summarize.md").is_file());
+        assert!(!got.root.exists(), "moved, not copied");
+        assert!(matches!(quarantine_dir(&q, &got.token), Err(CatalogError::BadToken)), "the token is spent");
+
+        // The same recipe again: its id is taken now, and the import stays in quarantine.
+        let again = import(&zip, &q).unwrap();
+        let err = install(&q, &again.token, &lib).unwrap_err();
+        assert!(matches!(err, CatalogError::Taken(_)), "{err}");
+        assert_eq!(err.to_string(), "A recipe with the id “got-this” already exists; pick another.");
+        assert!(again.root.is_dir());
+        // A built-in's id is taken too.
+        let shipped = std::fs::read_to_string(repo().join("recipes/summarize-file/recipe.yaml")).unwrap();
+        let b = import(&zip_of(&[("recipe.yaml", shipped.as_bytes(), None), ("prompts/summarize.md", b"S.", None)]), &q).unwrap();
+        assert!(matches!(install(&q, &b.token, &lib).unwrap_err(), CatalogError::Taken(_)));
+        for bad in ["", "..", "x/y", "../../etc", "0123456789abcdef0123456789abcdef0123"] {
+            assert!(matches!(quarantine_dir(&q, bad), Err(CatalogError::BadToken)), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&q);
+        let _ = std::fs::remove_dir_all(&user);
+    }
+
+    #[test]
+    fn a_folder_imports_and_a_link_or_hidden_entry_inside_it_is_refused() {
+        let q = fresh("quarantine-folder");
+        let src = fresh("folder");
+        std::fs::create_dir_all(src.join("prompts")).unwrap();
+        std::fs::write(src.join("recipe.yaml"), summarize_yaml()).unwrap();
+        std::fs::write(src.join("prompts/summarize.md"), "Summarize.").unwrap();
+        std::fs::write(src.join(".DS_Store"), "litter").unwrap();
+        let got = import(&src, &q).unwrap();
+        assert!(got.root.join("prompts/summarize.md").is_file());
+        assert!(!got.root.join(".DS_Store").exists());
+
+        std::fs::write(src.join(".secret"), "no").unwrap();
+        let err = import(&src, &q).unwrap_err();
+        assert!(matches!(err, CatalogError::Hidden { .. }), "{err}");
+        std::fs::remove_file(src.join(".secret")).unwrap();
+
+        std::os::unix::fs::symlink("/etc/hosts", src.join("prompts/hosts.md")).unwrap();
+        let err = import(&src, &q).unwrap_err();
+        assert!(matches!(err, CatalogError::Symlink { .. }), "{err}");
+        let left: Vec<_> = std::fs::read_dir(&q).unwrap().flatten().filter(|e| e.path() != got.root).collect();
+        assert!(left.is_empty(), "a refused import leaves nothing behind: {left:?}");
+
+        let not_a_recipe = fresh("plain");
+        std::fs::write(not_a_recipe.join("notes.txt"), "hi").unwrap();
+        assert!(matches!(import(&not_a_recipe, &q).unwrap_err(), CatalogError::NoRecipeYaml));
+        assert!(matches!(import(&not_a_recipe.join("notes.txt"), &q).unwrap_err(), CatalogError::NoRecipeYaml), "not a folder, not a zip");
+        let _ = std::fs::remove_dir_all(&q);
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&not_a_recipe);
+    }
+
+    #[test]
+    fn a_zip_with_a_link_an_escaping_path_or_too_much_in_it_is_refused() {
+        let q = fresh("quarantine-bad");
+        let yaml = summarize_yaml();
+        let leftover = |q: &Path| std::fs::read_dir(q).map(|d| d.flatten().count()).unwrap_or(0);
+
+        // A symbolic link (a zip entry whose mode says S_IFLNK and whose body is the target).
+        let linked = zip_of(&[("recipe.yaml", yaml.as_bytes(), None), ("prompts/summarize.md", b"", Some("/etc/hosts"))]);
+        let err = import(&linked, &q).unwrap_err();
+        assert!(matches!(err, CatalogError::Symlink { .. }), "{err}");
+        assert_eq!(leftover(&q), 0);
+
+        // An entry that climbs out.
+        let climbing = zip_of(&[("recipe.yaml", yaml.as_bytes(), None), ("../evil.md", b"x", None)]);
+        let err = import(&climbing, &q).unwrap_err();
+        assert!(matches!(err, CatalogError::Escape(_)), "{err}");
+        assert!(!q.join("../evil.md").exists());
+        assert_eq!(leftover(&q), 0);
+
+        // An absolute path. The zip writer itself will not record one (it drops the leading
+        // slash), and the reader's `enclosed_name` refuses one the same way it refuses `..`; so
+        // the check here is that the entry stays inside quarantine rather than landing in /tmp.
+        let absolute = zip_of(&[("recipe.yaml", yaml.as_bytes(), None), ("/tmp/evil-stillroom-test.md", b"x", None)]);
+        let got = import(&absolute, &q).unwrap();
+        assert!(!Path::new("/tmp/evil-stillroom-test.md").exists());
+        assert!(got.root.join("tmp/evil-stillroom-test.md").is_file(), "contained under the import's own folder");
+        std::fs::remove_dir_all(&got.root).unwrap();
+
+        // A hidden entry.
+        let hidden = zip_of(&[("recipe.yaml", yaml.as_bytes(), None), (".git/config", b"x", None)]);
+        assert!(matches!(import(&hidden, &q).unwrap_err(), CatalogError::Hidden { .. }));
+
+        // Over the cap: the sizes are checked as the bytes come out, not from the header alone.
+        let big = vec![b'a'; (IMPORT_CAP / 2 + 1) as usize];
+        let heavy = zip_of(&[("recipe.yaml", yaml.as_bytes(), None), ("assets/a.bin", &big, None), ("assets/b.bin", &big, None)]);
+        let err = import(&heavy, &q).unwrap_err();
+        assert!(matches!(err, CatalogError::TooLarge), "{err}");
+        assert!(err.to_string().starts_with("This recipe is larger than 64 MB"), "{err}");
+        assert_eq!(leftover(&q), 0);
+
+        // Not a zip at all.
+        let junk = fresh("junk").join("x.zip");
+        std::fs::write(&junk, "not a zip").unwrap();
+        assert!(matches!(import(&junk, &q).unwrap_err(), CatalogError::Zip { .. }));
+
+        // No recipe.yaml anywhere, or two folders at the top.
+        let none = zip_of(&[("a/notes.md", b"x", None)]);
+        assert!(matches!(import(&none, &q).unwrap_err(), CatalogError::NoRecipeYaml));
+        let two = zip_of(&[("a/recipe.yaml", yaml.as_bytes(), None), ("b/recipe.yaml", yaml.as_bytes(), None)]);
+        assert!(matches!(import(&two, &q).unwrap_err(), CatalogError::NoRecipeYaml));
+        assert_eq!(leftover(&q), 0);
+        let _ = std::fs::remove_dir_all(&q);
+    }
+
+    #[test]
+    fn old_quarantine_folders_are_pruned() {
+        let q = fresh("quarantine-prune");
+        let old = q.join(uuid::Uuid::now_v7().to_string());
+        let young = q.join(uuid::Uuid::now_v7().to_string());
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&young).unwrap();
+        let yesterday = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 24 * 3600);
+        std::fs::File::open(&old).unwrap().set_modified(yesterday).unwrap();
+        assert_eq!(prune_quarantine(&q, std::time::Duration::from_secs(24 * 3600)), 1);
+        assert!(!old.exists() && young.exists());
+        assert_eq!(prune_quarantine(&q.join("missing"), std::time::Duration::from_secs(1)), 0);
+        let _ = std::fs::remove_dir_all(&q);
     }
 
     #[test]

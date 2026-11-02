@@ -44,6 +44,8 @@ pub(crate) struct AppState {
     stage_library: Arc<stillroom_core::StageLibrary>,
     /// One run at a time: a watch firing while the user runs something waits its turn.
     run_gate: tokio::sync::Mutex<()>,
+    /// Where a recipe being got from a folder or zip waits, checked, for the user's yes.
+    quarantine_dir: PathBuf,
 }
 
 impl AppState {
@@ -1075,6 +1077,98 @@ fn grant_permissions(app: AppHandle, state: State<'_, AppState>, recipe_id: Stri
     state.info_of(&bundle)
 }
 
+/// What `import_recipe` hands back: the recipe as it would be listed (source `user`, every
+/// literal permission still needed), what the checker said, and its weight. Nothing is
+/// installed until `confirm_import`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportPreview {
+    token: String,
+    info: RecipeInfo,
+    findings: Vec<Finding>,
+    size_bytes: u64,
+}
+
+/// Get a recipe from a folder or a `.zip`: the dialog runs in Rust, the bundle is copied into
+/// quarantine with links, escaping paths, and hidden entries refused, brought up to the current
+/// format, and checked. `kind` is `"folder"` for a folder dialog; anything else asks for a zip
+/// (the two cannot share one dialog). `None` when the user cancelled. A recipe with Problems is
+/// refused here, in words, and nothing is kept.
+#[tauri::command]
+async fn import_recipe(app: AppHandle, state: State<'_, AppState>, kind: Option<String>) -> CmdResult<Option<ImportPreview>> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = if kind.as_deref() == Some("folder") {
+        app.dialog().file().set_title("Get a recipe from a folder").blocking_pick_folder()
+    } else {
+        app.dialog().file().set_title("Get a recipe from a zip").add_filter("Zip archive", &["zip"]).blocking_pick_file()
+    };
+    let Some(picked) = picked else { return Ok(None) };
+    let src = picked.into_path().map_err(err)?;
+    let got = stillroom_core::catalog::import(&src, &state.quarantine_dir).map_err(err)?;
+    let discard = |root: &PathBuf| {
+        let _ = std::fs::remove_dir_all(root);
+    };
+    let tools = known_tools(&state);
+    let draft = match Draft::read(&got.root) {
+        Ok(d) => d,
+        Err(e) => {
+            discard(&got.root);
+            return Err(format!("This recipe could not be read: {e}"));
+        }
+    };
+    let mut findings = draft.check_with(&tools, Some(&state.stage_library));
+    let problems: Vec<String> = findings.iter().filter(|f| f.is_problem()).map(|f| f.text.clone()).collect();
+    if !problems.is_empty() {
+        discard(&got.root);
+        return Err(format!("This recipe cannot be imported as it is:\n{}", problems.join("\n")));
+    }
+    // Keep the migrated form, so what the user confirms is what is installed.
+    if let Err(e) = draft.write(&got.root, &tools) {
+        discard(&got.root);
+        return Err(e.to_string());
+    }
+    let bundle = match RecipeBundle::load_for(&got.root, RecipeSource::User, state.library.app_version()) {
+        Ok(b) => b,
+        Err(e) => {
+            discard(&got.root);
+            return Err(e.to_string());
+        }
+    };
+    if state.library.find(&bundle.recipe.id).is_some() {
+        findings.push(Finding::problem(stillroom_core::CatalogError::Taken(bundle.recipe.id.clone()).to_string()));
+    }
+    Ok(Some(ImportPreview { token: got.token, info: bundle.info(), findings, size_bytes: got.size_bytes }))
+}
+
+/// Move a quarantined import into the user's recipes folder, record the grants the user ticked,
+/// and put it on the shelf. An id that exists already is refused in the catalog's words.
+#[tauri::command]
+fn confirm_import(app: AppHandle, state: State<'_, AppState>, token: String, grants: Vec<Grant>) -> CmdResult<RecipeInfo> {
+    let bundle = stillroom_core::catalog::install(&state.quarantine_dir, &token, &state.library).map_err(err)?;
+    let id = bundle.recipe.id.clone();
+    let literal = consent::literal_entries(&bundle.recipe);
+    let accepted: Vec<Grant> = literal.into_iter().filter(|l| grants.iter().any(|g| g.kind == l.kind && g.entry == l.entry)).collect();
+    {
+        let store = state.store.lock().map_err(err)?;
+        store.grant(&id, &accepted).map_err(err)?;
+        store.set_shelf(&id, ShelfState::Shelf).map_err(err)?;
+    }
+    let _ = app.emit("shelf:changed", ShelfChanged { recipe_id: id, state: Some(ShelfState::Shelf) });
+    let _ = app.emit("recipes:changed", ());
+    state.info_of(&bundle)
+}
+
+/// Forget a quarantined import.
+#[tauri::command]
+fn discard_import(state: State<'_, AppState>, token: String) -> CmdResult<()> {
+    let dir = stillroom_core::catalog::quarantine_dir(&state.quarantine_dir, &token).map_err(err)?;
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// The recipe's saved example run (`example/result.json` in the bundle), its file paths pointing
 /// into the bundle's `example/` folder, so the Recipe page can show a result without a model.
 #[tauri::command]
@@ -1469,6 +1563,10 @@ pub fn run() {
             std::fs::create_dir_all(&artifacts_dir)?;
             let keep_base = data_dir.join("recipe-data");
             std::fs::create_dir_all(&keep_base)?;
+            let quarantine_dir = data_dir.join("quarantine");
+            std::fs::create_dir_all(&quarantine_dir)?;
+            // An import the user never confirmed is forgotten after a day.
+            stillroom_core::catalog::prune_quarantine(&quarantine_dir, std::time::Duration::from_secs(24 * 3600));
             let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
             let mut roots = catalog_roots(app.handle());
@@ -1487,6 +1585,7 @@ pub fn run() {
                 keep_base,
                 stage_library: Arc::new(stillroom_core::StageLibrary::load(&builtin_stages_dir(app.handle())).unwrap_or_default()),
                 run_gate: tokio::sync::Mutex::new(()),
+                quarantine_dir,
             });
             app.manage(WatchRuntime::default());
             let rt = app.state::<WatchRuntime>();
@@ -1552,6 +1651,9 @@ pub fn run() {
             grant_permissions,
             revoke_permissions,
             example_result,
+            import_recipe,
+            confirm_import,
+            discard_import,
             reveal_recipes_folder,
             reveal_sample_folders,
             permission_status,

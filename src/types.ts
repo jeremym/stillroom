@@ -513,11 +513,27 @@ export interface PlannerPreview {
   candidates: InstalledModel[];
 }
 
+/** The planner's three kinds of model call: the stage list (strip), the custom stages (steps), a fix round. */
+export type PlanPhase = "strip" | "steps" | "fix";
+
+/** On every planner event: how long the plan has run and the tokens the model has written so far.
+ *  Optional because an older engine sends neither. */
+export interface PlanClock {
+  elapsedMs?: number;
+  tokens?: number;
+}
+
 export type PlanEvent =
-  | { kind: "choosing" }
-  | { kind: "thinking"; attempt: number; of: number }
-  | { kind: "checking"; attempt: number }
-  | { kind: "fixing"; attempt: number; problems: (string | Finding)[] };
+  | ({ kind: "choosing" } & PlanClock)
+  | ({ kind: "thinking"; attempt: number; of: number } & PlanClock)
+  | ({ kind: "checking"; attempt: number } & PlanClock)
+  | ({ kind: "fixing"; attempt: number; problems: (string | Finding)[] } & PlanClock)
+  /** A model call starts; the window clears and the header names it. */
+  | ({ kind: "phase"; which: PlanPhase; attempt: number; of: number } & PlanClock)
+  /** More of what the model is writing, a few times a second at most. */
+  | ({ kind: "delta"; text: string } & PlanClock)
+  /** The planner is finished, saved or not. */
+  | ({ kind: "done" } & PlanClock);
 
 export interface PlanOutcome {
   draft: Draft;
@@ -529,4 +545,6 @@ export interface PlanOutcome {
   promptTokens: number;
   completionTokens: number;
   durationMs: number;
+  /** Everything the model wrote, every call, with a "── call N (…) ──" line before each. Older engines omit it. */
+  transcript?: string;
 }

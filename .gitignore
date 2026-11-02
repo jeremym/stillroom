@@ -27,7 +27,7 @@ src-tauri/target/
 *.sqlite
 *.sqlite3
 data/
-models/
+/models/
 weights/
 *.gguf
 *.safetensors

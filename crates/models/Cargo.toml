@@ -1,0 +1,21 @@
+[package]
+name = "stillroom-models"
+description = "Model provider adapters: OpenAI-compatible HTTP (Ollama, LM Studio, llama-server) and Ollama native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+stillroom-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+indexmap.workspace = true

@@ -6,7 +6,7 @@
 use crate::draft::Draft;
 use crate::executor::{Cancel, ModelDefaults};
 use crate::model::{ChatMessage, ChatRequest, ModelClient};
-use crate::recipe::{Capability, ModelSlot, Preference, Recipe};
+use crate::recipe::{Capability, ModelSlot, Recipe};
 use crate::tools::ToolInfo;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -16,13 +16,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// The slot the planner itself runs in. One slot, resolved like any recipe slot: the user's pin
-/// first, then their default, then the largest local model that answers in JSON.
+/// first, then their default, then Auto. Auto for this slot is not "largest" but
+/// [`crate::resolve::rank_for_planning`]: a measured clean plan first, then what fits in memory,
+/// then a family rank for drafting in JSON, then size.
 pub const PLANNER_SLOT: &str = "planner";
+/// The id of the one-slot recipe the planner is resolved through; the resolver keys on it.
+pub const PLANNER_RECIPE_ID: &str = "__planner";
 
 pub fn planner_slot() -> ModelSlot {
     ModelSlot {
         requires: vec![Capability::Text, Capability::StructuredOutput],
-        preference: Some(Preference::Accuracy),
+        preference: None,
         recommended: None,
         min_context: None,
         description: Some("Designs a recipe from your goal.".into()),
@@ -35,7 +39,7 @@ pub fn planner_recipe() -> Recipe {
     model_slots.insert(PLANNER_SLOT.to_string(), planner_slot());
     Recipe {
         schema_version: "0".into(),
-        id: "__planner".into(),
+        id: PLANNER_RECIPE_ID.into(),
         name: "Planner".into(),
         version: None,
         description: None,

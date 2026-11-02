@@ -40,7 +40,7 @@ pub use planner::{PlanError, PlanEvent, PlanOutcome, PlanRequest, Planner};
 pub use prompts::{PromptError, PromptState, SystemPrompts};
 pub use model::{ChatMessage, ChatRequest, ChatResponse, InstalledModel, ModelClient, ModelError};
 pub use recipe::{Recipe, RecipeError, Step, RECIPE_SCHEMA};
-pub use resolve::{resolve_slots, resolve_slots_with, ResolveDefaults, ResolveError, Resolution, ResolvedVia};
+pub use resolve::{rank_for_planning, resolve_slots, resolve_slots_with, Measured, PlanningFacts, ResolveDefaults, ResolveError, Resolution, ResolvedVia};
 pub use store::{ShelfState, Store, EXAMPLE_RECIPE_ID};
 pub use trace::{Run, RunStatus, RunTrigger, StepRecord, StepStatus};
 pub use watch::{FolderWatcher, Watch, WatchError};

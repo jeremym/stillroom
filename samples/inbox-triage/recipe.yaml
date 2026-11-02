@@ -7,7 +7,7 @@ description: Reads every saved email (.eml) in a folder, sorts each one, drafts 
 author:
   name: Stillroom
 license: MIT
-tags: [built-in, email, agent]
+tags: [sample, email, agent]
 
 inputs:
   inbox:

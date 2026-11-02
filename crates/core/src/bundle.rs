@@ -13,8 +13,21 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipeSource {
+    /// Ships with the app, written here (`recipes/`).
     Builtin,
+    /// Ships with the app, contributed through the repository and reviewed before it shipped (`community/`).
+    Community,
+    /// Ships with the app as a worked example that needs its sample folders copied first (`samples/`).
+    Sample,
+    /// The user's own, in the app data folder.
     User,
+}
+
+impl RecipeSource {
+    /// The user's own recipe, as opposed to one from the catalog (built-in, community, or sample).
+    pub fn is_user(self) -> bool {
+        self == RecipeSource::User
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +64,12 @@ pub struct RecipeInfo {
     pub icon: Option<String>,
     pub source: RecipeSource,
     pub path: String,
+    /// Who wrote it, when the recipe says (`author: { name, url }`).
+    #[serde(default)]
+    pub author: Option<crate::recipe::Author>,
+    /// The recipe's own tags (`documents`, `research`, `sample`, ...); the catalog filters by them.
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub inputs: IndexMap<String, Value>,
     pub model_slots: IndexMap<String, crate::recipe::ModelSlot>,
     pub permissions: Option<Value>,
@@ -58,23 +77,35 @@ pub struct RecipeInfo {
     pub outputs: IndexMap<String, crate::recipe::OutputSpec>,
     /// The strip as drawn: declared stages with anything unassigned placed, or one implied stage.
     pub stages: Vec<crate::recipe::Stage>,
-    /// Where the recipe sits for the Library: on the shelf, in the archive, or (a built-in only)
-    /// in the catalog. `info()` gives the default for the source; the shell applies the store's
-    /// placement through `with_shelf`.
+    /// Where the recipe sits for the Library: on the shelf, in the archive, or (a catalog recipe
+    /// only) in the catalog. `info()` gives the default for the source; the shell applies the
+    /// store's placement through `with_shelf`.
     #[serde(default)]
     pub shelf: ShelfState,
+    /// For a user recipe made by Duplicate from a catalog recipe: which one, which version was
+    /// copied, and whether the catalog now has a newer version while the steps are still as
+    /// copied. `info()` leaves it empty; the shell fills it through `with_from` from the scan.
+    #[serde(default)]
+    pub from: Option<crate::catalog::CatalogFrom>,
 }
 
 impl RecipeInfo {
     /// Apply what the shelf table says, if anything. A recipe of the user's own is on the shelf
-    /// unless archived (never in the catalog); a built-in is in the catalog unless placed.
+    /// unless archived (never in the catalog); a catalog recipe (built-in, community, sample) is
+    /// in the catalog unless placed.
     pub fn with_shelf(mut self, placed: Option<ShelfState>) -> Self {
         self.shelf = match (self.source, placed) {
             (RecipeSource::User, Some(ShelfState::Archive)) => ShelfState::Archive,
             (RecipeSource::User, _) => ShelfState::Shelf,
-            (RecipeSource::Builtin, Some(s)) => s,
-            (RecipeSource::Builtin, None) => ShelfState::Catalog,
+            (_, Some(s)) => s,
+            (_, None) => ShelfState::Catalog,
         };
+        self
+    }
+
+    /// Record where a duplicated recipe came from (see `catalog::provenance`).
+    pub fn with_from(mut self, from: Option<crate::catalog::CatalogFrom>) -> Self {
+        self.from = from;
         self
     }
 }
@@ -237,6 +268,8 @@ impl RecipeBundle {
             icon: self.recipe.icon.clone(),
             source: self.source,
             path: self.root.to_string_lossy().into_owned(),
+            author: self.recipe.author.clone(),
+            tags: self.recipe.tags.clone(),
             inputs: self.recipe.inputs.clone(),
             model_slots: self.recipe.model_slots.clone(),
             permissions: self.recipe.permissions.clone(),
@@ -244,6 +277,7 @@ impl RecipeBundle {
             outputs: self.recipe.outputs.clone(),
             stages: self.recipe.stages_or_implied(),
             shelf: ShelfState::Catalog,
+            from: None,
         }
         .with_shelf(None)
     }
@@ -284,6 +318,11 @@ mod tests {
         let info = b.info();
         assert_eq!(info.steps[1].slot.as_deref(), Some("writer"));
         assert_eq!(info.steps[1].depends_on, vec!["read".to_string()]);
+        assert_eq!(info.author.as_ref().and_then(|a| a.name.as_deref()), Some("Stillroom"));
+        assert!(info.tags.contains(&"built-in".to_string()), "{:?}", info.tags);
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["author"]["name"], "Stillroom");
+        assert!(json["tags"].is_array());
     }
 
     #[test]
@@ -352,6 +391,15 @@ mod tests {
         assert_eq!(yours.clone().with_shelf(Some(ShelfState::Archive)).shelf, ShelfState::Archive);
         assert_eq!(yours.clone().with_shelf(Some(ShelfState::Catalog)).shelf, ShelfState::Shelf, "never in the catalog");
         assert_eq!(serde_json::to_value(&builtin).unwrap()["shelf"], serde_json::json!("catalog"));
+        let sample = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::Sample).unwrap().info();
+        assert_eq!(sample.shelf, ShelfState::Catalog, "a sample starts in the catalog too");
+        assert!(sample.tags.contains(&"sample".to_string()), "the sample row is found by its tag: {:?}", sample.tags);
+        assert_eq!(sample.clone().with_shelf(Some(ShelfState::Shelf)).shelf, ShelfState::Shelf);
+        assert_eq!(serde_json::to_value(&sample).unwrap()["source"], serde_json::json!("sample"));
+        let json = serde_json::to_value(&sample).unwrap();
+        assert!(json["from"].is_null(), "not a copy of anything: {}", json["from"]);
+        let copied = sample.with_from(Some(crate::catalog::CatalogFrom { catalog: "inbox-triage".into(), version: "0.1.0".into(), newer: true }));
+        assert_eq!(serde_json::to_value(&copied).unwrap()["from"], serde_json::json!({ "catalog": "inbox-triage", "version": "0.1.0", "newer": true }));
     }
 
     #[test]

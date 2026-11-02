@@ -553,7 +553,11 @@ fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
     let scan = state.library.scan();
     let placed = state.store.lock().map_err(err)?.shelf_all().map_err(err)?;
     Ok(RecipesResponse {
-        recipes: scan.bundles.iter().map(|b| b.info().with_shelf(placed.get(&b.recipe.id).copied())).collect(),
+        recipes: scan
+            .bundles
+            .iter()
+            .map(|b| b.info().with_shelf(placed.get(&b.recipe.id).copied()).with_from(stillroom_core::catalog::provenance(b, &scan.bundles)))
+            .collect(),
         errors: scan
             .errors
             .into_iter()
@@ -919,12 +923,12 @@ fn fix_recipe_draft(state: State<'_, AppState>, draft: Draft, fixes: Vec<String>
 struct SaveResponse {
     recipe: RecipeInfo,
     path: String,
-    /// True when a built-in recipe with the same id is now hidden behind this one.
+    /// True when a catalog recipe (built-in, community, or sample) with the same id is now hidden behind this one.
     shadows_builtin: bool,
 }
 
 /// Write the draft into the user's recipes folder as `<id>/`. A user recipe with that id is
-/// replaced; a built-in with that id stays on disk but the saved copy is the one listed.
+/// replaced; a catalog recipe with that id stays on disk but the saved copy is the one listed.
 #[tauri::command]
 fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<SaveResponse> {
     let id = draft.id().ok_or("the recipe needs an id")?.to_string();
@@ -935,18 +939,30 @@ fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Save
         .find(|(_, s)| *s == RecipeSource::User)
         .ok_or("no folder for your recipes")?;
     let dir = user_root.join(&id);
-    let shadows_builtin = state.library.find(&id).map(|b| b.source == RecipeSource::Builtin).unwrap_or(false);
+    let shadows_builtin = state.library.find(&id).map(|b| !b.source.is_user()).unwrap_or(false);
     draft.write(&dir, &known_tools(&state)).map_err(err)?;
     let bundle = state.library.find(&id).ok_or("saved, but the recipe did not load back")?;
     Ok(SaveResponse { recipe: bundle.info(), path: dir.to_string_lossy().into_owned(), shadows_builtin })
 }
 
-/// Delete one of the user's recipes (its folder), its run keeps, and any watches bound to it. Built-ins cannot be deleted.
+/// Copy a recipe into the user's folder as `new_id` (Duplicate): every file comes along,
+/// `recipe.yaml` is rewritten with the new id, name, and icon (omitted keeps the original's),
+/// and a copy of a catalog recipe records where it came from in `x-source`. An id that is
+/// taken, or not in the id pattern, is refused in words.
+#[tauri::command]
+fn duplicate_recipe(app: AppHandle, state: State<'_, AppState>, recipe_id: String, new_id: String, name: String, icon: Option<String>) -> CmdResult<RecipeInfo> {
+    let copy = stillroom_core::catalog::duplicate(&state.library, &recipe_id, &new_id, &name, icon.as_deref(), &known_tools(&state)).map_err(err)?;
+    let _ = app.emit("shelf:changed", ShelfChanged { recipe_id: new_id, state: Some(ShelfState::Shelf) });
+    Ok(copy.info())
+}
+
+/// Delete one of the user's recipes (its folder), its run keeps, and any watches bound to it.
+/// Catalog recipes (built-in, community, sample) cannot be deleted; they leave the shelf instead.
 #[tauri::command]
 fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, recipe_id: String) -> CmdResult<()> {
     let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
-    if bundle.source != RecipeSource::User {
-        return Err("built-in recipes cannot be deleted; make a copy and change that".into());
+    if !bundle.source.is_user() {
+        return Err("Recipes from the catalog cannot be deleted; take one off the shelf instead.".into());
     }
     let (user_root, _) = state
         .library
@@ -974,7 +990,7 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("the recipe is deleted, but its run keeps could not be removed: {e}")),
     }
-    // Its place on the shelf goes with it; a built-in of the same id, now unshadowed, starts over in the catalog.
+    // Its place on the shelf goes with it; a catalog recipe of the same id, now unshadowed, starts over in the catalog.
     let _ = state.store.lock().map_err(err)?.remove_shelf(&recipe_id).map_err(err)?;
     let _ = app.emit("watch:changed", ());
     let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: None });
@@ -989,12 +1005,12 @@ struct ShelfChanged {
     state: Option<ShelfState>,
 }
 
-/// Put a recipe on the shelf, into the archive, or (a built-in only) back in the catalog.
-/// Other windows hear `shelf:changed` and list again.
+/// Put a recipe on the shelf, into the archive, or (a catalog recipe only) back in the catalog.
+/// Works for every source. Other windows hear `shelf:changed` and list again.
 #[tauri::command]
 fn set_shelf(app: AppHandle, app_state: State<'_, AppState>, recipe_id: String, state: ShelfState) -> CmdResult<()> {
     let bundle = app_state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
-    if bundle.source == RecipeSource::User && state == ShelfState::Catalog {
+    if bundle.source.is_user() && state == ShelfState::Catalog {
         return Err("Your own recipes stay on the shelf or in the archive; delete one to remove it.".into());
     }
     app_state.store.lock().map_err(err)?.set_shelf(&recipe_id, state).map_err(err)?;
@@ -1097,6 +1113,17 @@ fn reveal_recipes_folder(state: State<'_, AppState>) -> CmdResult<()> {
         .find(|(_, s)| *s == RecipeSource::User)
         .ok_or("no folder for your recipes")?;
     tauri_plugin_opener::reveal_item_in_dir(user_root).map_err(err)
+}
+
+/// Show the sample folders (`samples/`: the sample recipe and the inbox, archive, and outbox it
+/// works on) in the Finder, so the user can copy them somewhere of their own before running it.
+#[tauri::command]
+fn reveal_sample_folders(app: AppHandle) -> CmdResult<()> {
+    let dir = catalog_dir(&app, "samples");
+    if !dir.is_dir() {
+        return Err("The sample folders did not ship with this build.".into());
+    }
+    tauri_plugin_opener::reveal_item_in_dir(dir).map_err(err)
 }
 
 #[tauri::command]
@@ -1287,6 +1314,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
     let view = SubmenuBuilder::new(app, "View")
         .item(&item("place-library", "Library", Some("CmdOrCtrl+0"))?)
+        .item(&item("place-browse", "Catalog", Some("CmdOrCtrl+B"))?)
         .item(&item("place-recipe", "Recipe", Some("CmdOrCtrl+1"))?)
         .item(&item("place-setup", "Set Up", Some("CmdOrCtrl+2"))?)
         .item(&item("place-running", "Running", Some("CmdOrCtrl+3"))?)
@@ -1321,13 +1349,29 @@ fn builtin_stages_dir(app: &AppHandle) -> PathBuf {
     }
 }
 
-fn builtin_recipes_dir(app: &AppHandle) -> PathBuf {
+/// One of the catalog folders that ship with the app: `recipes` (built-in), `community`, or
+/// `samples`. In dev they are the repository folders; in release they are bundled resources
+/// (see `bundle.resources` in tauri.conf.json).
+fn catalog_dir(app: &AppHandle, name: &str) -> PathBuf {
     if cfg!(debug_assertions) {
-        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../recipes");
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(name);
         dev.canonicalize().unwrap_or(dev)
     } else {
-        app.path().resource_dir().map(|r| r.join("recipes")).unwrap_or_default()
+        app.path().resource_dir().map(|r| r.join(name)).unwrap_or_default()
     }
+}
+
+fn builtin_recipes_dir(app: &AppHandle) -> PathBuf {
+    catalog_dir(app, "recipes")
+}
+
+/// The catalog roots in the order the Library lists them: built-in, community, sample.
+fn catalog_roots(app: &AppHandle) -> Vec<(PathBuf, RecipeSource)> {
+    vec![
+        (builtin_recipes_dir(app), RecipeSource::Builtin),
+        (catalog_dir(app, "community"), RecipeSource::Community),
+        (catalog_dir(app, "samples"), RecipeSource::Sample),
+    ]
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1351,10 +1395,9 @@ pub fn run() {
             std::fs::create_dir_all(&keep_base)?;
             let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
-            let library = RecipeLibrary::with_app_version(
-                vec![(builtin_recipes_dir(app.handle()), RecipeSource::Builtin), (user_recipes, RecipeSource::User)],
-                env!("CARGO_PKG_VERSION"),
-            );
+            let mut roots = catalog_roots(app.handle());
+            roots.push((user_recipes, RecipeSource::User));
+            let library = RecipeLibrary::with_app_version(roots, env!("CARGO_PKG_VERSION"));
             app.manage(AppState {
                 store: Arc::new(Mutex::new(store)),
                 secrets: Mutex::new(BTreeMap::new()),
@@ -1427,9 +1470,11 @@ pub fn run() {
             add_watch,
             set_watch_enabled,
             remove_watch,
+            duplicate_recipe,
             delete_recipe,
             set_shelf,
             reveal_recipes_folder,
+            reveal_sample_folders,
             permission_status,
             open_privacy_pane,
             open_link,

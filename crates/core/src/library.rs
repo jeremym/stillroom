@@ -1,4 +1,5 @@
-//! Finds recipes on disk. Built-in recipes ship with the app; user recipes live in the app data dir.
+//! Finds recipes on disk. Catalog recipes (built-in, community, sample) ship with the app; user
+//! recipes live in the app data dir.
 
 use crate::bundle::{RecipeBundle, RecipeSource};
 use std::path::PathBuf;
@@ -35,7 +36,8 @@ impl RecipeLibrary {
         &self.roots
     }
 
-    /// Every `<root>/<dir>/recipe.yaml`. User recipes with the same id as a built-in win.
+    /// Every `<root>/<dir>/recipe.yaml`. A user recipe shadows any catalog recipe with the same
+    /// id; between two catalog roots the earlier root wins.
     pub fn scan(&self) -> ScanResult {
         let mut result = ScanResult::default();
         for (root, source) in &self.roots {
@@ -48,12 +50,11 @@ impl RecipeLibrary {
             dirs.sort();
             for dir in dirs {
                 match RecipeBundle::load_for(&dir, *source, &self.app_version) {
-                    Ok(b) => {
-                        result.bundles.retain(|x| x.recipe.id != b.recipe.id || x.source == RecipeSource::User);
-                        if !result.bundles.iter().any(|x| x.recipe.id == b.recipe.id) {
-                            result.bundles.push(b);
-                        }
-                    }
+                    Ok(b) => match result.bundles.iter().position(|x| x.recipe.id == b.recipe.id) {
+                        Some(i) if b.source.is_user() && !result.bundles[i].source.is_user() => result.bundles[i] = b,
+                        Some(_) => {}
+                        None => result.bundles.push(b),
+                    },
                     Err(e) => result.errors.push((dir, e.to_string())),
                 }
             }
@@ -83,6 +84,34 @@ mod tests {
         assert!(ids.contains(&"summarize-file"));
         assert!(ids.contains(&"learning-kit"));
         assert!(lib.find("learning-kit").is_some());
+    }
+
+    #[test]
+    fn scans_every_catalog_root_and_a_user_recipe_shadows_the_catalog() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let tmp = std::env::temp_dir().join(format!("stillroom-lib-roots-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(tmp.join("summarize-file/prompts")).unwrap();
+        std::fs::write(tmp.join("summarize-file/prompts/summarize.md"), "Mine.").unwrap();
+        let yaml = std::fs::read_to_string(repo.join("recipes/summarize-file/recipe.yaml")).unwrap();
+        assert!(yaml.contains("\nname: "));
+        let yaml = yaml.lines().map(|l| if l.starts_with("name: ") { "name: My summarizer".to_string() } else { l.to_string() }).collect::<Vec<_>>().join("\n");
+        std::fs::write(tmp.join("summarize-file/recipe.yaml"), yaml).unwrap();
+        let lib = RecipeLibrary::new(vec![
+            (repo.join("recipes"), RecipeSource::Builtin),
+            (repo.join("community"), RecipeSource::Community),
+            (repo.join("samples"), RecipeSource::Sample),
+            (tmp.clone(), RecipeSource::User),
+        ]);
+        let r = lib.scan();
+        assert!(r.errors.is_empty(), "{:?}", r.errors);
+        let sample = r.bundles.iter().find(|b| b.recipe.id == "inbox-triage").expect("the sample is scanned from samples/");
+        assert_eq!(sample.source, RecipeSource::Sample);
+        assert!(!r.bundles.iter().any(|b| b.root.ends_with("inbox") || b.root.ends_with("archive")), "fixture folders without recipe.yaml are skipped");
+        let mine: Vec<_> = r.bundles.iter().filter(|b| b.recipe.id == "summarize-file").collect();
+        assert_eq!(mine.len(), 1, "one entry per id");
+        assert_eq!(mine[0].source, RecipeSource::User);
+        assert_eq!(mine[0].recipe.name, "My summarizer");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

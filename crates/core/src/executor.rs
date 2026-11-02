@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 
 use crate::cache::{fingerprint, CachedStep, StepCache};
 use crate::model::{ChatMessage, ChatRequest, ChatResponse, ModelClient, ToolSpec};
-use crate::propagate::{dependencies, dependents, inputs_fingerprint, StepEdit};
+use crate::propagate::{dependencies, dependents, inputs_fingerprint, keep_dependencies, StepEdit};
 use crate::recipe::{AgentStep, MapStep, Recipe, Step};
 use crate::refs::{self, Context};
 use crate::resolve::Resolution;
@@ -134,8 +134,39 @@ pub struct RunRequest {
 struct KeepPlan {
     keep: Arc<Keep>,
     fingerprint: String,
+    /// The model behind each slot the stage uses, for the manifest.
+    models: BTreeMap<String, String>,
     reason: String,
     done: bool,
+}
+
+/// The model behind each slot a stage's steps use: model and agent steps' `slot`, and tools
+/// that take a `slot` (keep.index, keep.search), inside maps too. A slot with no resolution is
+/// left out; its step fails on its own. Compared with the keep's manifest, so a stage built with
+/// one model is stale once another is chosen, even when its sources did not change.
+pub fn stage_models(recipe: &Recipe, stage: &Stage, resolutions: &BTreeMap<String, Resolution>) -> BTreeMap<String, String> {
+    fn slots_of(step: &Step, out: &mut BTreeSet<String>) {
+        match step {
+            Step::Model(m) => {
+                out.insert(m.slot.clone());
+            }
+            Step::Agent(a) => {
+                out.insert(a.slot.clone());
+            }
+            Step::Tool(t) => {
+                if let Some(s) = t.inputs.get("slot").and_then(Value::as_str) {
+                    out.insert(s.to_string());
+                }
+            }
+            Step::Map(m) => m.steps.iter().for_each(|s| slots_of(s, out)),
+            _ => {}
+        }
+    }
+    let mut slots = BTreeSet::new();
+    for step in recipe.steps.iter().filter(|s| stage.steps.iter().any(|id| id == s.id())) {
+        slots_of(step, &mut slots);
+    }
+    slots.into_iter().filter_map(|s| resolutions.get(&s).map(|r| (s.clone(), r.model_id.clone()))).collect()
 }
 
 /// What a stage with a keep is built from: the inputs its steps read (their values, and for
@@ -392,17 +423,18 @@ impl Executor {
         }
     }
 
-    /// Topological order from data references plus explicit `dependsOn`.
+    /// Topological order from data references plus explicit `dependsOn`, and from the keeps a
+    /// step reads: a reader of stage X's keep waits for every step of X, however it is declared.
     pub fn order(recipe: &Recipe) -> Result<Vec<usize>, ExecError> {
-        Self::order_steps(&recipe.steps)
+        Self::order_steps(&recipe.steps, |step| keep_dependencies(recipe, step))
     }
 
-    fn order_steps(steps: &[Step]) -> Result<Vec<usize>, ExecError> {
+    fn order_steps(steps: &[Step], implicit: impl Fn(&Step) -> BTreeSet<String>) -> Result<Vec<usize>, ExecError> {
         let n = steps.len();
         let index: HashMap<&str, usize> = steps.iter().enumerate().map(|(i, s)| (s.id(), i)).collect();
         let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); n];
         for (i, step) in steps.iter().enumerate() {
-            for name in dependencies(step) {
+            for name in dependencies(step).into_iter().chain(implicit(step)) {
                 if let Some(&j) = index.get(name.as_str()) {
                     deps[i].insert(j);
                 }
@@ -489,7 +521,8 @@ impl Executor {
         // stages are fresh enough to skip (their outputs come from the keep's manifest).
         let stage_of: HashMap<String, String> =
             req.recipe.stages.iter().flat_map(|st| st.steps.iter().map(move |s| (s.clone(), st.id.clone()))).collect();
-        let mut kept: HashMap<String, Value> = HashMap::new();
+        // Kept outputs by step id, with the inputs the step had when they were made.
+        let mut kept: HashMap<String, (Value, Value)> = HashMap::new();
         let mut keep_plans: HashMap<String, KeepPlan> = HashMap::new();
         if let Some(base) = &req.keep_base {
             for st in req.recipe.stages.iter().filter(|s| s.keep.is_some()) {
@@ -502,24 +535,37 @@ impl Executor {
                     let _ = keep.clear(&run_id);
                 }
                 let fp = stage_fingerprint(&req.recipe, &req.prompts, st, &req.inputs);
+                let models = stage_models(&req.recipe, st, &req.resolutions);
                 let manifest = keep.manifest().unwrap_or_default();
                 let built = manifest.built_at.is_some() && st.steps.iter().all(|s| manifest.outputs.contains_key(s));
                 let refresh = st.keep.as_ref().map(|k| k.refresh).unwrap_or_default();
+                let same_sources = manifest.source_fingerprint.as_deref() == Some(fp.as_str());
+                let same_models = manifest.models == models;
                 let fresh = built
                     && match refresh {
                         Refresh::Always => false,
-                        Refresh::WhenSourcesChange => manifest.source_fingerprint.as_deref() == Some(fp.as_str()),
+                        Refresh::WhenSourcesChange => same_sources && same_models,
                         Refresh::Manual => true,
                     };
-                let reason = if rebuilding { "rebuilt" } else if !built { "first build" } else if refresh == Refresh::Always { "runs every time" } else { "sources changed" };
+                let reason = if rebuilding {
+                    "rebuilt"
+                } else if !built {
+                    "first build"
+                } else if refresh == Refresh::Always {
+                    "runs every time"
+                } else if !same_sources {
+                    "sources changed"
+                } else {
+                    "model changed"
+                };
                 if fresh {
                     for s in &st.steps {
                         if let Some(v) = manifest.outputs.get(s) {
-                            kept.insert(s.clone(), v.clone());
+                            kept.insert(s.clone(), (v.clone(), manifest.inputs.get(s).cloned().unwrap_or(Value::Null)));
                         }
                     }
                 }
-                keep_plans.insert(st.id.clone(), KeepPlan { keep: keep.clone(), fingerprint: fp, reason: reason.into(), done: false });
+                keep_plans.insert(st.id.clone(), KeepPlan { keep: keep.clone(), fingerprint: fp, models, reason: reason.into(), done: false });
                 state.tool_ctx.keeps.all.insert(st.id.clone(), keep);
             }
         }
@@ -531,7 +577,21 @@ impl Executor {
             let step = &req.recipe.steps[i];
             let sid = step.id().to_string();
             state.tool_ctx.keeps.own = stage_of.get(&sid).cloned();
-            if let Some(out) = kept.get(&sid) {
+            // An edited step never takes the kept path: it and the stage-mates after it run
+            // again with the edit on top, and the manifest is rewritten with what they make.
+            if req.edits.contains_key(&sid)
+                && kept.contains_key(&sid)
+                && let Some(stage_id) = stage_of.get(&sid)
+            {
+                let mates = req.recipe.stages.iter().find(|s| &s.id == stage_id).map(|s| s.steps.as_slice()).unwrap_or_default();
+                for s in mates.iter().filter(|s| !state.outputs.contains_key(*s)) {
+                    kept.remove(s);
+                }
+                if let Some(plan) = keep_plans.get_mut(stage_id) {
+                    plan.reason = "edited".into();
+                }
+            }
+            if let Some((out, inputs)) = kept.get(&sid) {
                 // The stage is fresh: its output comes from the keep, nothing runs.
                 let now = Utc::now();
                 let rec = StepRecord {
@@ -548,7 +608,7 @@ impl Executor {
                     prompt_path: None,
                     prompt_tokens: None,
                     completion_tokens: None,
-                    inputs: Value::Null,
+                    inputs: inputs.clone(),
                     output: Some(out.clone()),
                     error: None,
                     reused_from: Some(format!("keep:{}", stage_of.get(&sid).cloned().unwrap_or_default())),
@@ -575,12 +635,25 @@ impl Executor {
                         let st = req.recipe.stages.iter().find(|s| stage_of.get(&sid) == Some(&s.id));
                         if let Some(st) = st.filter(|st| !plan.done && st.steps.iter().all(|s| state.outputs.contains_key(s))) {
                             plan.done = true;
+                            // A stage that waited for a review has no finished output to
+                            // remember: a held step's null is not a result, and the next run
+                            // would be served it. The stage builds once the review is decided.
+                            if state.needs_review || st.steps.iter().any(|s| state.held.contains(s)) {
+                                continue;
+                            }
                             let outputs = st.steps.iter().filter_map(|s| state.outputs.get(s).map(|v| (s.clone(), v.clone()))).collect();
+                            let inputs = st
+                                .steps
+                                .iter()
+                                .filter_map(|s| state.records.iter().rev().find(|r| &r.step_id == s && r.parent.is_none()).map(|r| (s.clone(), r.inputs.clone())))
+                                .collect();
                             let _ = plan.keep.set_manifest(&KeepManifest {
                                 source_fingerprint: Some(plan.fingerprint.clone()),
                                 built_at: Some(Utc::now()),
                                 run_id: Some(state.run_id.clone()),
                                 outputs,
+                                inputs,
+                                models: plan.models.clone(),
                             });
                             let t = plan.keep.take_tally();
                             let _ = plan.keep.append_journal(&JournalEntry {
@@ -866,7 +939,7 @@ impl Executor {
             .ok_or_else(|| ExecError::NotAnArray { step: record_id.to_string(), got: kind_of(&over) })?
             .clone();
         rec.inputs = serde_json::json!({ "over": over });
-        let order = Self::order_steps(&m.steps)?;
+        let order = Self::order_steps(&m.steps, |_| BTreeSet::new())?;
         let mut results = Vec::with_capacity(items.len());
         for (i, item) in items.iter().enumerate() {
             let mut vars = ctx.vars.clone();
@@ -1320,7 +1393,7 @@ steps:
       - id: store
         kind: tool
         tool: keep.index
-        inputs: { slot: embedder, chunks: "${steps.chunks.output.chunks}", source: "${file.path}" }
+        inputs: { slot: embedder, chunks: "${steps.chunks.output.chunks}", source: "${file.path}", sources: "${steps.list.output.entries}" }
   - id: search
     kind: tool
     tool: keep.search
@@ -1338,7 +1411,7 @@ stages:
         std::fs::create_dir_all(&docs).unwrap();
         std::fs::write(docs.join("fruit.md"), "Apples and pears grow on trees. Oranges and lemons are citrus fruit that like the sun.").unwrap();
         std::fs::write(docs.join("cars.txt"), "Engines, wheels, brakes and gearboxes make a car move and stop.").unwrap();
-        let make = |q: &str| RunRequest {
+        let make_with = |q: &str, model: &str| RunRequest {
             keep_base: Some(base.clone()),
             rebuild: Vec::new(),
             recipe: Recipe::from_yaml(yaml).unwrap(),
@@ -1347,7 +1420,7 @@ stages:
                 ("folder".to_string(), Value::String(docs.to_string_lossy().into())),
                 ("question".to_string(), Value::String(q.into())),
             ]),
-            resolutions: BTreeMap::from([("embedder".to_string(), Resolution { slot: "embedder".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability })]),
+            resolutions: BTreeMap::from([("embedder".to_string(), Resolution { slot: "embedder".into(), model_id: model.into(), via: ResolvedVia::Capability })]),
             artifact_base: Some(base.clone()),
             reuse: false,
             edits: BTreeMap::new(),
@@ -1358,6 +1431,7 @@ stages:
             model_defaults: Default::default(),
         };
         let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        let make = |q: &str| make_with(q, "test:echo");
         let first = exec.run(make("which fruit likes the sun, oranges or lemons?"), None).await;
         assert_eq!(first.status, RunStatus::Succeeded, "{:?}", first.error);
         let top = first.outputs["passages"][0]["source"].as_str().unwrap().to_string();
@@ -1381,6 +1455,36 @@ stages:
         let indexed: u64 = stored.iter().filter_map(|o| o["indexed"].as_u64()).sum();
         assert!(skipped >= 2 && indexed >= 1, "skipped {skipped}, indexed {indexed}");
         assert!(third.outputs["passages"][0]["source"].as_str().unwrap().ends_with("boats.txt"));
+
+        // A file is deleted: given every file the index should hold, its passages are forgotten
+        // and the keep's journal says so in words; a search no longer finds it.
+        std::fs::remove_file(docs.join("cars.txt")).unwrap();
+        let fourth = exec.run(make("brakes and wheels"), None).await;
+        assert_eq!(fourth.status, RunStatus::Succeeded, "{:?}", fourth.error);
+        assert!(by(&fourth, "index").is_none(), "the folder changed, so the stage ran");
+        assert!(!fourth.outputs["passages"][0]["source"].as_str().unwrap().ends_with("cars.txt"), "{}", fourth.outputs["passages"]);
+        assert!(fourth.outputs["passages"].as_array().unwrap().iter().all(|p| !p["source"].as_str().unwrap().ends_with("cars.txt")));
+        let j = keep.journal(5).unwrap();
+        assert_eq!(j[0].reason, "sources changed");
+        assert_eq!((j[1].reason.as_str(), j[1].removed), ("forgot 1 passage of 1 file no longer there", 1));
+        assert_eq!(keep.count().unwrap(), 2, "fruit and boats remain");
+        assert_eq!(keep.manifest().unwrap().models, BTreeMap::from([("embedder".to_string(), "test:echo".to_string())]));
+
+        // Another embedding model is chosen: the sources did not change, but the stage is stale
+        // and every passage is embedded again by the new model.
+        let fifth = exec.run(make_with("sails and hulls", "test:other"), None).await;
+        assert_eq!(fifth.status, RunStatus::Succeeded, "{:?}", fifth.error);
+        assert!(by(&fifth, "index").is_none(), "a new model makes the index stale");
+        let stored = fifth.steps.iter().filter(|s| s.step_id.starts_with("index[") && s.step_id.ends_with("store")).filter_map(|s| s.output.clone()).collect::<Vec<_>>();
+        let skipped: u64 = stored.iter().filter_map(|o| o["skipped"].as_u64()).sum();
+        let indexed: u64 = stored.iter().filter_map(|o| o["indexed"].as_u64()).sum();
+        assert_eq!((skipped, indexed), (0, 2), "nothing is skipped: the stored vectors came from another model");
+        assert_eq!(keep.journal(5).unwrap()[0].reason, "model changed");
+        let any = keep.query(None, true, 1).unwrap().remove(0);
+        assert_eq!(keep.vector_model(&any.id).unwrap().as_deref(), Some("test:other"));
+        // Same model again: fresh.
+        let sixth = exec.run(make_with("sails and hulls", "test:other"), None).await;
+        assert_eq!(by(&sixth, "index").as_deref(), Some("keep:index"));
         std::fs::remove_dir_all(base).ok();
     }
 
@@ -1509,6 +1613,188 @@ stages:
         plain.keep_base = None;
         let r = exec.run(plain, None).await;
         assert_eq!(r.status, RunStatus::Failed, "keep.put without a keep base has nowhere to write");
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    fn keep_request(yaml: &str, base: &std::path::Path, text: &str) -> RunRequest {
+        RunRequest {
+            keep_base: Some(base.to_path_buf()),
+            rebuild: Vec::new(),
+            recipe: Recipe::from_yaml(yaml).unwrap(),
+            prompts: HashMap::new(),
+            inputs: IndexMap::from([("text".to_string(), Value::String(text.into()))]),
+            resolutions: BTreeMap::new(),
+            artifact_base: Some(base.to_path_buf()),
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
+        }
+    }
+
+    /// A review in one stage, then a kept stage whose step reads the decision. The paused run
+    /// must not remember the held step's null as the stage's output: the next run, continued
+    /// with the decision, builds the stage and succeeds.
+    #[tokio::test]
+    async fn a_kept_stage_held_behind_a_review_is_not_remembered_until_decided() {
+        let yaml = r#"
+schemaVersion: "0"
+id: held
+name: Held
+inputs:
+  text: { type: text }
+steps:
+  - id: list
+    kind: tool
+    tool: list.filter
+    inputs: { items: [{ x: "${inputs.text}" }, { x: "other" }], path: x }
+  - id: pick
+    kind: review
+    title: Pick
+    items: "${steps.list.output.items}"
+  - id: keep_it
+    kind: tool
+    tool: keep.put
+    inputs: { id: latest, data: { approved: "${steps.pick.output.approved}" } }
+  - id: echo
+    kind: tool
+    tool: keep.get
+    inputs: { id: latest, stage: kept }
+outputs:
+  saw: { from: "${steps.echo.output.record.data.approved}", type: json }
+stages:
+  - { id: check, name: Check, inputs: [text], steps: [list, pick] }
+  - { id: kept, name: Kept, steps: [keep_it], keep: { refresh: when_sources_change } }
+  - { id: out, name: Answer, steps: [echo], outputs: [saw] }
+"#;
+        let base = std::env::temp_dir().join(format!("stillroom-held-{}", uuid::Uuid::now_v7()));
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        let by_id = |run: &Run, id: &str| run.steps.iter().find(|s| s.step_id == id).cloned().unwrap_or_else(|| panic!("no step {id}"));
+
+        let first = exec.run(keep_request(yaml, &base, "one"), None).await;
+        assert_eq!(first.status, RunStatus::NeedsReview, "{:?}", first.error);
+        assert_eq!(by_id(&first, "keep_it").skip_reason.as_deref(), Some("waiting for review"));
+        assert_eq!(by_id(&first, "echo").skip_reason.as_deref(), Some("waiting for review"), "a reader of the held stage's keep waits too");
+        let keep = Keep::open(keep_dir(&base, "held", "kept")).unwrap();
+        assert!(keep.manifest().unwrap().built_at.is_none(), "a held stage is not remembered as built");
+
+        // The decision arrives: the kept stage builds for real and the answer stage reads it.
+        let item = by_id(&first, "pick").output.unwrap()["items"][0].clone();
+        let mut req = keep_request(yaml, &base, "one");
+        req.edits = crate::propagate::edits_for_rerun(&first, "pick", json!({ "decided": true, "approved": [item.clone()], "rejected": [] })).unwrap();
+        req.resume_from = Some(Box::new(first.clone()));
+        let second = exec.run(req, None).await;
+        assert_eq!(second.status, RunStatus::Succeeded, "{:?}", second.error);
+        assert!(by_id(&second, "keep_it").reused_from.is_none(), "built, not served from the keep");
+        assert_eq!(second.outputs["saw"], json!([item]));
+        let m = keep.manifest().unwrap();
+        assert!(m.built_at.is_some());
+        assert_eq!(m.outputs["keep_it"]["id"], "latest");
+        assert_eq!(keep.journal(5).unwrap()[0].reason, "first build");
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    /// Editing a step of a fresh kept stage: the edit stands in for the kept output, the steps
+    /// after it in the stage run again on top of it, and the keep remembers the edited result.
+    #[tokio::test]
+    async fn an_edit_to_a_kept_step_beats_the_keep_and_is_remembered() {
+        let yaml = r#"
+schemaVersion: "0"
+id: spine
+name: Spine
+inputs:
+  text: { type: text }
+steps:
+  - id: spine
+    kind: tool
+    tool: list.filter
+    inputs: { items: [{ x: "${inputs.text}" }], path: x }
+  - id: polish
+    kind: tool
+    tool: list.filter
+    inputs: { items: "${steps.spine.output.items}", path: x }
+  - id: echo
+    kind: tool
+    tool: list.filter
+    inputs: { items: "${steps.polish.output.items}", path: x }
+outputs:
+  saw: { from: "${steps.echo.output.items}", type: json }
+stages:
+  - { id: ask, name: Ask, inputs: [text] }
+  - { id: make, name: Make, steps: [spine, polish], keep: { refresh: when_sources_change } }
+  - { id: out, name: Answer, steps: [echo], outputs: [saw] }
+"#;
+        let base = std::env::temp_dir().join(format!("stillroom-spine-{}", uuid::Uuid::now_v7()));
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        let by_id = |run: &Run, id: &str| run.steps.iter().find(|s| s.step_id == id).cloned().unwrap_or_else(|| panic!("no step {id}"));
+        let first = exec.run(keep_request(yaml, &base, "one"), None).await;
+        assert_eq!(first.status, RunStatus::Succeeded, "{:?}", first.error);
+        assert_eq!(first.outputs["saw"], json!([{ "x": "one" }]));
+        let second = exec.run(keep_request(yaml, &base, "one"), None).await;
+        assert_eq!(by_id(&second, "spine").reused_from.as_deref(), Some("keep:make"));
+        assert_eq!(by_id(&second, "polish").reused_from.as_deref(), Some("keep:make"));
+        assert_eq!(by_id(&second, "spine").inputs["items"], json!([{ "x": "one" }]), "a kept step still shows the inputs it was built from");
+
+        // The user rewrites the spine of a run that was served from the keep.
+        let mut req = keep_request(yaml, &base, "one");
+        req.edits = crate::propagate::edits_for_rerun(&second, "spine", json!({ "items": [{ "x": "edited" }], "kept": 1 })).unwrap();
+        let third = exec.run(req, None).await;
+        assert_eq!(third.status, RunStatus::Succeeded, "{:?}", third.error);
+        assert!(by_id(&third, "spine").edited, "the edit stands in, the keep does not");
+        assert!(by_id(&third, "polish").reused_from.is_none(), "the stage-mate after the edit ran again");
+        assert_eq!(third.outputs["saw"], json!([{ "x": "edited" }]), "downstream sees the edited value");
+        let keep = Keep::open(keep_dir(&base, "spine", "make")).unwrap();
+        let m = keep.manifest().unwrap();
+        assert_eq!(m.outputs["spine"]["items"][0]["x"], "edited", "the manifest holds the edit");
+        assert_eq!(m.outputs["polish"]["items"][0]["x"], "edited");
+        assert_eq!(keep.journal(5).unwrap()[0].reason, "edited");
+
+        // Without the edit the stage is fresh and the edited build is what it remembers.
+        let fourth = exec.run(keep_request(yaml, &base, "one"), None).await;
+        assert_eq!(by_id(&fourth, "spine").reused_from.as_deref(), Some("keep:make"));
+        assert_eq!(fourth.outputs["saw"], json!([{ "x": "edited" }]));
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    /// A step that reads another stage's keep waits for every step of that stage, even when it
+    /// is declared first: no data reference ties them, so the dependency is implied.
+    #[tokio::test]
+    async fn a_keep_reader_waits_for_the_stage_that_fills_it() {
+        let yaml = r#"
+schemaVersion: "0"
+id: reader
+name: Reader
+inputs:
+  text: { type: text }
+steps:
+  - id: echo
+    kind: tool
+    tool: keep.get
+    inputs: { id: latest, stage: memory }
+  - id: remember
+    kind: tool
+    tool: keep.put
+    inputs: { id: latest, data: { text: "${inputs.text}" } }
+outputs:
+  saw: { from: "${steps.echo.output.record.data.text}", type: text }
+stages:
+  - { id: ask, name: Ask, inputs: [text] }
+  - { id: memory, name: Remember, steps: [remember], keep: { refresh: always } }
+  - { id: out, name: Answer, steps: [echo], outputs: [saw] }
+"#;
+        let recipe = Recipe::from_yaml(yaml).unwrap();
+        assert_eq!(keep_dependencies(&recipe, &recipe.steps[0]), BTreeSet::from(["remember".to_string()]));
+        assert!(keep_dependencies(&recipe, &recipe.steps[1]).is_empty());
+        assert_eq!(Executor::order(&recipe).unwrap(), vec![1, 0], "the writer runs first");
+        let base = std::env::temp_dir().join(format!("stillroom-reader-{}", uuid::Uuid::now_v7()));
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        let run = exec.run(keep_request(yaml, &base, "one"), None).await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        assert_eq!(run.outputs["saw"], Value::String("one".into()));
+        assert_eq!(run.steps[0].step_id, "remember");
         std::fs::remove_dir_all(base).ok();
     }
 

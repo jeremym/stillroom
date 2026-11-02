@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -41,6 +41,12 @@ pub struct KeepManifest {
     pub run_id: Option<String>,
     /// Outputs of the stage's steps when it last ran, by step id.
     pub outputs: BTreeMap<String, Value>,
+    /// The resolved inputs of those steps, by step id, so an edit made to a kept step can be
+    /// pinned to what the step saw when it ran.
+    pub inputs: BTreeMap<String, Value>,
+    /// The model behind each slot the stage uses, as resolved when it was built. A different
+    /// model makes the stage stale even when its sources did not change.
+    pub models: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,19 +177,80 @@ impl Keep {
         Ok(out)
     }
 
+    /// Delete one record and its vector. Returns true when there was one.
     pub fn remove(&self, id: &str) -> Result<bool, KeepError> {
-        let n = self.conn()?.execute("DELETE FROM records WHERE id = ?1", params![id])?;
-        if n > 0 {
-            if let Ok(mut t) = self.tally.lock() {
-                t.removed += n as u64;
-            }
-        }
+        let n = {
+            let conn = self.conn()?;
+            let n = conn.execute("DELETE FROM records WHERE id = ?1", params![id])?;
+            conn.execute("DELETE FROM vectors WHERE id = ?1", params![id])?;
+            n
+        };
+        self.tally_removed(n as u64);
         Ok(n > 0)
+    }
+
+    fn tally_removed(&self, n: u64) {
+        if n > 0
+            && let Ok(mut t) = self.tally.lock()
+        {
+            t.removed += n;
+        }
+    }
+
+    /// Delete every record (and its vector) that `stale` picks out; returns their ids.
+    fn forget_where(&self, mut stale: impl FnMut(&KeepRecord) -> bool) -> Result<Vec<String>, KeepError> {
+        let conn = self.conn()?;
+        let gone: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT id, data, run_id, written_at FROM records")?;
+            let rows = stmt.query_map([], row)?;
+            rows.filter_map(Result::ok).filter(|r| stale(r)).map(|r| r.id).collect()
+        };
+        for id in &gone {
+            conn.execute("DELETE FROM records WHERE id = ?1", params![id])?;
+            conn.execute("DELETE FROM vectors WHERE id = ?1", params![id])?;
+        }
+        Ok(gone)
+    }
+
+    /// After indexing a file: forget its passages that this indexing did not write or confirm
+    /// (the file got shorter, or a passage emptied). Counted as removed in the tally.
+    pub fn forget_other_passages(&self, source: &str, current: &HashSet<String>) -> Result<u64, KeepError> {
+        let gone = self.forget_where(|r| r.data.get("source").and_then(Value::as_str) == Some(source) && !current.contains(&r.id))?;
+        self.tally_removed(gone.len() as u64);
+        Ok(gone.len() as u64)
+    }
+
+    /// Forget every passage whose file is not in `sources` any more. Records without a `source`
+    /// field are not passages and stay. Returns (passages, files). Not counted in the tally: the
+    /// caller journals it in its own words.
+    pub fn forget_sources_except(&self, sources: &HashSet<String>) -> Result<(u64, u64), KeepError> {
+        let mut files = HashSet::new();
+        let gone = self.forget_where(|r| match r.data.get("source").and_then(Value::as_str) {
+            Some(s) if !sources.contains(s) => {
+                files.insert(s.to_string());
+                true
+            }
+            _ => false,
+        })?;
+        Ok((gone.len() as u64, files.len() as u64))
     }
 
     /// Whether a record with this id holds exactly this data (so indexing can skip it).
     pub fn has_same(&self, id: &str, data: &Value) -> Result<bool, KeepError> {
         Ok(self.get(id)?.is_some_and(|r| &r.data == data))
+    }
+
+    /// Whether a record with this id holds exactly this data and a vector made by `model`.
+    /// Indexing skips a passage only then: a vector from another model cannot be compared with
+    /// questions embedded by this one.
+    pub fn has_same_embedding(&self, id: &str, data: &Value, model: &str) -> Result<bool, KeepError> {
+        Ok(self.has_same(id, data)? && self.vector_model(id)?.as_deref() == Some(model))
+    }
+
+    /// The model that made a record's vector, if it has one.
+    pub fn vector_model(&self, id: &str) -> Result<Option<String>, KeepError> {
+        let conn = self.conn()?;
+        conn.query_row("SELECT model FROM vectors WHERE id = ?1", params![id], |r| r.get(0)).optional().map_err(Into::into)
     }
 
     /// Store the vector for a record, replacing any earlier one.
@@ -344,7 +411,7 @@ mod tests {
         assert_eq!(k.query(None, false, 1).unwrap()[0].id, "a");
 
         assert!(k.manifest().unwrap().built_at.is_none());
-        let mut m = KeepManifest { source_fingerprint: Some("fp".into()), built_at: Some(Utc::now()), run_id: Some("run2".into()), outputs: BTreeMap::new() };
+        let mut m = KeepManifest { source_fingerprint: Some("fp".into()), built_at: Some(Utc::now()), run_id: Some("run2".into()), ..Default::default() };
         m.outputs.insert("index".into(), json!({ "n": 2 }));
         k.set_manifest(&m).unwrap();
         assert_eq!(k.manifest().unwrap().source_fingerprint.as_deref(), Some("fp"));
@@ -374,6 +441,34 @@ mod tests {
         assert!(hits[0].1 > hits[1].1);
         assert!(k.has_same("p1", &json!({ "text": "apples" })).unwrap());
         assert!(!k.has_same("p1", &json!({ "text": "pears" })).unwrap());
+        // Same text but a vector from another model is not the same embedding.
+        assert!(k.has_same_embedding("p1", &json!({ "text": "apples" }), "m").unwrap());
+        assert!(!k.has_same_embedding("p1", &json!({ "text": "apples" }), "other-model").unwrap());
+        assert!(!k.has_same_embedding("nope", &json!({ "text": "apples" }), "m").unwrap());
+
+        // Removing a record takes its vector with it.
+        k.take_tally();
+        assert_eq!(k.vector_model("p3").unwrap().as_deref(), Some("m"));
+        assert!(k.remove("p3").unwrap());
+        assert!(k.vector_model("p3").unwrap().is_none());
+
+        // Passages of a file that got shorter, then of files no longer there, are forgotten;
+        // records that are not passages (no source) stay.
+        for (id, src, i) in [("f.md#0", "f.md", 0), ("f.md#1", "f.md", 1), ("f.md#2", "f.md", 2), ("g.md#0", "g.md", 0)] {
+            k.put(id, &json!({ "text": id, "source": src, "index": i }), "r").unwrap();
+            k.put_vector(id, "m", &[1.0, 0.0, 0.0]).unwrap();
+        }
+        let current: HashSet<String> = ["f.md#0".to_string()].into_iter().collect();
+        assert_eq!(k.forget_other_passages("f.md", &current).unwrap(), 2);
+        assert!(k.get("f.md#0").unwrap().is_some());
+        assert!(k.get("f.md#1").unwrap().is_none());
+        assert!(k.vector_model("f.md#2").unwrap().is_none(), "the vector went with the record");
+        assert_eq!(k.take_tally().removed, 3, "one removed and two forgotten passages are counted");
+        let sources: HashSet<String> = ["f.md".to_string()].into_iter().collect();
+        assert_eq!(k.forget_sources_except(&sources).unwrap(), (1, 1), "g.md's one passage, one file");
+        assert!(k.get("g.md#0").unwrap().is_none());
+        assert!(k.get("p1").unwrap().is_some(), "not a passage, so not forgotten");
+        assert_eq!(k.take_tally().removed, 0, "forgetting files is journaled by the caller, not tallied");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -76,7 +76,37 @@ pub fn input_dependencies(step: &Step) -> BTreeSet<String> {
     names
 }
 
-/// Every step downstream of `step_id`, transitively, in recipe order.
+/// The steps a keep reader waits for: every step of a stage whose run keep it reads by name
+/// (`keep.get`, `keep.query`, `keep.list`, `keep.search` with `stage: X`), directly or inside a
+/// map. No data reference ties a reader to the stage that fills the keep, so this dependency is
+/// implied. Reading its own stage's keep adds nothing. An agent decides its tool calls at run
+/// time, so a keep it may read is not seen here.
+pub fn keep_dependencies(recipe: &Recipe, step: &Step) -> BTreeSet<String> {
+    fn stages_read(step: &Step, out: &mut BTreeSet<String>) {
+        match step {
+            Step::Tool(t) if t.tool.starts_with("keep.") => {
+                if let Some(s) = t.inputs.get("stage").and_then(Value::as_str) {
+                    out.insert(s.to_string());
+                }
+            }
+            Step::Map(m) => m.steps.iter().for_each(|s| stages_read(s, out)),
+            _ => {}
+        }
+    }
+    let mut stages = BTreeSet::new();
+    stages_read(step, &mut stages);
+    let own = recipe.stages.iter().find(|st| st.steps.iter().any(|s| s == step.id())).map(|st| st.id.as_str());
+    recipe
+        .stages
+        .iter()
+        .filter(|st| stages.contains(&st.id) && Some(st.id.as_str()) != own)
+        .flat_map(|st| st.steps.iter().cloned())
+        .filter(|s| s != step.id())
+        .collect()
+}
+
+/// Every step downstream of `step_id`, transitively, in recipe order: by data reference,
+/// `dependsOn`, or reading the keep of the stage `step_id` belongs to.
 pub fn dependents(recipe: &Recipe, step_id: &str) -> Vec<String> {
     let mut affected: BTreeSet<String> = BTreeSet::from([step_id.to_string()]);
     let mut out = Vec::new();
@@ -88,7 +118,7 @@ pub fn dependents(recipe: &Recipe, step_id: &str) -> Vec<String> {
             if affected.contains(step.id()) {
                 continue;
             }
-            if dependencies(step).iter().any(|d| affected.contains(d)) {
+            if dependencies(step).iter().chain(keep_dependencies(recipe, step).iter()).any(|d| affected.contains(d)) {
                 affected.insert(step.id().to_string());
             }
         }

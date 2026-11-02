@@ -1,7 +1,7 @@
 //! Tools: deterministic capabilities a tool step can call.
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -295,8 +295,11 @@ impl Tool for TextChunk {
 /// `keep.index`: embed passages and store them in this stage's keep so `keep.search` can find
 /// them by meaning. Inputs `slot` (a model slot with the embedding capability), `chunks`
 /// (`[{ text, page?, index? }]`), `source` (file path or name the passages came from), optional
-/// `data` (extra fields kept on every record). A passage already stored with the same text is
-/// not embedded again. Output `{ indexed, skipped, source }`.
+/// `data` (extra fields kept on every record), optional `sources` (every file the index should
+/// hold after this run; passages of any other file are forgotten and journaled). A passage
+/// already stored with the same text, embedded by the same model, is not embedded again; the
+/// source's passages this call did not write or confirm are forgotten (the file got shorter).
+/// Output `{ indexed, skipped, forgotten, source }`.
 pub struct KeepIndex;
 
 #[async_trait::async_trait]
@@ -312,9 +315,9 @@ impl Tool for KeepIndex {
     }
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
-            description: "Turn passages into numbers (embeddings) and store them in this stage's run keep, so keep.search can find them by meaning later. Needs a model slot with the embedding capability. Passages already stored unchanged are skipped.".into(),
-            returns: "`{ indexed, skipped, source }`.".into(),
-            parameters: json!({ "type": "object", "required": ["slot", "chunks", "source"], "properties": { "slot": { "type": "string", "description": "A model slot with requires: [embedding]" }, "chunks": { "type": "array", "description": "[{ text, page, index }] from text.chunk" }, "source": { "type": "string", "description": "Where the passages came from (a file path), kept on each record" }, "data": { "type": "object", "description": "Extra fields kept on every record" } } }),
+            description: "Turn passages into numbers (embeddings) and store them in this stage's run keep, so keep.search can find them by meaning later. Needs a model slot with the embedding capability. Passages already stored unchanged by the same model are skipped; passages the file no longer has are forgotten. Give `sources` (every file the index should hold) to forget files that are gone.".into(),
+            returns: "`{ indexed, skipped, forgotten, source }`.".into(),
+            parameters: json!({ "type": "object", "required": ["slot", "chunks", "source"], "properties": { "slot": { "type": "string", "description": "A model slot with requires: [embedding]" }, "chunks": { "type": "array", "description": "[{ text, page, index }] from text.chunk" }, "source": { "type": "string", "description": "Where the passages came from (a file path), kept on each record" }, "data": { "type": "object", "description": "Extra fields kept on every record" }, "sources": { "type": "array", "description": "Every file the index should hold after this run (paths, or fs.list entries); passages of other files are forgotten" } } }),
         })
     }
     async fn call(&self, ctx: &ToolContext, inputs: Value) -> Result<Value, ToolError> {
@@ -324,6 +327,7 @@ impl Tool for KeepIndex {
         let chunks = inputs.get("chunks").and_then(Value::as_array).ok_or_else(|| ToolError::InvalidInput("chunks (array) is required".into()))?;
         let extra = inputs.get("data").and_then(Value::as_object).cloned().unwrap_or_default();
         let mut todo: Vec<(String, Value, String)> = Vec::new();
+        let mut current: HashSet<String> = HashSet::new();
         let mut skipped = 0usize;
         for (i, c) in chunks.iter().enumerate() {
             let text = c.get("text").and_then(Value::as_str).unwrap_or("").to_string();
@@ -332,6 +336,7 @@ impl Tool for KeepIndex {
             }
             let index = c.get("index").and_then(Value::as_u64).unwrap_or(i as u64);
             let id = format!("{source}#{index}");
+            current.insert(id.clone());
             let mut data = serde_json::Map::new();
             data.insert("text".into(), Value::String(text.clone()));
             data.insert("source".into(), Value::String(source.clone()));
@@ -341,7 +346,9 @@ impl Tool for KeepIndex {
                 data.insert(k.clone(), v.clone());
             }
             let data = Value::Object(data);
-            if keep.has_same(&id, &data).map_err(keep_err)? {
+            // Same text, but a vector from another model: embed again, or searches by this
+            // model would be compared with numbers it did not make.
+            if keep.has_same_embedding(&id, &data, &model_id).map_err(keep_err)? {
                 skipped += 1;
                 continue;
             }
@@ -360,7 +367,31 @@ impl Tool for KeepIndex {
                 indexed += 1;
             }
         }
-        Ok(json!({ "indexed": indexed, "skipped": skipped, "source": source }))
+        // Passages this file no longer has (it got shorter, or a passage emptied) go.
+        let forgotten = keep.forget_other_passages(&source, &current).map_err(keep_err)?;
+        // Given every file the index should hold, passages of files no longer there go too,
+        // with a journal line of their own.
+        if let Some(list) = inputs.get("sources").and_then(Value::as_array) {
+            let mut sources: HashSet<String> = list
+                .iter()
+                .filter_map(|v| v.as_str().or_else(|| v.get("path").and_then(Value::as_str)).map(String::from))
+                .collect();
+            sources.insert(source.clone());
+            let (passages, files) = keep.forget_sources_except(&sources).map_err(keep_err)?;
+            if passages > 0 {
+                let s = |n: u64, word: &str| if n == 1 { word.to_string() } else { format!("{word}s") };
+                keep.append_journal(&crate::keep::JournalEntry {
+                    run_id: ctx.run_id.clone(),
+                    at: chrono::Utc::now(),
+                    added: 0,
+                    replaced: 0,
+                    removed: passages,
+                    reason: format!("forgot {passages} {} of {files} {} no longer there", s(passages, "passage"), s(files, "file")),
+                })
+                .map_err(keep_err)?;
+            }
+        }
+        Ok(json!({ "indexed": indexed, "skipped": skipped, "forgotten": forgotten, "source": source }))
     }
 }
 

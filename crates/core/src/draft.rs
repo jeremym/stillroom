@@ -191,6 +191,18 @@ impl Draft {
                         _ => format!("“{}” uses {tool}, but {where_} has no run keep. Give the stage keep: {{ refresh: when_sources_change }} (or always, or manual).", label(step)),
                     });
                 }
+                // A keep is filled by its stage, so a step can only read the keep of its own
+                // stage or an earlier one. Later, and it would read a keep not built yet.
+                let mine = place.get(&("step", step.id())).map(|p| p.0);
+                let theirs = named.as_deref().and_then(|n| recipe.stages.iter().position(|s| s.id == n));
+                if let (Some(mine), Some(theirs)) = (mine, theirs)
+                    && theirs > mine
+                {
+                    problems.push(format!(
+                        "“{}” (stage “{}”) reads the keep of stage “{}”, which comes later. Stages run in order, so that keep is not filled yet.",
+                        label(step), recipe.stages[mine].name, recipe.stages[theirs].name
+                    ));
+                }
             }
         }
         if recipe.stages.is_empty() {
@@ -541,6 +553,18 @@ mod tests {
         let d = Draft { yaml: bad.clone(), files: d.files.clone() };
         let text = d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
         assert!(text.contains("reads the keep of stage “nope”, which has no run keep"), "{text}");
+        // Reading the keep of a later stage is refused: that keep is not filled yet.
+        bad["stages"][1]["keep"] = serde_json::json!({ "refresh": "always" });
+        bad["steps"][0] = serde_json::json!({ "id": "list", "kind": "tool", "tool": "keep.query", "inputs": { "stage": "ask" } });
+        bad["steps"][1] = serde_json::json!({ "id": "answer", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${inputs.question}" } });
+        let d = Draft { yaml: bad.clone(), files: d.files.clone() };
+        let text = d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).join("\n");
+        assert!(text.contains("“list” (stage “Add documents”) reads the keep of stage “Ask”, which comes later"), "{text}");
+        // Reading an earlier stage's keep is fine.
+        bad["steps"][0] = serde_json::json!({ "id": "list", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${inputs.folder}" } });
+        bad["steps"][1] = serde_json::json!({ "id": "answer", "kind": "tool", "tool": "keep.query", "inputs": { "stage": "docs" } });
+        let d = Draft { yaml: bad.clone(), files: d.files.clone() };
+        assert!(d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]).is_empty(), "{:?}", d.check(&vec!["keep.put".to_string(), "keep.query".to_string()]));
 
         // No stages: one implied stage holds everything. Partial stages: the rest lands in Make.
         let mut plain = Draft::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../recipes/summarize-file")).unwrap().yaml;

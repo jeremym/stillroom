@@ -183,6 +183,7 @@ mod tests {
             capabilities: caps.to_vec(),
             context_window: Some(32_000),
             parameter_size: Some(size.into()),
+            size_bytes: None,
             local: true,
         }
     }

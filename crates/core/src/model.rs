@@ -16,6 +16,10 @@ pub struct InstalledModel {
     pub context_window: Option<u64>,
     /// Provider-reported size such as "8.2B". Used as a rough quality/speed proxy.
     pub parameter_size: Option<String>,
+    /// The weights on disk, in bytes, when the provider says (Ollama does). What the model needs
+    /// in memory to run is about this much; see [`fits_in_memory`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
     /// True when the model runs on this Mac. Auto never picks a model that is not local;
     /// a cloud model is used only through a pin or a default you set.
     #[serde(default = "yes")]
@@ -24,6 +28,35 @@ pub struct InstalledModel {
 
 fn yes() -> bool {
     true
+}
+
+/// The share of physical RAM a model's weights may take and still run comfortably. Above this,
+/// the system swaps the weights in and out and generation falls off a cliff; below it, the model,
+/// its context, the app, and the rest of the Mac fit together. 60 % leaves a 36 GB Mac about
+/// 21 GB for weights, a 64 GB Mac about 38 GB.
+pub const MEMORY_CEILING: f64 = 0.60;
+
+/// Whether weights of `size_bytes` fit comfortably in `memory_bytes` of physical RAM (at most
+/// [`MEMORY_CEILING`] of it). Either unknown means "treat as fits": a model without a reported
+/// size (a cloud model) or a Mac whose RAM could not be read is never marked too large.
+pub fn fits_in_memory(size_bytes: Option<u64>, memory_bytes: Option<u64>) -> bool {
+    match (size_bytes, memory_bytes) {
+        (Some(size), Some(memory)) => (size as f64) <= (memory as f64) * MEMORY_CEILING,
+        _ => true,
+    }
+}
+
+/// Physical RAM of this machine, read once by the shell at startup. On a Mac it is
+/// `sysctl -n hw.memsize`; elsewhere, or if the read fails, `None` (unknown: every model fits).
+pub fn physical_memory_bytes() -> Option<u64> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 impl InstalledModel {
@@ -150,7 +183,26 @@ mod tests {
             capabilities: vec![],
             context_window: None,
             parameter_size: size.map(String::from),
+            size_bytes: None,
             local: true,
+        }
+    }
+
+    #[test]
+    fn fits_in_memory_uses_the_ceiling_and_treats_unknown_as_fits() {
+        let gb = 1u64 << 30;
+        let mac_36 = Some(36 * gb);
+        assert!(fits_in_memory(Some(20 * gb), mac_36), "20 GB on a 36 GB Mac is under 60 %");
+        assert!(!fits_in_memory(Some(30 * gb), mac_36), "30 GB on a 36 GB Mac is over 60 %");
+        assert!(fits_in_memory(Some(60 * gb), Some(100 * gb)), "exactly at the ceiling fits");
+        assert!(fits_in_memory(None, mac_36), "a model without a size is not called too large");
+        assert!(fits_in_memory(Some(30 * gb), None), "RAM unknown: treat as fits");
+    }
+
+    #[test]
+    fn physical_memory_reads_on_a_mac() {
+        if cfg!(target_os = "macos") {
+            assert!(physical_memory_bytes().unwrap_or(0) >= 4 << 30, "a Mac has at least 4 GB");
         }
     }
 

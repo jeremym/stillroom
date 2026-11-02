@@ -259,6 +259,7 @@ impl Provider for Codex {
                 capabilities: vec![Capability::Text, Capability::StructuredOutput, Capability::Thinking],
                 context_window: None,
                 parameter_size: None,
+                size_bytes: None,
                 local: false,
             })
             .collect())

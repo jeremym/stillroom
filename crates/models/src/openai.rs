@@ -201,6 +201,7 @@ impl Provider for OpenAi {
                 capabilities: vec![Capability::Text, Capability::StructuredOutput, Capability::ToolCalling, Capability::Thinking],
                 context_window: None,
                 parameter_size: None,
+                size_bytes: None,
                 local,
             })
             .collect())

@@ -101,6 +101,8 @@ struct TagsResponse {
 struct TagModel {
     name: String,
     #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
     details: Option<TagDetails>,
 }
 #[derive(Deserialize)]
@@ -260,6 +262,7 @@ impl Provider for Ollama {
                 capabilities: caps,
                 context_window,
                 parameter_size: m.details.and_then(|d| d.parameter_size),
+                size_bytes: m.size,
                 local: true,
             });
         }

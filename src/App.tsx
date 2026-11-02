@@ -12,6 +12,8 @@ import { WatchPanel } from "./components/WatchPanel";
 import { UsagePanel } from "./components/UsagePanel";
 import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
+import { PlanNote, PlanStreamView } from "./components/PlanStreamView";
+import { EMPTY_STREAM, phaseWord, reducePlan } from "./planStream";
 import { AskAgain } from "./components/AskAgain";
 import { Welcome } from "./components/Welcome";
 import { ArchiveZone, CardMenu, EmptyShelf, RecipeCard } from "./components/Shelf";
@@ -82,6 +84,9 @@ function App() {
   const [planProgress, setPlanProgress] = useState<string | null>(null);
   const [planProblems, setPlanProblems] = useState<string[] | null>(null);
   const [planNote, setPlanNote] = useState<string | null>(null);
+  // The planner's window: what the model is writing, folded from plan:progress; and everything it wrote, kept for the note.
+  const [planStream, setPlanStream] = useState(EMPTY_STREAM);
+  const [planTranscript, setPlanTranscript] = useState<string | null>(null);
   // The strip: which stage is selected, and what Set up holds so the strip can say who needs you.
   const [stageSel, setStageSel] = useState<string | null>(null);
   const [setupInputs, setSetupInputs] = useState<Record<string, unknown>>({});
@@ -327,7 +332,9 @@ function App() {
     const unlistenWatches = listen("watch:changed", () => refreshWatches());
     const unlistenPlan = listen<PlanEvent>("plan:progress", (ev) => {
       const e = ev.payload;
-      setPlanProgress(
+      setPlanStream((s) => reducePlan(s, e));
+      if (e.kind === "phase") setPlanProgress(`${phaseWord({ phase: e.which, attempt: e.attempt, of: e.of }) ?? "Planning"}…`);
+      else if (e.kind !== "delta" && e.kind !== "done") setPlanProgress(
         e.kind === "choosing" ? "Choosing the stages…"
           : e.kind === "thinking" ? (e.attempt === 1 ? "Thinking about the steps…" : `Fixing the draft (try ${e.attempt} of ${e.of})…`)
           : e.kind === "checking" ? "Checking the draft…"
@@ -471,12 +478,15 @@ function App() {
     setCreateError(null);
     setPlanProblems(null);
     setPlanNote(null);
+    setPlanStream(EMPTY_STREAM);
+    setPlanTranscript(null);
     try {
       let draft;
       let note: string | null = null;
       if (req.mode === "goal" && req.goal) {
         setPlanProgress("Thinking about the steps…");
         const out = await api.planRecipe({ goal: req.goal, material: req.material ?? null, id: req.id, name: req.name, icon: req.icon, model: req.model ?? null });
+        setPlanTranscript(out.transcript || null);
         const planProblemsLeft = problemTexts(out.problems);
         if (planProblemsLeft.length > 0) {
           setPlanProblems(planProblemsLeft);
@@ -770,13 +780,13 @@ function App() {
           )}
 
           {place === "new" && recipes && (
-            <NewRecipe recipes={recipes.recipes} reserved={recipes.reserved ?? []} busy={creating} error={createError} progress={planProgress} problems={planProblems} onCreate={createRecipe}
+            <NewRecipe recipes={recipes.recipes} reserved={recipes.reserved ?? []} busy={creating} error={createError} problems={planProblems} onCreate={createRecipe}
+              progress={planStream.text && phaseWord(planStream) ? `${phaseWord(planStream)}…` : planProgress}
+              below={creating ? <PlanStreamView state={planStream} /> : planProblems && planTranscript ? <PlanNote note="The planner's draft was not saved; here is what it wrote." transcript={planTranscript} /> : undefined}
               onCancel={() => setPlace(recipe ? "recipe" : "library")} onStop={() => api.stopRun("plan").catch((e) => setError(String(e)))} />
           )}
 
-          {place === "recipe" && planNote && freshId === recipe?.id && (
-            <p className="result-line hint-line"><Glyph name="sparkles" /> {planNote}</p>
-          )}
+          {place === "recipe" && planNote && freshId === recipe?.id && <PlanNote note={planNote} transcript={planTranscript} />}
           {place === "recipe" && recipe && (
             <RecipePage recipe={recipe} models={models?.models ?? []} history={history} watches={watches} keeps={keeps}
               map={flowFor(recipe, false)}
@@ -908,9 +918,7 @@ function App() {
             )
           )}
 
-          {place === "door" && planNote && freshId === recipe?.id && (
-            <p className="result-line hint-line"><Glyph name="sparkles" /> {planNote}</p>
-          )}
+          {place === "door" && planNote && freshId === recipe?.id && <PlanNote note={planNote} transcript={planTranscript} />}
           {place === "door" && flowFor(recipe)}
 
           {error && <pre className="error">{error}</pre>}

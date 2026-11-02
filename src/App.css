@@ -23,8 +23,27 @@ footer { margin-top: 24px; color: var(--phos-faint); font-size: var(--size-label
 .flow-node.step { cursor: pointer; }
 .flow-node.step:hover { border-color: var(--phos-dim); box-shadow: 0 0 10px var(--halo-soft); }
 
-/* Setup */
+/* The shelf: a card with a row under it (menu, Add to shelf, Restore). */
 .recipe-grid .card .glyph { color: var(--phos); }
+.recipe-grid .card .dim { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-slot { position: relative; display: flex; flex-direction: column; }
+.card-slot > .card { flex: 1; width: 100%; }
+.card-slot:has(.card-foot) > .card { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.card-foot { display: flex; justify-content: flex-end; padding: 6px 8px; border: 1px solid var(--bezel); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); background: var(--ground); }
+.card-menu { position: absolute; top: 8px; right: 8px; }
+.card-menu > summary { list-style: none; cursor: pointer; width: 28px; height: 24px; display: inline-flex; align-items: center; justify-content: center; color: var(--phos-dim); border: 1px solid transparent; border-radius: var(--radius); font-size: var(--size-display); line-height: 1; }
+.card-menu > summary::-webkit-details-marker { display: none; }
+.card-menu > summary:hover, .card-menu[open] > summary { color: var(--phos); border-color: var(--bezel); background: var(--ground-2); }
+.card-menu .menu { position: absolute; right: 0; top: 28px; z-index: 5; min-width: 200px; display: flex; flex-direction: column; padding: 4px; background: var(--ground-2); border: 1px solid var(--bezel); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.card-menu .menu > button { text-align: left; justify-content: flex-start; width: 100%; border-color: transparent; background: none; font-family: var(--body); font-size: var(--size-small); letter-spacing: 0; text-transform: none; padding: 6px 10px; display: flex; gap: 8px; align-items: center; }
+.card-menu .menu > button:hover { border-color: var(--bezel); background: var(--ground-3); box-shadow: none; }
+.card-menu .menu > button.danger-item { color: var(--red); }
+.card-menu .menu-confirm { padding: 6px 10px; font-size: var(--size-small); display: flex; flex-direction: column; gap: 6px; }
+.card-menu .menu-confirm .row { margin: 0; gap: 8px; }
+.card-menu .menu-confirm button { font-size: var(--size-small); padding: 4px 10px; }
+.glyph.turned { transform: rotate(180deg); }
+.row.center { justify-content: center; }
+.quiet-line { color: var(--phos-dim); margin: 0 0 var(--gap); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .needs { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 
 

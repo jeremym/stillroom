@@ -16,9 +16,11 @@ interface Props {
   onRefreshModels: () => void;
   onPickRecipe: (id: string) => void;
   onSkip: () => void;
+  /** Leave the welcome for the Library with the Catalog zone open. */
+  onBrowse: () => void;
 }
 
-export function Welcome({ models, settings, recipes, onSave, onOpenSettings, onRefreshModels, onPickRecipe, onSkip }: Props) {
+export function Welcome({ models, settings, recipes, onSave, onOpenSettings, onRefreshModels, onPickRecipe, onSkip, onBrowse }: Props) {
   const [step, setStep] = useState(0);
   const provider = models?.providers[0];
   const installed = models?.models ?? [];
@@ -99,18 +101,40 @@ export function Welcome({ models, settings, recipes, onSave, onOpenSettings, onR
     );
   }
 
+  // The shelf holds one recipe on a fresh install: say which and go to its Set up. More than one: pick.
+  const only = recipes.length === 1 ? recipes[0] : null;
   return (
-    <Zone title="What should it make first?" sub="step 2 of 3 · pick a recipe, then choose a file and press Run" className="accent">
-      <div className="cards recipe-grid">
-        {recipes.map((r) => (
-          <button key={r.id} className="card" onClick={() => onPickRecipe(r.id)}>
-            <span className="card-title"><Glyph name={isGlyphName(r.icon) ? r.icon : "recipe"} /> {r.name}</span>
-            {r.description && <span className="dim">{r.description}</span>}
-            <span className="tags"><span className="tag">{r.steps.length} steps</span>{r.id === "summarize-file" && <span className="tag live">fastest first run</span>}</span>
-          </button>
-        ))}
-      </div>
-      <p className="muted" style={{ marginTop: 12 }}>Step 3 is the recipe's own Set up: choose what it reads, press Run, and watch the Dial follow the run to Results.</p>
+    <Zone title="What should it make first?" sub={only ? "step 2 of 3 · your shelf holds one recipe" : "step 2 of 3 · pick a recipe, then choose a file and press Run"} className="accent">
+      {only ? (
+        <>
+          <p><Glyph name={isGlyphName(only.icon) ? only.icon : "recipe"} /> <strong>{only.name}</strong>{only.description ? <>: {only.description}</> : null}</p>
+          <p className="muted">It is the one recipe on your shelf. Its Set up is next: choose a file, press Run, and watch the Dial follow the run to Results.</p>
+          <div className="row">
+            <button className="primary" style={{ marginTop: 0 }} onClick={() => onPickRecipe(only.id)}><Glyph name="play" /> Set up {only.name}</button>
+            <button className="quiet" onClick={onBrowse}>or browse the catalog</button>
+          </div>
+        </>
+      ) : recipes.length === 0 ? (
+        <>
+          <p className="muted">Nothing is on your shelf yet. The catalog holds every recipe that ships with Stillroom; add one and it is ready to set up.</p>
+          <div className="row">
+            <button className="primary" style={{ marginTop: 0 }} onClick={onBrowse}><Glyph name="search" /> Browse the catalog</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="cards recipe-grid">
+            {recipes.map((r) => (
+              <button key={r.id} className="card" onClick={() => onPickRecipe(r.id)}>
+                <span className="card-title"><Glyph name={isGlyphName(r.icon) ? r.icon : "recipe"} /> {r.name}</span>
+                {r.description && <span className="dim">{r.description}</span>}
+                <span className="tags"><span className="tag">{r.steps.length} steps</span>{r.id === "summarize-file" && <span className="tag live">fastest first run</span>}</span>
+              </button>
+            ))}
+          </div>
+          <p className="muted" style={{ marginTop: 12 }}>Step 3 is the recipe's own Set up: choose what it reads, press Run, and watch the Dial follow the run to Results. <button className="link" onClick={onBrowse}>or browse the catalog</button></p>
+        </>
+      )}
       <div className="row">
         <button onClick={() => setStep(1)}><Glyph name="back" /> Back</button>
         <button className="quiet" onClick={onSkip}>Skip the welcome</button>

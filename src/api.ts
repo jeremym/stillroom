@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, Finding, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryResult, ModelUsage, PermissionEntry, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -58,6 +58,8 @@ export const api = {
   /** Delete one of your recipes and the watches bound to it. Built-ins refuse. */
   deleteRecipe: (recipeId: string) => invoke<void>("delete_recipe", { recipeId }),
   revealRecipesFolder: () => invoke<void>("reveal_recipes_folder"),
+  /** Put a recipe on the shelf, in the archive, or back in the catalog. Every window hears `shelf:changed`. */
+  setShelf: (recipeId: string, state: ShelfState) => invoke<void>("set_shelf", { recipeId, state }),
   /** What macOS may ask for and where each stands. `probe` tests the folders, which is what makes macOS ask. */
   permissionStatus: (probe: boolean) => invoke<PermissionEntry[]>("permission_status", { probe }),
   openPrivacyPane: (pane: string) => invoke<void>("open_privacy_pane", { pane }),

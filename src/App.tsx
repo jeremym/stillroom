@@ -14,11 +14,13 @@ import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
 import { AskAgain } from "./components/AskAgain";
 import { Welcome } from "./components/Welcome";
+import { ArchiveZone, CardMenu, CatalogZone, EmptyShelf, RecipeCard } from "./components/Shelf";
 import { blankRecipe, copyRecipe, slugify, uniqueId } from "./recipes/new";
 import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
 import { isLocalModel, rememberProviders, shortModel, whereWord } from "./models";
 import { Dial, Empty, Pill, Rail, Strip, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
 import { outputsByStage, stripFor } from "./stages";
+import { partitionShelf, shelfOf } from "./shelf";
 import { problemTexts } from "./flow/findings";
 
 /** The last part of a path: the recipe's folder, for a message that need not show the whole path. */
@@ -91,11 +93,24 @@ function App() {
   // The welcome shows until it has been finished or skipped once (firstRun absent means never shown).
   const [firstRunHint, setFirstRunHint] = useState(false);
   const [stopping, setStopping] = useState(false);
+  // The Catalog zone is folded until Browse the catalog asks for it (phase 3 gives it a place of its own).
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  // A watch that ran while another run was on screen: it stays out of the way, this line says it happened.
+  const [backgroundNote, setBackgroundNote] = useState<{ text: string; runId: string | null } | null>(null);
   const recipesRef = useRef<RecipesResponse | null>(null);
+  // The run whose steps the screen follows. Steps and watch events from any other run are ignored.
+  const liveRunRef = useRef<string | null>(null);
+  // Watches whose run started in the background, by watch id, so their finish is read the same way;
+  // and those runs' ids, so their steps never take the screen.
+  const backgroundWatches = useRef(new Set<string>());
+  const backgroundRuns = useRef(new Set<string>());
   const placeRef = useRef<Place>("library");
   placeRef.current = place;
+  const runningRef = useRef(false);
+  runningRef.current = running;
 
   const recipe = recipes?.recipes.find((r) => r.id === recipeId) ?? null;
+  const shelf = useMemo(() => partitionShelf(recipes?.recipes ?? []), [recipes]);
   // Pins live in Settings (the Rust store) per recipe, so watches and the Settings window see the same ones.
   const pins = useMemo(() => settings.pins?.[recipeId] ?? {}, [settings.pins, recipeId]);
   const settingsRef = useRef<Settings>({});
@@ -113,6 +128,8 @@ function App() {
     const cur = (() => { const b = loadLook(); const l = settingsRef.current.look; return { theme: l?.theme ?? b.theme, size: l?.size ?? b.size, scanlines: l?.scanlines ?? b.scanlines }; })();
     saveSettings({ look: typeof update === "function" ? update(cur) : update });
   }, [saveSettings]);
+
+  useEffect(() => { liveRunRef.current = run?.id ?? null; }, [run]);
 
   // A recipe place with no recipe open falls back to the Library.
   useEffect(() => {
@@ -173,6 +190,24 @@ function App() {
     setPlace(where);
   }, []);
 
+  // Nothing runs from the catalog without being shelved first, so the shelf tells the truth about
+  // what has been used: opening Set up on a catalog recipe puts it on the shelf.
+  const ensureShelved = useCallback(async (r: RecipeInfo) => {
+    if (shelfOf(r) !== "catalog") return;
+    await api.setShelf(r.id, "shelf");
+    await refreshRecipes();
+  }, [refreshRecipes]);
+  useEffect(() => {
+    if (place === "setup" && recipe) ensureShelved(recipe).catch((e) => setError(String(e)));
+  }, [place, recipe, ensureShelved]);
+
+  // Browse the catalog: for now the Catalog zone of the Library, opened and scrolled to. Phase 3 makes it a place.
+  const browseCatalog = useCallback(() => {
+    setPlace("library");
+    setCatalogOpen(true);
+    setTimeout(() => document.getElementById("catalog")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }, []);
+
   useEffect(() => {
     api.getSettings().then((s) => {
       setSettingsState(s);
@@ -188,16 +223,32 @@ function App() {
       .catch((e) => setError(String(e)));
     refreshWatches();
     const unlisten = listen<StepRecord>("run:step", (ev) => {
+      // The first step of a fresh run names the run; a step from any other run is not ours to show.
+      if (ev.payload.runId && backgroundRuns.current.has(ev.payload.runId)) return;
+      if (liveRunRef.current && ev.payload.runId && ev.payload.runId !== liveRunRef.current) return;
+      if (!liveRunRef.current && ev.payload.runId) liveRunRef.current = ev.payload.runId;
       setLiveSteps((prev) => {
         const next = prev.filter((s) => s.stepId !== ev.payload.stepId);
         next.push(ev.payload);
         return next.sort((a, b) => a.position - b.position);
       });
     });
-    // A watch's run shows the same way a run from the Run button does.
+    // A watch's run shows the same way a run from the Run button does, unless another run is on
+    // screen: then it runs in the background and a quiet line says so.
     const unlistenWatchRun = listen<WatchRunEvent>("watch:run", (ev) => {
       const w = ev.payload;
+      const recipeName = recipesRef.current?.recipes.find((r) => r.id === w.recipeId)?.name ?? w.recipeId;
       if (w.phase === "started") {
+        const showing = runningRef.current || (liveRunRef.current && (placeRef.current === "running" || placeRef.current === "results"));
+        if (showing) {
+          backgroundWatches.current.add(w.watchId);
+          if (w.runId) backgroundRuns.current.add(w.runId);
+          refreshRuns();
+          refreshWatches();
+          return;
+        }
+        backgroundWatches.current.delete(w.watchId);
+        liveRunRef.current = w.runId ?? null;
         setRunning(true);
         setError(null);
         setRun(null);
@@ -205,6 +256,11 @@ function App() {
         setRunRecipe(recipesRef.current?.recipes.find((r) => r.id === w.recipeId) ?? null);
         setRecipeId(w.recipeId);
         setPlace("running");
+      } else if (backgroundWatches.current.has(w.watchId) || (w.runId && liveRunRef.current && w.runId !== liveRunRef.current)) {
+        backgroundWatches.current.delete(w.watchId);
+        if (w.runId) backgroundRuns.current.delete(w.runId);
+        setBackgroundNote({ text: `A watch ran ${recipeName} in the background${w.status ? ` · ${STATUS_WORD[w.status] ?? w.status}` : w.error ? " · failed" : ""}.`, runId: w.runId });
+        refreshRuns();
       } else {
         setRunning(false);
         if (w.error && !w.runId) setError(w.error);
@@ -213,6 +269,8 @@ function App() {
       }
       refreshWatches();
     });
+    // The shelf changes in this window or another (Restore, Archive, Add to shelf).
+    const unlistenShelf = listen("shelf:changed", () => { refreshRecipes().catch((e) => setError(String(e))); });
     const unlistenWatches = listen("watch:changed", () => refreshWatches());
     const unlistenPlan = listen<PlanEvent>("plan:progress", (ev) => {
       const e = ev.payload;
@@ -232,6 +290,7 @@ function App() {
     return () => {
       unlisten.then((f) => f());
       unlistenWatchRun.then((f) => f());
+      unlistenShelf.then((f) => f());
       unlistenWatches.then((f) => f());
       unlistenPlan.then((f) => f());
       unlistenSettings.then((f) => f());
@@ -296,10 +355,12 @@ function App() {
     setRunning(true);
     setError(null);
     setRun(null);
+    liveRunRef.current = null;
     setRunRecipe(recipe);
     setLiveSteps([]);
     setPlace("running");
     try {
+      await ensureShelved(recipe);
       setRun(await api.runRecipe(recipe.id, inputs, pins, reuse));
       refreshRuns();
       setPlace("results");
@@ -314,6 +375,7 @@ function App() {
   async function watchFolder(recipe: RecipeInfo, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) {
     setError(null);
     try {
+      await ensureShelved(recipe);
       await api.addWatch(recipe.id, input, inputs, pins);
       refreshWatches();
       setPlace("recipe");
@@ -328,6 +390,7 @@ function App() {
     setRunning(true);
     setError(null);
     setRun(null);
+    liveRunRef.current = null;
     setLiveSteps([]);
     setPlace("running");
     try {
@@ -500,6 +563,7 @@ function App() {
   };
 
   const recipeIcon = recipe && isGlyphName(recipe.icon) ? recipe.icon : "recipe";
+  const cardFacts = useMemo(() => ({ models: models?.models ?? [], history }), [models, history]);
   const runsOfThis = run ? history.filter((h) => h.recipeId === run.recipeId) : [];
 
   return (
@@ -570,43 +634,49 @@ function App() {
             </Zone>
           )}
 
+          {backgroundNote && (
+            <p className="quiet-line" role="status">
+              <Glyph name="watch" /> {backgroundNote.text}
+              {backgroundNote.runId && <button className="link" onClick={() => { const id = backgroundNote.runId!; setBackgroundNote(null); openRun(id).catch((e) => setError(String(e))); }}>See it</button>}
+              <button className="quiet" onClick={() => setBackgroundNote(null)}>Dismiss</button>
+            </p>
+          )}
+
           {place === "welcome" && (
-            <Welcome models={models} settings={settings} recipes={recipes?.recipes ?? []} onSave={saveSettings}
+            <Welcome models={models} settings={settings} recipes={shelf.shelf} onSave={saveSettings}
               onOpenSettings={() => api.openSettings().catch((e) => setError(String(e)))} onRefreshModels={refreshModels}
-              onPickRecipe={(id) => finishWelcome(id)} onSkip={() => finishWelcome()} />
+              onPickRecipe={(id) => finishWelcome(id)} onSkip={() => finishWelcome()}
+              onBrowse={() => { saveSettings({ firstRun: false }); browseCatalog(); }} />
           )}
 
           {place === "library" && (
             <>
               <p className="tagline">Describe the goal. Get the result. See how it was made. <span className="muted">Pick a recipe to start, or make one.</span></p>
-              <Zone title="Recipes" sub="reusable processes that produce a result" aside={<><span>{recipes?.recipes.length ?? 0} on the shelf</span><button className="quiet" onClick={() => { setCreateError(null); setPlace("new"); }}><Glyph name="plus" /> New recipe</button></>}>
-                <div className="cards recipe-grid">
-                  {recipes?.recipes.map((r) => {
-                    const fillable = Object.values(r.modelSlots).every((s) => (models?.models ?? []).some((m) => s.requires.every((c) => m.capabilities.includes(c as never))));
-                    const lastRun = history.find((h) => h.recipeId === r.id);
-                    return (
-                      <button key={r.id} className="card" onClick={() => openRecipe(r.id)}>
-                        <span className="card-title"><Glyph name={isGlyphName(r.icon) ? r.icon : "recipe"} /> {r.name}</span>
-                        {r.description && <span className="dim">{r.description}</span>}
-                        <span className="tags">
-                          <span className="tag">{r.steps.length} steps</span>
-                          {Object.values(r.inputs).filter((i) => i.required !== false).slice(0, 3).map((i, k) => (
-                            <span key={k} className="tag"><Glyph name={inputGlyph(i.type)} /> {i.label ?? i.type}</span>
-                          ))}
-                          <span className="tag">{r.source === "builtin" ? "built-in" : "yours"}</span>
-                          {!fillable && <span className="tag amber">needs a model</span>}
-                          {lastRun && <span className="tag">last run {new Date(lastRun.startedAt).toLocaleDateString()}</span>}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+              <Zone title="Recipes" sub="reusable processes that produce a result"
+                aside={<>
+                  <span>{shelf.shelf.length} on the shelf</span>
+                  {shelf.catalog.length > 0 && <button className="quiet" onClick={browseCatalog}><Glyph name="search" /> Browse the catalog</button>}
+                  <button className="quiet" onClick={() => { setCreateError(null); setPlace("new"); }}><Glyph name="plus" /> New recipe</button>
+                </>}>
+                {shelf.shelf.length === 0 && recipes ? (
+                  <EmptyShelf onBrowse={browseCatalog} onNew={() => { setCreateError(null); setPlace("new"); }} />
+                ) : (
+                  <div className="cards recipe-grid">
+                    {shelf.shelf.map((r) => (
+                      <RecipeCard key={r.id} recipe={r} facts={cardFacts} onOpen={(id) => openRecipe(id)}
+                        foot={<CardMenu recipe={r} onSetup={(id) => openRecipe(id, "setup")} onDoor={(id) => openRecipe(id, "door")}
+                          onDuplicate={duplicateRecipe} onDelete={deleteRecipe} onError={setError} onChanged={refreshRecipes} />} />
+                    ))}
+                  </div>
+                )}
                 {recipes?.errors.map((e) => (
                   <p key={e.path} className="load-error" title={e.path}>
                     <strong>{folderName(e.path)}</strong> could not be opened. {e.error}
                   </p>
                 ))}
               </Zone>
+              <CatalogZone recipes={shelf.catalog} facts={cardFacts} open={catalogOpen} onToggle={setCatalogOpen} onOpen={(id) => openRecipe(id)} onError={setError} onChanged={refreshRecipes} />
+              <ArchiveZone recipes={shelf.archive} facts={cardFacts} onOpen={(id) => openRecipe(id)} onError={setError} onChanged={refreshRecipes} />
               <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={openRun} onError={(m) => setError(m)} />
               <HistoryPanel history={history} onOpen={openRun} />
               <UsagePanel usage={usage} />
@@ -633,7 +703,7 @@ function App() {
             <p className="result-line hint-line"><Glyph name="sparkles" /> Step 3 of 3: choose what the recipe reads, then press <strong>Run</strong>. The Dial above follows the run to Results on its own.</p>
           )}
           {place === "setup" && recipes && recipe && (
-            <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
+            <RecipePanel recipes={shelf.shelf.some((r) => r.id === recipe.id) ? shelf.shelf : [recipe, ...shelf.shelf]} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
               models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} onInputsChange={setSetupInputs}
               keeps={keeps} onRebuild={(stage) => api.rebuildKeep(recipe.id, stage).then(() => keepsFor(recipe.id, setupInputs, pins)).catch((e) => setError(String(e)))} />
           )}

@@ -174,6 +174,11 @@ export interface RuntimeStatus {
 
 export type RecipeSource = "builtin" | "user";
 
+/** Where a recipe sits for the user: on the shelf (the Library's Recipes zone), in the archive (taken
+ *  off the shelf, Restore puts it back), or in the catalog (a built-in that is neither). A recipe of
+ *  yours is never "catalog". */
+export type ShelfState = "shelf" | "archive" | "catalog";
+
 export interface InputSpec {
   type: "string" | "text" | "number" | "boolean" | "file" | "files" | "url" | "urls" | "directory" | "json";
   label?: string;
@@ -228,6 +233,8 @@ export interface RecipeInfo {
   /** A glyph name for the card and the breadcrumb. */
   icon?: string | null;
   source: RecipeSource;
+  /** Absent from an older engine: read as "shelf". */
+  shelf?: ShelfState;
   path: string;
   inputs: Record<string, InputSpec>;
   modelSlots: Record<string, ModelSlot>;

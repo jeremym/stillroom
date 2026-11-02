@@ -160,6 +160,8 @@ Recipes keep living in the public repository, which is how "community" works wit
 
 ### 4.4 Understanding a recipe before running it
 
+**Status 2026-11-02: built on `stages`** (merge 4d7bd81), not yet checked on screen: the consent step in Set up (grants in the store, refused in the engine so watches obey too), example results on *Summarize a File* (a real run) and *Describe a document* (written by hand, marked so), Get a recipe from a zip or a folder with quarantine, Save a copy as a zip, symlinks refused in bundles, `http.fetch` refusing loopback and private addresses unless named literally and reading bodies under a cap, PDF extraction under a timeout, the Codex wording corrected, settings validated in Rust. 129 Rust tests, 343 frontend. The on-screen pass is the next step.
+
 Two additions so a reader never has to open YAML:
 
 - **See an example result.** A catalog recipe may ship `example/` with a small input and a saved result (`example/result.json` in the run-record shape plus any files). The Recipe page shows it through the ordinary viewers, labelled "example, made on 2026-11-02 with qwen3:8b". No model needed to look.
@@ -173,11 +175,11 @@ Two additions so a reader never has to open YAML:
 
 | Phase | What ships | Sessions | Verified by |
 |---|---|---|---|
-| **0. Fix first** | F1 to F10 from §2, with their tests. | 1–2 | `cargo test`, `pnpm test`, the review-in-kept-stage and edit-kept-step runs live; a screenshot of a result with a remote image rendered as text. |
-| **1. Format layer** | §3.1 fixtures, `migrate.rs`, the registry with Notes and Fix, `minVersion` enforced and stamped, `x-`, versioned stages with provenance, `user_version`, planner permissions whitelisted, slot `requires` union. | 2 | Every fixture loads and checks; a pre-stages recipe gets a Note and a Fix on screen; a planner answer with `write: ["~"]` is refused with a problem in words. |
-| **2. The shelf and the archive** | The `shelf` table, one example recipe at install, Archive and Restore, the card menu, delete removes keeps, Welcome ends on the example. Job ids on run events (the watch-mid-run fix). | 1 | Fresh app data dir shows one recipe; archive, restore, delete on screen; screenshots. |
-| **3. The catalog** | The `browse` place, filters, cards with needs and may-touch, Look (read-only Recipe page), Add to shelf, `community/` root, `CONTRIBUTING.md`, CODEOWNERS, the ruleset (on your yes). | 2 | Six built-ins and one sample browsable; a community recipe added through a PR and seen in the app; screenshots. |
-| **4. Understanding and import** | The consent step, example results on two catalog recipes, Get a recipe (folder or zip) with quarantine, Export as zip, symlink refusal, `http.fetch` loopback rule, Codex wording. | 2 | An imported recipe with `read: ["~"]` cannot run until ticked; a zip with a symlinked prompt is refused; screenshots. |
+| **0. Fix first** (shipped 2026-11-02) | F1 to F10 from §2, with their tests. | 1–2 | `cargo test`, `pnpm test`, the review-in-kept-stage and edit-kept-step runs live; a screenshot of a result with a remote image rendered as text. |
+| **1. Format layer** (shipped 2026-11-02) | §3.1 fixtures, `migrate.rs`, the registry with Notes and Fix, `minVersion` enforced and stamped, `x-`, versioned stages with provenance, `user_version`, planner permissions whitelisted, slot `requires` union. | 2 | Every fixture loads and checks; a pre-stages recipe gets a Note and a Fix on screen; a planner answer with `write: ["~"]` is refused with a problem in words. |
+| **2. The shelf and the archive** (shipped 2026-11-02) | The `shelf` table, one example recipe at install, Archive and Restore, the card menu, delete removes keeps, Welcome ends on the example. Job ids on run events (the watch-mid-run fix). | 1 | Fresh app data dir shows one recipe; archive, restore, delete on screen; screenshots. |
+| **3. The catalog** (shipped 2026-11-02) | The `browse` place, filters, cards with needs and may-touch, Look (read-only Recipe page), Add to shelf, `community/` root, `CONTRIBUTING.md`, CODEOWNERS, the ruleset (on your yes). | 2 | Six built-ins and one sample browsable; a community recipe added through a PR and seen in the app; screenshots. |
+| **4. Understanding and import** (built 2026-11-02, on-screen check pending) | The consent step, example results on two catalog recipes, Get a recipe (folder or zip) with quarantine, Export as zip, symlink refusal, `http.fetch` loopback rule, Codex wording. | 2 | An imported recipe with `read: ["~"]` cannot run until ticked; a zip with a symlinked prompt is refused; screenshots. |
 | **5. Later** | A user-triggered "check the catalog for new recipes" against the repository's `main` (sha256 per bundle in a signed index), nested recipes in the catalog. | — | Not in this round. |
 
 Phases 0 and 1 come before the `stages` merge is cut as 0.3.0, or 0.3.0 ships with F1 to F10 and the format layer lands in 0.4.0; that is a release call for Jeremy.

@@ -1287,10 +1287,10 @@ pub fn run() {
             std::fs::create_dir_all(&keep_base)?;
             let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
-            let library = RecipeLibrary::new(vec![
-                (builtin_recipes_dir(app.handle()), RecipeSource::Builtin),
-                (user_recipes, RecipeSource::User),
-            ]);
+            let library = RecipeLibrary::with_app_version(
+                vec![(builtin_recipes_dir(app.handle()), RecipeSource::Builtin), (user_recipes, RecipeSource::User)],
+                env!("CARGO_PKG_VERSION"),
+            );
             app.manage(AppState {
                 store: Arc::new(Mutex::new(store)),
                 secrets: Mutex::new(BTreeMap::new()),

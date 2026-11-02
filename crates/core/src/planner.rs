@@ -48,6 +48,11 @@ pub fn planner_recipe() -> Recipe {
         outputs: IndexMap::new(),
         budget: None,
         stages: Vec::new(),
+        author: None,
+        license: None,
+        runtime: None,
+        tags: Vec::new(),
+        tests: Vec::new(),
     }
 }
 

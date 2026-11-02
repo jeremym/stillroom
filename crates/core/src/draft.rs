@@ -386,6 +386,7 @@ impl Draft {
         if let Some(o) = stamped.as_object_mut() {
             o.insert("schemaVersion".into(), Value::String(crate::migrate::CURRENT_SCHEMA_VERSION.into()));
         }
+        crate::migrate::stamp_min_version(&mut stamped);
         let yaml = serde_yaml::to_string(&stamped)?;
         let yaml_path = dir.join("recipe.yaml");
         std::fs::write(&yaml_path, yaml).map_err(io(&yaml_path))?;
@@ -749,6 +750,17 @@ mod tests {
         assert!(b.prompts["prompts/summarize.md"].starts_with("Summarize in three"));
         let yaml = std::fs::read_to_string(tmp.join("recipe.yaml")).unwrap();
         assert!(yaml.starts_with("schemaVersion:"), "key order kept:\n{yaml}");
+        assert!(yaml.contains("minVersion: 0.3.0"), "a recipe with stages carries its floor:\n{yaml}");
+        assert_eq!(b.recipe.runtime.as_ref().and_then(|r| r.min_version.as_deref()), Some("0.3.0"));
+        std::fs::remove_dir_all(&tmp).unwrap();
+        // An author's higher floor is kept; a recipe with no stages gets none.
+        d.yaml["runtime"] = serde_json::json!({ "minVersion": "0.9" });
+        d.write(&tmp, &tools()).unwrap();
+        assert!(std::fs::read_to_string(tmp.join("recipe.yaml")).unwrap().contains("minVersion: '0.9'"));
+        d.yaml.as_object_mut().unwrap().remove("runtime");
+        d.yaml.as_object_mut().unwrap().remove("stages");
+        d.write(&tmp, &tools()).unwrap();
+        assert!(!std::fs::read_to_string(tmp.join("recipe.yaml")).unwrap().contains("minVersion"));
         std::fs::remove_dir_all(&tmp).unwrap();
 
         d.yaml["outputs"] = serde_json::json!({});

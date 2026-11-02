@@ -117,6 +117,62 @@ pub fn migrate(mut yaml: Value) -> Result<Migrated, MigrateError> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The version floor: which Stillroom a recipe needs, from the features it uses
+
+/// Features of the recipe format and the Stillroom version that first ran them. `Draft::write`
+/// stamps `runtime.minVersion` from this table, so a shared recipe carries its floor without
+/// its author knowing; the loader compares the floor to what this build understands.
+pub const FORMAT_FEATURES: &[(&str, &str)] = &[("stages", "0.3.0"), ("keep", "0.3.0"), ("stage source", "0.4.0")];
+
+/// The version floor the recipe's features ask for, and which feature set it, if any.
+pub fn required_version(yaml: &Value) -> Option<(&'static str, &'static str)> {
+    let stages = yaml.get("stages").and_then(Value::as_array).filter(|a| !a.is_empty());
+    let mut uses: Vec<&str> = Vec::new();
+    if let Some(stages) = stages {
+        uses.push("stages");
+        if stages.iter().any(|s| s.get("keep").is_some_and(Value::is_object)) {
+            uses.push("keep");
+        }
+        if stages.iter().any(|s| s.get("source").is_some_and(Value::is_object)) {
+            uses.push("stage source");
+        }
+    }
+    FORMAT_FEATURES
+        .iter()
+        .filter(|(f, _)| uses.contains(f))
+        .max_by(|a, b| crate::recipe::compare_versions(a.1, b.1))
+        .map(|(f, v)| (*f, *v))
+}
+
+/// The highest version floor any recipe this build can read may carry: the app's own version,
+/// or the newest feature in the table when the build runs ahead of its version number (a
+/// pre-release that already has stages is still 0.2.0 by Cargo but reads a 0.3.0 recipe).
+pub fn supported_version(app_version: &str) -> String {
+    FORMAT_FEATURES
+        .iter()
+        .map(|(_, v)| *v)
+        .chain(std::iter::once(app_version))
+        .max_by(|a, b| crate::recipe::compare_versions(a, b))
+        .unwrap_or(app_version)
+        .to_string()
+}
+
+/// Stamp `runtime.minVersion` from the features the recipe uses, never lowering an author's
+/// higher floor. Returns what was written, if anything.
+pub fn stamp_min_version(yaml: &mut Value) -> Option<String> {
+    let (_, needed) = required_version(yaml)?;
+    let obj = yaml.as_object_mut()?;
+    let runtime = obj.entry("runtime").or_insert_with(|| Value::Object(Default::default()));
+    let runtime = runtime.as_object_mut()?;
+    let current = runtime.get("minVersion").and_then(Value::as_str).map(String::from);
+    if current.as_deref().is_some_and(|c| crate::recipe::compare_versions(c, needed) != std::cmp::Ordering::Less) {
+        return current;
+    }
+    runtime.insert("minVersion".into(), Value::String(needed.into()));
+    Some(needed.to_string())
+}
+
+// ---------------------------------------------------------------------------------------------
 // The deprecation registry
 
 /// One way a recipe can be out of date, and how to bring it up to date. `detect` names each
@@ -303,6 +359,28 @@ mod tests {
         for (from, to, _) in CHAIN {
             assert!(ACCEPTED_SCHEMA_VERSIONS.contains(from) && ACCEPTED_SCHEMA_VERSIONS.contains(to));
         }
+    }
+
+    #[test]
+    fn the_version_floor_follows_the_features_and_never_drops_an_authors_higher_one() {
+        let mut plain = json!({ "schemaVersion": "0", "id": "x", "name": "X", "steps": [], "outputs": {} });
+        assert_eq!(required_version(&plain), None);
+        assert_eq!(stamp_min_version(&mut plain), None);
+        assert!(plain.get("runtime").is_none(), "nothing to stamp, nothing written");
+        let mut staged = plain.clone();
+        staged["stages"] = json!([{ "id": "a", "name": "A" }]);
+        assert_eq!(required_version(&staged), Some(("stages", "0.3.0")));
+        assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("0.3.0"));
+        assert_eq!(staged["runtime"]["minVersion"], "0.3.0");
+        staged["stages"][0]["keep"] = json!({ "refresh": "always" });
+        assert_eq!(required_version(&staged).map(|x| x.1), Some("0.3.0"));
+        staged["stages"][0]["source"] = json!({ "stage": "a", "version": 1, "digest": "sha256:0" });
+        assert_eq!(required_version(&staged), Some(("stage source", "0.4.0")));
+        assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("0.4.0"));
+        staged["runtime"]["minVersion"] = json!("9.0");
+        assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("9.0"), "an author's higher floor stays");
+        assert_eq!(supported_version("0.2.0"), "0.4.0", "this build reads every feature in the table");
+        assert_eq!(supported_version("1.2.0"), "1.2.0");
     }
 
     #[test]

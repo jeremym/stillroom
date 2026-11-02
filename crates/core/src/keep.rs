@@ -85,6 +85,9 @@ pub struct Keep {
     pub dir: PathBuf,
 }
 
+/// The keep's on-disk layout version (`PRAGMA user_version`); see `Keep::open` for the ladder.
+pub const KEEP_SCHEMA_VERSION: i64 = 1;
+
 impl std::fmt::Debug for Keep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Keep").field("dir", &self.dir).finish()
@@ -97,6 +100,21 @@ impl Keep {
         let dir = dir.into();
         std::fs::create_dir_all(&dir).map_err(|source| KeepError::Io { path: dir.clone(), source })?;
         let conn = Connection::open(dir.join("keep.db"))?;
+        let mut v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        while v < KEEP_SCHEMA_VERSION {
+            match v {
+                // Version 1: the layout from before versions were counted; `IF NOT EXISTS` lets
+                // an older file climb without change.
+                0 => Self::create_v1(&conn)?,
+                _ => break,
+            }
+            v += 1;
+            conn.execute_batch(&format!("PRAGMA user_version = {v};"))?;
+        }
+        Ok(Self { conn: Mutex::new(conn), tally: Mutex::new(Tally::default()), dir })
+    }
+
+    fn create_v1(conn: &Connection) -> Result<(), KeepError> {
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS records (
@@ -123,7 +141,25 @@ impl Keep {
             );
             "#,
         )?;
-        Ok(Self { conn: Mutex::new(conn), tally: Mutex::new(Tally::default()), dir })
+        Ok(())
+    }
+
+    /// The layout version the open file is at.
+    pub fn schema_version(&self) -> Result<i64, KeepError> {
+        Ok(self.conn()?.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+    }
+
+    /// Which fingerprint scheme (`format` in `meta`) the manifest was written under. None for a
+    /// keep built before the scheme was marked.
+    pub fn format(&self) -> Result<Option<u32>, KeepError> {
+        let conn = self.conn()?;
+        let v: Option<String> = conn.query_row("SELECT value FROM meta WHERE key = 'format'", [], |r| r.get(0)).optional()?;
+        Ok(v.and_then(|s| s.parse().ok()))
+    }
+
+    pub fn set_format(&self, format: u32) -> Result<(), KeepError> {
+        self.conn()?.execute("INSERT INTO meta (key, value) VALUES ('format', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![format.to_string()])?;
+        Ok(())
     }
 
     fn conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, KeepError> {
@@ -394,6 +430,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("stillroom-keep-{}", uuid::Uuid::now_v7()));
         let k = Keep::open(&dir).unwrap();
         assert_eq!(k.count().unwrap(), 0);
+        assert_eq!(k.schema_version().unwrap(), KEEP_SCHEMA_VERSION);
+        assert_eq!(k.format().unwrap(), None, "unmarked until a stage is built");
+        k.set_format(1).unwrap();
+        assert_eq!(k.format().unwrap(), Some(1));
         assert!(!k.put("a", &json!({ "title": "A", "kind": "news" }), "run1").unwrap());
         assert!(!k.put("b", &json!({ "title": "B", "kind": "note" }), "run1").unwrap());
         assert!(k.put("a", &json!({ "title": "A2", "kind": "news" }), "run1").unwrap());
@@ -423,6 +463,7 @@ mod tests {
         k.clear("run3").unwrap();
         assert_eq!(k.count().unwrap(), 0);
         assert!(k.manifest().unwrap().source_fingerprint.is_none());
+        assert_eq!(k.format().unwrap(), None, "a rebuild clears the mark with the manifest");
         let j = k.journal(10).unwrap();
         assert_eq!(j[0].reason, "rebuilt");
         assert_eq!(j[0].removed, 2);

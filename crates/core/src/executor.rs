@@ -131,6 +131,15 @@ pub struct RunRequest {
     pub rebuild: Vec<String>,
 }
 
+/// The fingerprint scheme this build writes into a keep's manifest (`format` in its `meta`).
+/// Bumped when `stage_fingerprint` or `stage_models` change what they look at, so a keep built
+/// under the old scheme reads stale once, with `FORMAT_CHANGED_REASON` in its journal, instead
+/// of being judged fresh by a comparison that no longer means the same thing.
+pub const FINGERPRINT_FORMAT: u32 = 1;
+
+/// The journal reason when a stage is rebuilt because the scheme changed, not its sources.
+pub const FORMAT_CHANGED_REASON: &str = "Stillroom changed how it checks sources";
+
 struct KeepPlan {
     keep: Arc<Keep>,
     fingerprint: String,
@@ -541,10 +550,11 @@ impl Executor {
                 let refresh = st.keep.as_ref().map(|k| k.refresh).unwrap_or_default();
                 let same_sources = manifest.source_fingerprint.as_deref() == Some(fp.as_str());
                 let same_models = manifest.models == models;
+                let same_format = keep.format().ok().flatten() == Some(FINGERPRINT_FORMAT);
                 let fresh = built
                     && match refresh {
                         Refresh::Always => false,
-                        Refresh::WhenSourcesChange => same_sources && same_models,
+                        Refresh::WhenSourcesChange => same_format && same_sources && same_models,
                         Refresh::Manual => true,
                     };
                 let reason = if rebuilding {
@@ -553,6 +563,8 @@ impl Executor {
                     "first build"
                 } else if refresh == Refresh::Always {
                     "runs every time"
+                } else if !same_format {
+                    FORMAT_CHANGED_REASON
                 } else if !same_sources {
                     "sources changed"
                 } else {
@@ -655,6 +667,7 @@ impl Executor {
                                 inputs,
                                 models: plan.models.clone(),
                             });
+                            let _ = plan.keep.set_format(FINGERPRINT_FORMAT);
                             let t = plan.keep.take_tally();
                             let _ = plan.keep.append_journal(&JournalEntry {
                                 run_id: state.run_id.clone(),
@@ -1607,6 +1620,18 @@ stages:
         assert_eq!(j[1].reason, "rebuilt");
         assert_eq!(j[1].removed, 1);
         assert_eq!(keep.count().unwrap(), 1);
+        assert_eq!(keep.format().unwrap(), Some(FINGERPRINT_FORMAT), "a built stage marks the scheme it was judged by");
+
+        // A keep built under an older fingerprint scheme (or before the scheme was marked) is
+        // stale once, and the journal says why in words that are not "sources changed".
+        keep.set_format(FINGERPRINT_FORMAT - 1).unwrap();
+        let fifth = exec.run(make("two", vec![]), None).await;
+        assert_eq!(fifth.status, RunStatus::Succeeded, "{:?}", fifth.error);
+        assert!(by(&fifth, "remember").is_none(), "the stage ran again");
+        assert_eq!(keep.journal(5).unwrap()[0].reason, FORMAT_CHANGED_REASON);
+        assert_eq!(keep.format().unwrap(), Some(FINGERPRINT_FORMAT));
+        let sixth = exec.run(make("two", vec![]), None).await;
+        assert_eq!(by(&sixth, "remember").as_deref(), Some("keep:memory"), "and fresh again after");
 
         // Without a keep base, a kept stage just runs and remembers nothing.
         let mut plain = make("two", vec![]);

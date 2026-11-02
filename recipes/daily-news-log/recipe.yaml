@@ -2,7 +2,7 @@ schemaVersion: "0"
 id: daily-news-log
 name: Daily News Log
 icon: news
-version: 0.1.0
+version: 0.2.0
 description: Reads the pages you follow about a topic, picks out the items that are new since last time, writes a short brief of just those, and keeps a running log of everything it has seen. Run it each morning; it never shows you the same item twice.
 author:
   name: Stillroom

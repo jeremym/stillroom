@@ -22,6 +22,10 @@ pub struct Store {
     conn: Connection,
 }
 
+/// The store's on-disk layout version, kept in SQLite's `PRAGMA user_version`. Each step of the
+/// ladder in `init` brings a file up one version: one `CREATE`, `ALTER`, or backfill per step.
+pub const STORE_SCHEMA_VERSION: i64 = 1;
+
 /// A store behind a mutex can serve as the executor's step cache (`Arc<Mutex<Store>>`
 /// coerces to `Arc<dyn StepCache>`).
 impl StepCache for std::sync::Mutex<Store> {
@@ -85,9 +89,30 @@ impl Store {
     }
 
     fn init(&self) -> Result<(), StoreError> {
+        self.conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        let mut v = self.schema_version()?;
+        while v < STORE_SCHEMA_VERSION {
+            match v {
+                // Version 1: the layout as it was before versions were counted. `IF NOT EXISTS`
+                // so a file written before the ladder existed (user_version 0, tables present)
+                // climbs to 1 without change.
+                0 => self.create_v1()?,
+                _ => break,
+            }
+            v += 1;
+            self.conn.execute_batch(&format!("PRAGMA user_version = {v};"))?;
+        }
+        Ok(())
+    }
+
+    /// The layout version the open file is at.
+    pub fn schema_version(&self) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+    }
+
+    fn create_v1(&self) -> Result<(), StoreError> {
         self.conn.execute_batch(
             r#"
-            PRAGMA journal_mode = WAL;
             CREATE TABLE IF NOT EXISTS runs (
                 id            TEXT PRIMARY KEY,
                 recipe_id     TEXT NOT NULL,
@@ -370,8 +395,28 @@ mod tests {
     use indexmap::IndexMap;
 
     #[test]
+    fn a_file_from_before_the_ladder_climbs_to_the_current_version() {
+        let path = std::env::temp_dir().join(format!("stillroom-store-{}.db", uuid::Uuid::now_v7()));
+        {
+            // An older Stillroom: the same tables, user_version never set.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO settings VALUES ('a', '1');").unwrap();
+            assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), STORE_SCHEMA_VERSION);
+        assert_eq!(store.get_setting("a").unwrap(), Some(serde_json::json!(1)), "what was there is kept");
+        store.save_watch(&Watch { id: "w".into(), recipe_id: "r".into(), recipe_name: "R".into(), input: "x".into(), folder: "/f".into(), inputs: IndexMap::new(), pins: Default::default(), enabled: true, settle_ms: 2000, created_at: Utc::now(), last_fired_at: None, last_run_id: None }).unwrap();
+        assert_eq!(store.list_watches().unwrap().len(), 1, "the tables the ladder adds are usable");
+        drop(store);
+        assert_eq!(Store::open(&path).unwrap().schema_version().unwrap(), STORE_SCHEMA_VERSION, "opening again is a no-op");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn round_trips_a_run() {
         let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.schema_version().unwrap(), STORE_SCHEMA_VERSION);
         let run = Run {
             id: "r1".into(),
             recipe_id: "x".into(),

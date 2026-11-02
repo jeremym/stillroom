@@ -26,7 +26,7 @@ pub mod watch;
 pub use bundle::{RecipeBundle, RecipeInfo, RecipeSource};
 pub use cache::{CachedStep, MemoryCache, StepCache};
 pub use draft::{Draft, DraftError};
-pub use executor::{stage_fingerprint, stage_models, Cancel, Executor, ModelDefaults, RunRequest};
+pub use executor::{stage_fingerprint, stage_models, Cancel, Executor, ModelDefaults, RunRequest, FINGERPRINT_FORMAT, FORMAT_CHANGED_REASON};
 pub use keep::{Keep, KeepError, KeepManifest, KeepRecord, KeepSummary, JournalEntry};
 pub use library::RecipeLibrary;
 pub use migrate::{migrate, Finding, FixId, MigrateError, Migrated, Severity, CURRENT_SCHEMA_VERSION};

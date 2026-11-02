@@ -2,7 +2,7 @@ schemaVersion: "0"
 id: batch-briefing
 name: Batch Briefing
 icon: files
-version: 0.1.0
+version: 0.2.0
 description: Give it a folder of documents and, if you like, a few links, and say what you need to know. It reads everything once, remembers what each file said, and writes one brief that cites which file or page each point came from.
 author:
   name: Stillroom

@@ -803,7 +803,8 @@ async fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResu
             stillroom_core::recipe::Refresh::Always => false,
             stillroom_core::recipe::Refresh::Manual => true,
             stillroom_core::recipe::Refresh::WhenSourcesChange => {
-                manifest.source_fingerprint.as_deref() == Some(stage_fingerprint(&bundle.recipe, &bundle.prompts, st, &inputs).as_str())
+                keep.format().ok().flatten() == Some(stillroom_core::FINGERPRINT_FORMAT)
+                    && manifest.source_fingerprint.as_deref() == Some(stage_fingerprint(&bundle.recipe, &bundle.prompts, st, &inputs).as_str())
                     && resolutions.as_ref().is_none_or(|r| manifest.models == stage_models(&bundle.recipe, st, r))
             }
         });

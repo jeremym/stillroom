@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import Markdown from "react-markdown";
+import { SafeMarkdown } from "./markdown";
 import { DiagramView, asDiagram } from "../components/DiagramView";
 import { SlidesView, isDeck } from "../components/SlidesView";
 import { AudioView, ScriptView, isAudio, isScript } from "../components/AudioView";
@@ -28,7 +28,7 @@ export function pickViewer({ kind, value, onSvg }: ViewerProps): ReactNode {
     );
   }
   if (kind === "table" && isRows(value)) return <TableView rows={value} />;
-  if (kind === "markdown" && typeof value === "string") return <div className="markdown"><Markdown>{value}</Markdown></div>;
+  if (kind === "markdown" && typeof value === "string") return <div className="markdown"><SafeMarkdown>{value}</SafeMarkdown></div>;
   if (isScript(value)) return <ScriptView script={value} />;
   if (isSpine(value)) return <Spine spine={value} />;
   if (isCards(value)) return <Cards cards={value.cards} />;

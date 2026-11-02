@@ -56,6 +56,8 @@ export const api = {
   /** What macOS may ask for and where each stands. `probe` tests the folders, which is what makes macOS ask. */
   permissionStatus: (probe: boolean) => invoke<PermissionEntry[]>("permission_status", { probe }),
   openPrivacyPane: (pane: string) => invoke<void>("open_privacy_pane", { pane }),
+  /** Open a web or mail link outside the app. Rust refuses every other kind of address. */
+  openLink: (url: string) => invoke<void>("open_link", { url }),
   listWatches: () => invoke<WatchView[]>("list_watches"),
   /** Watch `input`'s folder: the recipe runs with these inputs whenever something lands there. */
   addWatch: (recipeId: string, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) =>

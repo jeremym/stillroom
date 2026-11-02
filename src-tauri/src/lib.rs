@@ -443,6 +443,41 @@ async fn pull_model(app: AppHandle, state: State<'_, AppState>, name: String) ->
     }
 }
 
+/// Whether a window may navigate to `url`: only the app's own pages. In production that is the
+/// `tauri://localhost` origin (`http://tauri.localhost` on Windows); in development, the Vite dev
+/// server as well. Everything else is refused and the page stays where it is; links in results open
+/// outside through `open_link` instead.
+fn is_app_page(app: &AppHandle, url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" => true,
+        "http" | "https" => {
+            if url.host_str() == Some("tauri.localhost") {
+                return true;
+            }
+            if cfg!(dev) {
+                if let Some(dev) = &app.config().build.dev_url {
+                    return url.scheme() == dev.scheme() && url.host_str() == dev.host_str() && url.port_or_known_default() == dev.port_or_known_default();
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Open a link from a result in the browser (or the mail app). Only web and mail addresses: anything
+/// else is refused, so a result cannot launch an arbitrary scheme handler.
+#[tauri::command]
+fn open_link(app: AppHandle, url: String) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let parsed = tauri::Url::parse(url.trim()).map_err(|e| format!("not a link: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" | "mailto" => {}
+        other => return Err(format!("{other}: links are only opened for web (http, https) and mail (mailto) addresses")),
+    }
+    app.opener().open_url(parsed.as_str(), None::<&str>).map_err(err)
+}
+
 /// Open the Settings window, or bring it forward if it is already open.
 #[tauri::command]
 fn open_settings(app: AppHandle) -> CmdResult<()> {
@@ -452,10 +487,12 @@ fn open_settings(app: AppHandle) -> CmdResult<()> {
         let _ = w.set_focus();
         return Ok(());
     }
+    let nav = app.clone();
     WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html?window=settings".into()))
         .title("Stillroom Settings")
         .inner_size(960.0, 760.0)
         .min_inner_size(760.0, 560.0)
+        .on_navigation(move |url| is_app_page(&nav, url))
         .build()
         .map_err(err)?;
     Ok(())
@@ -1255,6 +1292,20 @@ pub fn run() {
             app.manage(WatchRuntime::default());
             let rt = app.state::<WatchRuntime>();
             rt.start_all(app.handle(), &app.state::<AppState>());
+            // The main window is declared in tauri.conf.json with `create: false` and built here, so
+            // it can refuse navigation away from the app's own pages (there is no config key for that).
+            let main_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned()
+                .ok_or_else(|| std::io::Error::other("tauri.conf.json has no window labelled main"))?;
+            let nav = app.handle().clone();
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &main_config)?
+                .on_navigation(move |url| is_app_page(&nav, url))
+                .build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1299,6 +1350,7 @@ pub fn run() {
             reveal_recipes_folder,
             permission_status,
             open_privacy_pane,
+            open_link,
             fire_watch,
             save_text_as,
             save_binary_as,

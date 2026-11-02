@@ -219,6 +219,7 @@ impl Draft {
                 Some(Ok(Ref::Input { name: input, .. })) if recipe.inputs.contains_key(&input) => {}
                 Some(Ok(Ref::Step { step, .. })) => problems.push(format!("Result “{name}” comes from a step that does not exist: {step}.")),
                 Some(Ok(Ref::Input { name: input, .. })) => problems.push(format!("Result “{name}” comes from an input that does not exist: {input}.")),
+                Some(Ok(Ref::Var { name: step, path })) if top.contains(&step.as_str()) => problems.push(crate::migrate::bare_step_ref_text(&format!("Result “{name}”"), &step, &path)),
                 _ => problems.push(format!("Result “{name}” needs to come from a step, like ${{steps.<id>.output}}.")),
             }
         }
@@ -363,11 +364,17 @@ impl Draft {
                         problems.push(format!("“{who}” reads from a step it cannot see: {s}."));
                     }
                 }
-                Some(Ok(Ref::Var { name, .. })) => {
+                Some(Ok(Ref::Var { name, path })) => {
                     if item != Some(name.as_str()) {
-                        problems.push(match item {
-                            Some(i) => format!("“{who}” uses ${{{name}}}, but the loop calls each item “{i}”."),
-                            None => format!("“{who}” uses ${{{name}}}, which only works inside a for-each step."),
+                        // A step's id on its own is the slip the registry's `step_ref` repairs; the
+                        // Problem reads as its Note does, so the refusal and the Fix are one thing.
+                        problems.push(if steps_in_scope.contains(&name.as_str()) {
+                            crate::migrate::bare_step_ref_text(&format!("“{who}”"), &name, &path)
+                        } else {
+                            match item {
+                                Some(i) => format!("“{who}” uses ${{{name}}}, but the loop calls each item “{i}”."),
+                                None => format!("“{who}” uses ${{{name}}}, but it is not inside a for-each loop (a map step). To work on each entry, put the step inside a map; for one value, write ${{inputs.<name>}} or ${{steps.<id>.output}}."),
+                            }
                         });
                     }
                 }

@@ -4,8 +4,10 @@
 //! its rewrites when it bumps a version; the checker consults it on a current recipe and turns
 //! each entry into a Note with a one-click Fix instead of a refusal.
 
+use crate::refs::{input_refs, parse_ref, step_refs, Ref};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 /// The recipe format version this build writes. A string, not a number: YAML would read a bare
 /// `1` as a number, and the schema asks for a string.
@@ -198,15 +200,38 @@ pub struct Deprecation {
     pub rewrite: fn(&mut Value, Option<&str>) -> bool,
 }
 
-pub const DEPRECATIONS: &[Deprecation] = &[Deprecation {
-    id: "declare_keep",
-    path: "/stages/*/keep",
-    since: "0.3.0",
-    replaced_by: "a stage whose steps write a keep (keep.put, keep.index, keep.remove) declares `keep: { refresh: ... }`",
-    fix_label: "Declare the keep",
-    detect: detect_undeclared_keeps,
-    rewrite: declare_keeps,
-}];
+/// The table, in the order one `repair_all` pass needs: bare step references first (so the
+/// placement below sees `${steps.x.output}` and knows what a step reads), then a step in no
+/// stage finds one, then a stage that writes a keep declares it.
+pub const DEPRECATIONS: &[Deprecation] = &[
+    Deprecation {
+        id: "step_ref",
+        path: "/steps/*/inputs",
+        since: "0.3.1",
+        replaced_by: "a step's result is written `${steps.<id>.output}` (with `.field` after it to reach inside), never `${<id>}`",
+        fix_label: "Point at the step's result",
+        detect: detect_bare_step_refs,
+        rewrite: rewrite_bare_step_refs,
+    },
+    Deprecation {
+        id: "place_step",
+        path: "/stages/*/steps",
+        since: "0.3.1",
+        replaced_by: "when a recipe declares stages, every step is listed in one of them",
+        fix_label: "Put it in a stage",
+        detect: detect_unplaced_steps,
+        rewrite: place_steps,
+    },
+    Deprecation {
+        id: "declare_keep",
+        path: "/stages/*/keep",
+        since: "0.3.0",
+        replaced_by: "a stage whose steps write a keep (keep.put, keep.index, keep.remove) declares `keep: { refresh: ... }`",
+        fix_label: "Declare the keep",
+        detect: detect_undeclared_keeps,
+        rewrite: declare_keeps,
+    },
+];
 
 pub fn deprecation(id: &str) -> Option<&'static Deprecation> {
     DEPRECATIONS.iter().find(|d| d.id == id)
@@ -247,6 +272,245 @@ pub fn repair_all(yaml: &mut Value) -> bool {
     }
     changed
 }
+
+// ---------------------------------------------------------------------------------------------
+// step_ref: `${x}` for a step's result, where `${steps.x.output}` is meant
+
+/// What a bare step reference has to say, as the checker's Problem and the registry's Note both
+/// word it, so the refusal and the Fix that clears it read as one thing. `who` is the subject,
+/// already quoted (“Chunk materials”, or Result “note”).
+pub fn bare_step_ref_text(who: &str, name: &str, path: &[String]) -> String {
+    let tail = path.iter().map(|p| format!(".{p}")).collect::<String>();
+    format!("{who} points at ${{{name}{tail}}}; a step's result is written ${{steps.{name}.output{tail}}}.")
+}
+
+/// A step's own fields that may hold a reference. Its inner steps are walked by the caller,
+/// which knows their scope.
+const REF_FIELDS: [&str; 4] = ["inputs", "over", "when", "items"];
+
+fn each_string_mut(v: &mut Value, f: &mut dyn FnMut(&mut String)) {
+    match v {
+        Value::String(s) => f(s),
+        Value::Array(a) => a.iter_mut().for_each(|x| each_string_mut(x, f)),
+        Value::Object(o) => o.values_mut().for_each(|x| each_string_mut(x, f)),
+        _ => {}
+    }
+}
+
+/// `${x}` or `${x.a.b}` where `x` is a step the holder can see, and is not what the loop calls
+/// each item: the step meant and the path into its result.
+fn bare_step_ref(s: &str, in_scope: &[&str], item: Option<&str>) -> Option<(String, Vec<String>)> {
+    match parse_ref(s) {
+        Some(Ok(Ref::Var { name, path })) if item != Some(name.as_str()) && in_scope.contains(&name.as_str()) => Some((name, path)),
+        _ => None,
+    }
+}
+
+fn step_id(step: &Value) -> &str {
+    step.get("id").and_then(Value::as_str).unwrap_or("")
+}
+
+fn step_label(step: &Value) -> &str {
+    step.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or_else(|| step_id(step))
+}
+
+/// One place a reference can be written: a top-level step, an inner step, or a result. The
+/// target reads `<step>`, `<map>/<inner>`, or `result/<name>`; `scope` is the steps it may
+/// point at (never itself, never the map around it); `item` is what its loop calls each entry.
+struct RefHolder {
+    target: String,
+    who: String,
+    scope: Vec<String>,
+    item: Option<String>,
+}
+
+fn ref_holders(yaml: &Value) -> Vec<RefHolder> {
+    let steps = yaml.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
+    let top: Vec<&str> = steps.iter().map(step_id).collect();
+    let mut out = Vec::new();
+    for step in &steps {
+        let id = step_id(step);
+        let others: Vec<String> = top.iter().filter(|t| **t != id).map(|t| t.to_string()).collect();
+        out.push(RefHolder { target: id.to_string(), who: format!("“{}”", step_label(step)), scope: others.clone(), item: None });
+        if let Some(inner) = step.get("steps").and_then(Value::as_array) {
+            let item = step.get("as").and_then(Value::as_str).unwrap_or("item").to_string();
+            let siblings: Vec<&str> = inner.iter().map(step_id).collect();
+            for sub in inner {
+                let mut scope = others.clone();
+                scope.extend(siblings.iter().filter(|s| **s != step_id(sub)).map(|s| s.to_string()));
+                out.push(RefHolder { target: format!("{id}/{}", step_id(sub)), who: format!("“{}”", step_label(sub)), scope, item: Some(item.clone()) });
+            }
+        }
+    }
+    for name in yaml.get("outputs").and_then(Value::as_object).into_iter().flat_map(|o| o.keys()) {
+        out.push(RefHolder { target: format!("result/{name}"), who: format!("Result “{name}”"), scope: top.iter().map(|t| t.to_string()).collect(), item: None });
+    }
+    out
+}
+
+/// The value a holder's target names inside the recipe: the step itself, or a result's `from`.
+fn holder_value<'a>(yaml: &'a mut Value, target: &str) -> Option<&'a mut Value> {
+    if let Some(name) = target.strip_prefix("result/") {
+        return yaml.get_mut("outputs")?.get_mut(name)?.get_mut("from");
+    }
+    let (outer, inner) = match target.split_once('/') {
+        Some((o, i)) => (o, Some(i)),
+        None => (target, None),
+    };
+    let steps = yaml.get_mut("steps")?.as_array_mut()?;
+    let step = steps.iter_mut().find(|s| step_id(s) == outer)?;
+    match inner {
+        None => Some(step),
+        Some(i) => step.get_mut("steps")?.as_array_mut()?.iter_mut().find(|s| step_id(s) == i),
+    }
+}
+
+/// Every string of a holder's value that may hold a reference: a step's own fields, or a
+/// result's `from`.
+fn holder_strings(target: &str, v: &mut Value, f: &mut dyn FnMut(&mut String)) {
+    if target.starts_with("result/") {
+        each_string_mut(v, f);
+        return;
+    }
+    let Some(o) = v.as_object_mut() else { return };
+    for k in REF_FIELDS {
+        if let Some(field) = o.get_mut(k) {
+            each_string_mut(field, f);
+        }
+    }
+}
+
+/// Steps and results that point at a step by its bare id: (target, what the Note says), one
+/// Note per reference as written.
+fn detect_bare_step_refs(yaml: &Value) -> Vec<Detection> {
+    let mut scratch = yaml.clone();
+    let mut out: Vec<Detection> = Vec::new();
+    for h in ref_holders(yaml) {
+        let Some(v) = holder_value(&mut scratch, &h.target) else { continue };
+        let scope: Vec<&str> = h.scope.iter().map(String::as_str).collect();
+        let mut texts: Vec<String> = Vec::new();
+        holder_strings(&h.target, v, &mut |s| {
+            if let Some((name, path)) = bare_step_ref(s, &scope, h.item.as_deref()) {
+                let text = bare_step_ref_text(&h.who, &name, &path);
+                if !texts.contains(&text) {
+                    texts.push(text);
+                }
+            }
+        });
+        out.extend(texts.into_iter().map(|t| (Some(h.target.clone()), t)));
+    }
+    out
+}
+
+/// `${x}` becomes `${steps.x.output}` and `${x.a.b}` becomes `${steps.x.output.a.b}`, in the
+/// holder named (or everywhere). Models write a step's id for its result; so do people.
+fn rewrite_bare_step_refs(yaml: &mut Value, target: Option<&str>) -> bool {
+    let mut changed = false;
+    for h in ref_holders(yaml) {
+        if target.is_some_and(|t| t != h.target) {
+            continue;
+        }
+        let Some(v) = holder_value(yaml, &h.target) else { continue };
+        let scope: Vec<&str> = h.scope.iter().map(String::as_str).collect();
+        holder_strings(&h.target, v, &mut |s| {
+            if let Some((name, path)) = bare_step_ref(s, &scope, h.item.as_deref()) {
+                let tail = path.iter().map(|p| format!(".{p}")).collect::<String>();
+                *s = format!("${{steps.{name}.output{tail}}}");
+                changed = true;
+            }
+        });
+    }
+    changed
+}
+
+// ---------------------------------------------------------------------------------------------
+// place_step: a recipe with stages lists every step in one of them
+
+fn stage_lists<'a>(stage: &'a Value, key: &str) -> Vec<&'a str> {
+    stage.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default()
+}
+
+/// The index of the stage that lists `name` under `key` (inputs, steps, outputs), if any does.
+fn stage_index(stages: &[Value], key: &str, name: &str) -> Option<usize> {
+    stages.iter().position(|st| stage_lists(st, key).contains(&name))
+}
+
+fn stage_list_push(stage: &mut Value, key: &str, name: &str) {
+    if let Some(o) = stage.as_object_mut() {
+        let list = o.entry(key).or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(a) = list.as_array_mut() {
+            a.push(Value::String(name.to_string()));
+        }
+    }
+}
+
+/// Top-level steps a recipe with stages lists in none of them: (step id, what the Note says).
+/// An unlisted step falls into the implied Make stage at the end, which declares no keep and
+/// which the author never wrote.
+fn detect_unplaced_steps(yaml: &Value) -> Vec<Detection> {
+    let Some(stages) = yaml.get("stages").and_then(Value::as_array).filter(|a| !a.is_empty()) else { return Vec::new() };
+    yaml.get("steps")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|s| stage_index(stages, "steps", step_id(s)).is_none())
+        .map(|s| (Some(step_id(s).to_string()), format!("“{}” is in no stage.", step_label(s))))
+        .collect()
+}
+
+/// Put the step named (or every unlisted step) into a stage: the one holding the latest step it
+/// reads from, else the one listing an input it reads, else the last stage. A result that comes
+/// from the step goes with it; an input it reads that no stage lists goes to the first stage
+/// whose steps read it. Steps are placed in recipe order, so a step finds the ones before it.
+fn place_steps(yaml: &mut Value, target: Option<&str>) -> bool {
+    let steps = yaml.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
+    let outputs = yaml.get("outputs").and_then(Value::as_object).cloned().unwrap_or_default();
+    let Some(stages) = yaml.get_mut("stages").and_then(Value::as_array_mut).filter(|a| !a.is_empty()) else { return false };
+    let mut changed = false;
+    for step in &steps {
+        let id = step_id(step);
+        if target.is_some_and(|t| t != id) || stage_index(stages, "steps", id).is_some() {
+            continue;
+        }
+        let mut reads = BTreeSet::new();
+        step_refs(step, &mut reads);
+        let mut inputs = BTreeSet::new();
+        input_refs(step, &mut inputs);
+        let by_step = reads.iter().filter_map(|r| stage_index(stages, "steps", r)).max();
+        let by_input = inputs.iter().filter_map(|n| stage_index(stages, "inputs", n)).max();
+        let at = by_step.or(by_input).unwrap_or(stages.len() - 1);
+        stage_list_push(&mut stages[at], "steps", id);
+        changed = true;
+        for (name, out) in &outputs {
+            let from = out.get("from").and_then(Value::as_str).unwrap_or("");
+            let mine = matches!(parse_ref(from), Some(Ok(Ref::Step { step, .. })) if step == id);
+            if mine && stage_index(stages, "outputs", name).is_none() {
+                stage_list_push(&mut stages[at], "outputs", name);
+            }
+        }
+        for n in &inputs {
+            if stage_index(stages, "inputs", n).is_some() {
+                continue;
+            }
+            let first_reader = stages.iter().position(|st| {
+                stage_lists(st, "steps").iter().any(|sid| {
+                    steps.iter().find(|s| step_id(s) == *sid).is_some_and(|s| {
+                        let mut r = BTreeSet::new();
+                        input_refs(s, &mut r);
+                        r.contains(n)
+                    })
+                })
+            });
+            if let Some(i) = first_reader {
+                stage_list_push(&mut stages[i], "inputs", n);
+            }
+        }
+    }
+    changed
+}
+
+// ---------------------------------------------------------------------------------------------
+// declare_keep: a stage whose steps write a keep says so
 
 /// Tools that change a keep (a read of an earlier stage's keep is not a write).
 fn writes_keep(tool: &str) -> bool {

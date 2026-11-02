@@ -1158,6 +1158,19 @@ fn confirm_import(app: AppHandle, state: State<'_, AppState>, token: String, gra
     state.info_of(&bundle)
 }
 
+/// Share a recipe as `<id>.zip` where the user chooses (the dialog runs in Rust): recipe.yaml,
+/// prompts, schemas, skills, assets, and the example, under a folder named after the id. Keeps,
+/// runs, pins, and shelf state live outside the bundle and are never in it; `runs/`, `keeps/`,
+/// hidden files, links, and anything a `.stillroomignore` names are left out. `None` when the
+/// user cancelled.
+#[tauri::command]
+async fn export_recipe(app: AppHandle, state: State<'_, AppState>, recipe_id: String) -> CmdResult<Option<String>> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    let Some(dst) = ask_where_to_save(&app, &bundle.recipe.id, "zip")? else { return Ok(None) };
+    stillroom_core::catalog::export_zip(&bundle, &dst).map_err(err)?;
+    Ok(Some(dst.to_string_lossy().into_owned()))
+}
+
 /// Forget a quarantined import.
 #[tauri::command]
 fn discard_import(state: State<'_, AppState>, token: String) -> CmdResult<()> {
@@ -1654,6 +1667,7 @@ pub fn run() {
             import_recipe,
             confirm_import,
             discard_import,
+            export_recipe,
             reveal_recipes_folder,
             reveal_sample_folders,
             permission_status,

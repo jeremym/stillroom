@@ -1,7 +1,8 @@
 //! The catalog side of the Library: copying a recipe into the user's folder (Duplicate) and
 //! remembering where the copy came from (`x-source`), so the app can say "a newer version
 //! exists" while the copy is still as copied, and never after the user has edited its steps;
-//! a bundle's saved example run; and getting a recipe from a folder or a zip through quarantine.
+//! a bundle's saved example run; getting a recipe from a folder or a zip through quarantine; and
+//! sharing one the other way as a zip.
 
 use crate::bundle::RecipeBundle;
 use crate::draft::{Draft, DraftError};
@@ -375,6 +376,74 @@ pub fn install(quarantine_root: &Path, token: &str, library: &RecipeLibrary) -> 
         let _ = std::fs::remove_dir_all(&root);
     }
     library.find(&id).ok_or_else(|| CatalogError::LoadBack(id))
+}
+
+/// Folders inside a bundle that are never shared: what runs made, not the method.
+const EXPORT_SKIP_DIRS: [&str; 3] = ["runs", "keeps", "recipe-data"];
+
+/// A `.stillroomignore` at the bundle root: one entry per line, a bundle-relative path or a bare
+/// name (which matches at any depth); blank lines and `#` comments are skipped.
+fn stillroomignore(root: &Path) -> Vec<String> {
+    std::fs::read_to_string(root.join(".stillroomignore"))
+        .map(|t| t.lines().map(|l| l.trim().trim_end_matches('/').to_string()).filter(|l| !l.is_empty() && !l.starts_with('#')).collect())
+        .unwrap_or_default()
+}
+
+fn ignored(rel: &str, name: &str, ignore: &[String]) -> bool {
+    ignore.iter().any(|i| i == rel || rel.starts_with(&format!("{i}/")) || i == name)
+}
+
+fn export_walk(dir: &Path, rel: &str, ignore: &[String], out: &mut Vec<String>) -> Result<(), CatalogError> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir).map_err(io_at(dir))?.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let path = e.path();
+        let child = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+        if name.starts_with('.') || ignored(&child, &name, ignore) {
+            continue;
+        }
+        let meta = std::fs::symlink_metadata(&path).map_err(io_at(&path))?;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if rel.is_empty() && EXPORT_SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            export_walk(&path, &child, ignore, out)?;
+        } else if meta.is_file() {
+            out.push(child);
+        }
+    }
+    Ok(())
+}
+
+/// The bundle-relative files an export carries: everything in the bundle except hidden entries,
+/// `runs/`, `keeps/`, `recipe-data/`, links (never followed), and what `.stillroomignore` names.
+/// Keeps, runs, pins, and shelf state live outside the bundle, so they are never in it anyway.
+pub fn export_members(root: &Path) -> Result<Vec<String>, CatalogError> {
+    let mut out = Vec::new();
+    export_walk(root, "", &stillroomignore(root), &mut out)?;
+    Ok(out)
+}
+
+/// Write the bundle as a zip at `dest`, every member under a top folder named after the recipe
+/// id (so unzipping gives a folder, and `import` strips it). Returns the members written.
+pub fn export_zip(bundle: &RecipeBundle, dest: &Path) -> Result<Vec<String>, CatalogError> {
+    use std::io::Write;
+    let members = export_members(&bundle.root)?;
+    let zip_err = |source| CatalogError::Zip { path: dest.to_path_buf(), source };
+    let file = std::fs::File::create(dest).map_err(io_at(dest))?;
+    let mut w = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).unix_permissions(0o644);
+    for rel in &members {
+        let bytes = std::fs::read(bundle.root.join(rel)).map_err(io_at(&bundle.root.join(rel)))?;
+        w.start_file(format!("{}/{rel}", bundle.recipe.id), opts).map_err(zip_err)?;
+        w.write_all(&bytes).map_err(io_at(dest))?;
+    }
+    w.finish().map_err(zip_err)?;
+    Ok(members)
 }
 
 /// Rewrite every `example/...` path in a value to its absolute place under `root`: a `path`
@@ -781,6 +850,50 @@ mod tests {
         assert!(matches!(import(&two, &q).unwrap_err(), CatalogError::NoRecipeYaml));
         assert_eq!(leftover(&q), 0);
         let _ = std::fs::remove_dir_all(&q);
+    }
+
+    #[test]
+    fn an_export_carries_the_method_and_nothing_a_run_made_and_imports_back() {
+        let user = fresh("export-user");
+        let lib = library(&user);
+        let copy = duplicate(&lib, "summarize-file", "shared", "Shared", None, &[]).unwrap();
+        // Things that must never travel: run keeps, runs, hidden files, a link, and what the user marks private.
+        std::fs::create_dir_all(copy.root.join("runs/01")).unwrap();
+        std::fs::write(copy.root.join("runs/01/result.json"), "{}").unwrap();
+        std::fs::create_dir_all(copy.root.join("keeps/index")).unwrap();
+        std::fs::write(copy.root.join("keeps/index/db.sqlite"), "x").unwrap();
+        std::fs::write(copy.root.join(".DS_Store"), "x").unwrap();
+        std::fs::create_dir_all(copy.root.join("assets/private")).unwrap();
+        std::fs::write(copy.root.join("assets/private/notes.md"), "mine").unwrap();
+        std::fs::write(copy.root.join("assets/logo.svg"), "<svg/>").unwrap();
+        std::fs::write(copy.root.join("assets/draft.txt"), "wip").unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", copy.root.join("assets/hosts")).unwrap();
+        std::fs::write(copy.root.join(".stillroomignore"), "# keep these to yourself\nassets/private/\ndraft.txt\n").unwrap();
+        assert!(copy.root.join("example/result.json").is_file(), "the duplicate brought the example along");
+
+        let members = export_members(&copy.root).unwrap();
+        assert_eq!(members, vec!["assets/logo.svg", "example/reading-list.md", "example/result.json", "prompts/summarize.md", "recipe.yaml"]);
+
+        let dest = fresh("export-zip").join("shared.zip");
+        let written = export_zip(&copy, &dest).unwrap();
+        assert_eq!(written, members);
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap()).unwrap();
+        let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned()).collect();
+        assert_eq!(names, vec!["shared/assets/logo.svg", "shared/example/reading-list.md", "shared/example/result.json", "shared/prompts/summarize.md", "shared/recipe.yaml"]);
+
+        // The zip comes back in through the import path, as another user would get it.
+        let q = fresh("export-quarantine");
+        let got = import(&dest, &q).unwrap();
+        assert!(got.root.join("recipe.yaml").is_file() && got.root.join("prompts/summarize.md").is_file());
+        assert!(!got.root.join("runs").exists() && !got.root.join("assets/private").exists());
+        let other = fresh("export-other");
+        let other_lib = library(&other);
+        let back = install(&q, &got.token, &other_lib).unwrap();
+        assert_eq!(back.recipe.id, "shared");
+        for d in [&user, &other, &q] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        let _ = std::fs::remove_dir_all(dest.parent().unwrap());
     }
 
     #[test]

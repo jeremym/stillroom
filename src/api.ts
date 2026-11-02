@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, Grant, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
   listModels: () => invoke<ModelsResponse>("list_models"),
+  /** This Mac: chip, memory, cores, and the room a model has. Read once by the engine; unknowns are null. */
+  hardware: () => invoke<Hardware>("hardware"),
   /** The Codex CLI on this Mac: installed, signed in, its default model. */
   codexStatus: () => invoke<CodexStatus>("codex_status"),
   /** One tiny call to a model: did it answer, how fast. */
@@ -82,6 +84,8 @@ export const api = {
   /** Save a copy of a recipe as a zip where the user chooses (dialog in Rust). The path written, or null when cancelled. */
   exportRecipe: (recipeId: string) => invoke<string | null>("export_recipe", { recipeId }),
   revealRecipesFolder: () => invoke<void>("reveal_recipes_folder"),
+  /** Show the planner's journal (one Markdown file per plan) in the Finder. */
+  revealPlansFolder: () => invoke<void>("reveal_plans_folder"),
   /** Show the sample folders (the inboxes a sample recipe reads) in the Finder. */
   revealSampleFolders: () => invoke<void>("reveal_sample_folders"),
   /** Put a recipe on the shelf, in the archive, or back in the catalog. Every window hears `shelf:changed`. */

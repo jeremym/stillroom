@@ -333,4 +333,10 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .plan-cost button.link { padding: 0; font-size: inherit; }
 .plan-cost .plan-trial { white-space: nowrap; }
 .try-planning { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* Settings › Models: This Mac, said once above the table; the Speed column stays on one line. */
+.this-mac { margin: 0 0 6px; }
+.this-mac-note { margin: 0; font-size: var(--size-small); }
+.settings-main td.speed { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.plans-journal { margin-top: 12px; font-size: var(--size-small); }
+.plans-journal button.link { padding: 0; font-size: inherit; }
 .planner-note { margin: 8px 0 4px; }

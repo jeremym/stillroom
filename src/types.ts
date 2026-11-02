@@ -37,11 +37,34 @@ export interface TryResult {
   error: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  /** How fast the model wrote, in tokens per second, when the provider said (Ollama does). */
+  completionTokensPerSecond?: number | null;
+}
+
+/** What one model managed last time it answered on this Mac. */
+export interface ModelSpeed {
+  tokensPerSecond: number;
+  /** When, RFC 3339. */
+  at: string;
 }
 
 export interface ModelsResponse {
   providers: ProviderStatus[];
   models: InstalledModel[];
+  /** By model id; a model that has not answered yet is absent. */
+  speeds?: Record<string, ModelSpeed>;
+}
+
+/** This Mac: what the models run on. Anything that could not be read is null. */
+export interface Hardware {
+  /** The chip, e.g. "Apple M3 Max". */
+  chip: string | null;
+  /** Physical memory, shared by the CPU and GPU on Apple silicon. */
+  memoryBytes: number | null;
+  gpuCores: number | null;
+  cpuCores: number | null;
+  /** The most a model's weights may take and still run comfortably (60 % of memory). */
+  modelCeilingBytes: number | null;
 }
 
 export interface ModelSlot {
@@ -457,6 +480,8 @@ export interface Settings {
     contextLength?: number;
     /** Thinking for steps whose recipe says nothing: true, false, or unset (the model's own default). */
     think?: boolean | null;
+    /** Written by the engine after a model answers: what each managed, by model id. A patch that leaves it out keeps it. */
+    speed?: Record<string, ModelSpeed>;
   };
   /** The Codex CLI as a cloud provider: off unless turned on here. */
   codex?: { enabled?: boolean; path?: string; models?: string[] };

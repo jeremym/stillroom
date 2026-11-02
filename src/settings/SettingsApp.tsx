@@ -8,7 +8,8 @@ import { rememberProviders, whereWord } from "../models";
 import { measuredTag } from "../planWith";
 import { PullModel } from "../components/PullModel";
 import { PromptEditor } from "../components/PromptEditor";
-import type { CodexStatus, InstalledModel, ModelsResponse, PermissionEntry, PlanMeasurement, RecipesResponse, RuntimeStatus, Settings, TryPlanningResult, TryResult, WatchView } from "../types";
+import { fmtSpeed, speedOf, thisMacLine } from "../hardware";
+import type { CodexStatus, Hardware, InstalledModel, ModelsResponse, PermissionEntry, PlanMeasurement, RecipesResponse, RuntimeStatus, Settings, TryPlanningResult, TryResult, WatchView } from "../types";
 
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
@@ -45,6 +46,9 @@ export default function SettingsApp() {
   const [section, setSection] = useState<Section>("look");
   const [settings, setSettings] = useState<Settings>({});
   const [models, setModels] = useState<ModelsResponse | null>(null);
+  // This Mac: read once from the engine the first time Models is opened; what could not be read is null.
+  const [hardware, setHardware] = useState<Hardware | null>(null);
+  useEffect(() => { if (section === "models" && !hardware) api.hardware().then(setHardware).catch(() => {}); }, [section, hardware]);
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [recipes, setRecipes] = useState<RecipesResponse | null>(null);
   const [watches, setWatches] = useState<WatchView[]>([]);
@@ -80,6 +84,8 @@ export default function SettingsApp() {
     try {
       const result = await api.tryModel(id);
       setTries((t) => ({ ...t, [id]: { busy: false, result } }));
+      // The engine remembered the speed; the Speed column reads it from the models list.
+      if (result.completionTokensPerSecond) api.listModels().then((m) => setModels((prev) => (prev ? { ...prev, speeds: m.speeds } : m))).catch(() => {});
     } catch (e) {
       setTries((t) => ({ ...t, [id]: { busy: false, result: { ok: false, durationMs: 0, answer: null, error: String(e), promptTokens: null, completionTokens: null } } }));
     }
@@ -225,6 +231,17 @@ export default function SettingsApp() {
 
         {section === "models" && (
           <>
+            <Zone title="This Mac" sub="what the models run on">
+              {thisMacLine(hardware) ? (
+                <>
+                  <p className="this-mac"><strong>This Mac</strong> · {thisMacLine(hardware)}</p>
+                  <p className="muted this-mac-note">A model larger than that still runs, but slowly: it is swapped through memory. Speed below is what each model managed last time on this Mac.</p>
+                </>
+              ) : (
+                <p className="muted this-mac-note">{hardware ? "This Mac did not say what it is made of." : "Reading what this Mac is made of…"} Speed below is what each model managed last time on this Mac.</p>
+              )}
+            </Zone>
+
             <Zone title="Ollama" sub="the local model runner" aside={provider && <><span className={`dot ${provider.available ? "ok" : "bad"}`} />{provider.available ? `${installed.length} models` : "not running"}</>}>
               <div className="row field-row">
                 <div className="field">
@@ -248,13 +265,14 @@ export default function SettingsApp() {
                 <>
                   <p className="muted planner-note">Not every model plans well; the planner (what drafts a recipe from a goal) uses the fastest clean one unless you pin another. <strong>Try planning</strong> measures a model on a sample goal.</p>
                   <table>
-                    <thead><tr><th>Model</th><th>Size</th><th>Context</th><th>Can</th><th></th><th></th></tr></thead>
+                    <thead><tr><th>Model</th><th>Size</th><th>Context</th><th title="Tokens per second the model managed last time on this Mac">Speed</th><th>Can</th><th></th><th></th></tr></thead>
                     <tbody>
                       {installed.map((m) => (
                         <tr key={m.id}>
                           <td className="mono">{m.name}</td>
                           <td>{m.parameterSize ?? ""}</td>
                           <td>{m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : ""}</td>
+                          <td className="speed">{speedOf(models?.speeds, m.id)}</td>
                           <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>
                           <td><TryCell id={m.id} state={tries[m.id]} onTry={tryModel} /></td>
                           <td>{planCell(m)}</td>
@@ -459,6 +477,8 @@ export default function SettingsApp() {
             <PromptEditor name="strip" onError={(m) => setError(m)} />
             <h3>Planner <span className="muted">(the second call: the steps of custom stages)</span></h3>
             <PromptEditor name="planner" onError={(m) => setError(m)} />
+            <p className="quiet-line plans-journal">Every plan is written down as it happens: the goal, the model, which prompt revision was in use, what the checker found on each attempt, and everything the model wrote.
+              <button className="link" onClick={() => api.revealPlansFolder().catch((e) => setError(String(e)))}>Open the planner's journal</button></p>
           </Zone>
         )}
 
@@ -573,7 +593,7 @@ function TryCell({ id, state, onTry }: { id: string; state?: { busy: boolean; re
     <span className="try-cell">
       <button className="link" onClick={() => onTry(id)} disabled={state?.busy}>{state?.busy ? "trying…" : r ? "try again" : "Try"}</button>
       {r && (r.ok
-        ? <span className="muted"> · answered in {(r.durationMs / 1000).toFixed(1)} s{r.answer ? <> · “{r.answer}”</> : ""}</span>
+        ? <span className="muted"> · answered in {(r.durationMs / 1000).toFixed(1)} s{r.completionTokensPerSecond ? <> · {fmtSpeed(r.completionTokensPerSecond)}</> : ""}{r.answer ? <> · “{r.answer}”</> : ""}</span>
         : <span className="red"> · {r.error}</span>)}
     </span>
   );

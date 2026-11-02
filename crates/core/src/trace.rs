@@ -100,6 +100,9 @@ pub struct Run {
     /// The run this one continued (an approval, an edit, or a watch running again).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continues: Option<String>,
+    /// A remark about the record itself, for a saved example: "written by hand as an example".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A run started by something other than the user: so far, a folder watch.

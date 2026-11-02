@@ -93,6 +93,10 @@ pub struct RecipeInfo {
     /// store's grants through `with_consent`.
     #[serde(default)]
     pub consent: Consent,
+    /// True when the bundle ships `example/result.json`, a saved run to look at without a model
+    /// (`example_result`).
+    #[serde(default)]
+    pub example: bool,
 }
 
 impl RecipeInfo {
@@ -291,6 +295,7 @@ impl RecipeBundle {
             shelf: ShelfState::Catalog,
             from: None,
             consent: crate::consent::consent_for(&self.recipe, self.source, &[]),
+            example: self.root.join(crate::catalog::EXAMPLE_RESULT).is_file(),
         }
         .with_shelf(None)
     }

@@ -6,12 +6,17 @@ use crate::bundle::RecipeBundle;
 use crate::draft::{Draft, DraftError};
 use crate::library::RecipeLibrary;
 use crate::stagelib::steps_digest;
+use crate::trace::Run;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 /// The top-level key a duplicated recipe carries: `x-source: { catalog, version, digest }`.
 pub const SOURCE_KEY: &str = "x-source";
+
+/// A saved run inside a bundle, to look at without a model: `example/result.json`, in the run
+/// record shape, with any file it names kept beside it under `example/`.
+pub const EXAMPLE_RESULT: &str = "example/result.json";
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -31,6 +36,10 @@ pub enum CatalogError {
     Draft(#[from] DraftError),
     #[error("copied, but the recipe did not load back: {0}")]
     LoadBack(String),
+    #[error("This recipe has no example result to show.")]
+    NoExample,
+    #[error("{path}: the example result is not a run record: {source}")]
+    BadExample { path: PathBuf, source: serde_json::Error },
 }
 
 /// Where a user recipe was copied from, as `list_recipes` reports it.
@@ -148,6 +157,54 @@ pub fn duplicate(library: &RecipeLibrary, recipe_id: &str, new_id: &str, name: &
         return Err(e);
     }
     library.find(new_id).ok_or_else(|| CatalogError::LoadBack(new_id.into()))
+}
+
+/// Rewrite every `example/...` path in a value to its absolute place under `root`: a `path`
+/// key's string, and (when `all_strings` is set, for the run's inputs) any string.
+fn absolutize(v: &mut Value, root: &Path, all_strings: bool) {
+    match v {
+        Value::String(s) if all_strings => {
+            if let Some(rest) = s.strip_prefix("example/") {
+                *s = root.join("example").join(rest).to_string_lossy().into_owned();
+            }
+        }
+        Value::Object(m) => {
+            for (k, child) in m.iter_mut() {
+                absolutize(child, root, all_strings || k == "path");
+            }
+        }
+        Value::Array(a) => {
+            for child in a {
+                absolutize(child, root, all_strings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The bundle's saved example run, with every `example/` path (the run's inputs, each step's
+/// inputs and output, the outputs) rewritten to its absolute place under the bundle, so the
+/// ordinary viewers find the files.
+pub fn example_result(bundle: &RecipeBundle) -> Result<Run, CatalogError> {
+    let path = bundle.root.join(EXAMPLE_RESULT);
+    if !path.is_file() {
+        return Err(CatalogError::NoExample);
+    }
+    let text = std::fs::read_to_string(&path).map_err(|source| CatalogError::Io { path: path.clone(), source })?;
+    let mut run: Run = serde_json::from_str(&text).map_err(|source| CatalogError::BadExample { path: path.clone(), source })?;
+    for v in run.inputs.values_mut() {
+        absolutize(v, &bundle.root, true);
+    }
+    for s in &mut run.steps {
+        absolutize(&mut s.inputs, &bundle.root, false);
+        if let Some(o) = s.output.as_mut() {
+            absolutize(o, &bundle.root, false);
+        }
+    }
+    for v in run.outputs.values_mut() {
+        absolutize(v, &bundle.root, false);
+    }
+    Ok(run)
 }
 
 /// What `x-source` says about a user recipe, judged against the catalog as scanned: the catalog
@@ -318,6 +375,37 @@ mod tests {
         assert!(provenance(shipped_bundle, &scan.bundles).is_none());
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_dir_all(&catalog);
+    }
+
+    #[test]
+    fn the_two_shipped_examples_load_with_their_paths_made_absolute() {
+        let lib = library(&fresh("examples"));
+        for id in ["summarize-file", "describe-document"] {
+            let b = lib.find(id).unwrap();
+            assert!(b.info().example, "{id} ships an example");
+            let run = example_result(&b).unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(run.recipe_id, id);
+            assert_eq!(run.status, crate::trace::RunStatus::Succeeded);
+            let file = b.root.join("example/reading-list.md");
+            assert!(file.is_file());
+            assert_eq!(run.inputs["file"], Value::String(file.to_string_lossy().into_owned()), "the input path is the bundle's own copy");
+            let read = run.steps.iter().find(|s| s.step_id == "read").unwrap();
+            assert_eq!(read.output.as_ref().unwrap()["path"], run.inputs["file"]);
+            assert_eq!(read.inputs["path"], run.inputs["file"]);
+            assert!(read.output.as_ref().unwrap()["text"].as_str().unwrap().contains("Reading list on OAuth"));
+            let text = serde_json::to_string(&run).unwrap();
+            assert!(!text.contains("\"example/reading-list.md\""), "{id}: every example/ path was rewritten");
+            assert!(run.steps.iter().any(|s| s.model.as_deref().map(|m| m.starts_with("ollama:")).unwrap_or(false)), "{id}: a model is named for the label");
+            assert_eq!(run.outputs.len(), 1);
+            assert!(run.outputs.values().next().unwrap().as_str().unwrap().len() > 100);
+        }
+        assert_eq!(example_result(&lib.find("describe-document").unwrap()).unwrap().note.as_deref(), Some("written by hand as an example"));
+        assert!(example_result(&lib.find("summarize-file").unwrap()).unwrap().note.is_none());
+        // A recipe without one says so, and info() agrees.
+        let kit = lib.find("learning-kit").unwrap();
+        assert!(!kit.info().example);
+        assert!(matches!(example_result(&kit), Err(CatalogError::NoExample)));
+        assert_eq!(serde_json::to_value(kit.info()).unwrap()["example"], Value::Bool(false));
     }
 
     #[test]

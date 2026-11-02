@@ -1,0 +1,80 @@
+{
+  "id": "01a19d73-f6e7-7776-815d-218c7a04f766",
+  "recipeId": "summarize-file",
+  "recipeName": "Summarize a File",
+  "recipeVersion": "0.2.0",
+  "status": "succeeded",
+  "startedAt": "2026-11-02T18:09:45.191274Z",
+  "finishedAt": "2026-11-02T18:10:07.719115Z",
+  "inputs": {
+    "file": "example/reading-list.md"
+  },
+  "resolutions": {
+    "writer": {
+      "slot": "writer",
+      "modelId": "ollama:hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-Q4_K_XL",
+      "via": "capability"
+    }
+  },
+  "steps": [
+    {
+      "runId": "01a19d73-f6e7-7776-815d-218c7a04f766",
+      "stepId": "read",
+      "kind": "tool",
+      "name": "Read the file",
+      "position": 0,
+      "status": "succeeded",
+      "startedAt": "2026-11-02T18:09:45.191430Z",
+      "finishedAt": "2026-11-02T18:09:45.191810Z",
+      "durationMs": 0,
+      "model": null,
+      "promptPath": null,
+      "promptTokens": null,
+      "completionTokens": null,
+      "inputs": {
+        "path": "example/reading-list.md"
+      },
+      "output": {
+        "path": "example/reading-list.md",
+        "text": "# Reading list on OAuth\n\nThe best single explainer is the IETF overview at https://datatracker.ietf.org/doc/html/rfc6749 and the PKCE extension at https://datatracker.ietf.org/doc/html/rfc7636.\n\nA diagram of the flow: ![flow](https://example.com/oauth-flow.png)\n\nKey points: tokens are short-lived; refresh tokens must be stored safely; PKCE binds the authorization code to the client that asked for it.\n",
+        "bytes": 404
+      },
+      "error": null,
+      "reusedFrom": null,
+      "edited": false,
+      "parent": null,
+      "skipReason": null,
+      "toolCalls": []
+    },
+    {
+      "runId": "01a19d73-f6e7-7776-815d-218c7a04f766",
+      "stepId": "summarize",
+      "kind": "model",
+      "name": "Write the summary",
+      "position": 1,
+      "status": "succeeded",
+      "startedAt": "2026-11-02T18:09:45.191928Z",
+      "finishedAt": "2026-11-02T18:10:07.718970Z",
+      "durationMs": 22527,
+      "model": "ollama:hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-Q4_K_XL",
+      "promptPath": "prompts/summarize.md",
+      "promptTokens": 206,
+      "completionTokens": 139,
+      "inputs": {
+        "text": "# Reading list on OAuth\n\nThe best single explainer is the IETF overview at https://datatracker.ietf.org/doc/html/rfc6749 and the PKCE extension at https://datatracker.ietf.org/doc/html/rfc7636.\n\nA diagram of the flow: ![flow](https://example.com/oauth-flow.png)\n\nKey points: tokens are short-lived; refresh tokens must be stored safely; PKCE binds the authorization code to the client that asked for it.\n"
+      },
+      "output": "This is a concise reading list on OAuth for developers and security practitioners.  \n\n- The IETF RFC 6749 (https://datatracker.ietf.org/doc/html/rfc6749) is the best single explainer of OAuth 2.0.  \n- The PKCE extension is defined in RFC 7636 (https://datatracker.ietf.org/doc/html/rfc7636).  \n- A diagram illustrating the OAuth flow is provided (though the image link is illustrative).  \n- OAuth tokens are short-lived.  \n- Refresh tokens must be stored safely.  \n- PKCE binds the authorization code to the client that requested it.",
+      "error": null,
+      "reusedFrom": null,
+      "edited": false,
+      "parent": null,
+      "skipReason": null,
+      "toolCalls": []
+    }
+  ],
+  "outputs": {
+    "summary": "This is a concise reading list on OAuth for developers and security practitioners.  \n\n- The IETF RFC 6749 (https://datatracker.ietf.org/doc/html/rfc6749) is the best single explainer of OAuth 2.0.  \n- The PKCE extension is defined in RFC 7636 (https://datatracker.ietf.org/doc/html/rfc7636).  \n- A diagram illustrating the OAuth flow is provided (though the image link is illustrative).  \n- OAuth tokens are short-lived.  \n- Refresh tokens must be stored safely.  \n- PKCE binds the authorization code to the client that requested it."
+  },
+  "error": null,
+  "edits": {}
+}

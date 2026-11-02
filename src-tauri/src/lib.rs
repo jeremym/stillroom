@@ -1075,6 +1075,14 @@ fn grant_permissions(app: AppHandle, state: State<'_, AppState>, recipe_id: Stri
     state.info_of(&bundle)
 }
 
+/// The recipe's saved example run (`example/result.json` in the bundle), its file paths pointing
+/// into the bundle's `example/` folder, so the Recipe page can show a result without a model.
+#[tauri::command]
+fn example_result(state: State<'_, AppState>, recipe_id: String) -> CmdResult<Run> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    stillroom_core::catalog::example_result(&bundle).map_err(err)
+}
+
 /// Forget every grant for a recipe; it needs the consent step again before it runs.
 #[tauri::command]
 fn revoke_permissions(app: AppHandle, state: State<'_, AppState>, recipe_id: String) -> CmdResult<RecipeInfo> {
@@ -1543,6 +1551,7 @@ pub fn run() {
             set_shelf,
             grant_permissions,
             revoke_permissions,
+            example_result,
             reveal_recipes_folder,
             reveal_sample_folders,
             permission_status,

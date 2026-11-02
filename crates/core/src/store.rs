@@ -603,6 +603,7 @@ mod tests {
             edits: Default::default(),
             trigger: None,
             continues: None,
+            note: None,
         }
     }
 
@@ -706,6 +707,7 @@ mod tests {
             edits: Default::default(),
             trigger: None,
             continues: None,
+            note: None,
         };
         store.save_run(&run).unwrap();
         assert_eq!(store.get_run("r1").unwrap().unwrap().recipe_name, "X");
@@ -762,6 +764,7 @@ mod tests {
                     edits: Default::default(),
                     trigger: None,
                     continues: None,
+                    note: None,
                 })
                 .unwrap();
         };

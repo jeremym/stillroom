@@ -485,6 +485,7 @@ impl Executor {
             edits: req.edits.clone(),
             trigger: req.trigger.clone(),
             continues: req.resume_from.as_ref().map(|r| r.id.clone()),
+            note: None,
         };
 
         let order = match Self::order(&req.recipe) {

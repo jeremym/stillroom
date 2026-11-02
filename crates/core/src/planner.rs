@@ -340,7 +340,7 @@ struct StripStage {
     why: Option<String>,
 }
 
-fn strip_schema(lib: &crate::stagelib::StageLibrary) -> Value {
+pub fn strip_schema(lib: &crate::stagelib::StageLibrary) -> Value {
     let ids: Vec<Value> = lib.stages.iter().map(|s| Value::String(s.id.clone())).collect();
     json!({
         "type": "object",
@@ -522,6 +522,101 @@ fn merge_partial(skeleton: &mut Draft, partial: &Draft, lib: &crate::stagelib::S
     declare_keeps(base);
 }
 
+/// The strip answer as a skeleton draft: ready-made stages expanded, custom ones named with
+/// their why and no steps yet. Also how many custom stages there are (none means nothing is
+/// left to compose).
+pub fn skeleton_from_strip(content: &str, req: &PlanRequest, lib: &crate::stagelib::StageLibrary) -> Result<(Draft, usize), String> {
+    let answer: StripAnswer = serde_json::from_value(extract_json(content)?).map_err(|e| e.to_string())?;
+    let mut yaml = serde_json::Map::new();
+    yaml.insert("schemaVersion".into(), Value::String("0".into()));
+    yaml.insert("id".into(), Value::String(req.id.clone()));
+    yaml.insert("name".into(), Value::String(req.name.clone()));
+    if let Some(i) = &req.icon {
+        yaml.insert("icon".into(), Value::String(i.clone()));
+    }
+    yaml.insert("version".into(), Value::String("0.1.0".into()));
+    yaml.insert("description".into(), Value::String(String::new()));
+    yaml.insert("inputs".into(), Value::Object(Default::default()));
+    yaml.insert("modelSlots".into(), Value::Object(Default::default()));
+    yaml.insert("steps".into(), Value::Array(Vec::new()));
+    yaml.insert("outputs".into(), Value::Object(Default::default()));
+    let mut stages = Vec::new();
+    let mut taken: Vec<String> = Vec::new();
+    let mut custom = 0usize;
+    for st in answer.stages {
+        // The model often names the ready-made stage it means in the why, "(watch_pages)",
+        // instead of writing `use`. Take the hint.
+        let hinted = st.use_.clone().filter(|u| lib.get(u).is_some()).or_else(|| {
+            let text = format!("{} {}", st.name.clone().unwrap_or_default(), st.why.clone().unwrap_or_default());
+            lib.stages.iter().map(|d| d.id.clone()).find(|id| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == id))
+        });
+        match hinted.as_deref() {
+            Some(u) if taken.iter().any(|t| t == u) => continue, // a ready-made stage once; a repeat is a slip
+            Some(u) => {
+                let mut o = serde_json::Map::new();
+                o.insert("use".into(), Value::String(u.into()));
+                if let Some(n) = st.name.filter(|n| !n.trim().is_empty()) {
+                    o.insert("name".into(), Value::String(n));
+                }
+                if let Some(w) = st.why.filter(|w| !w.trim().is_empty()) {
+                    o.insert("why".into(), Value::String(w));
+                }
+                taken.push(u.to_string());
+                stages.push(Value::Object(o));
+            }
+            None => {
+                let name = st.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Make".into());
+                let id = st.id.filter(|i| !i.trim().is_empty() && !taken.contains(i)).unwrap_or_else(|| slug_id(&name, &taken));
+                taken.push(id.clone());
+                let mut o = serde_json::Map::new();
+                o.insert("id".into(), Value::String(id));
+                o.insert("name".into(), Value::String(name));
+                if let Some(w) = st.why {
+                    o.insert("why".into(), Value::String(w));
+                }
+                custom += 1;
+                stages.push(Value::Object(o));
+            }
+        }
+    }
+    yaml.insert("stages".into(), Value::Array(stages));
+    let mut draft = Draft { yaml: Value::Object(yaml), files: BTreeMap::new() };
+    let _ = lib.expand_all(&mut draft);
+    Ok((draft, custom))
+}
+
+/// The composing answer folded into the skeleton (when there is one) and every `use` expanded.
+/// Returns the draft and the problems the merge itself found (an unknown ready-made stage);
+/// the caller checks the draft. This is the planner with the model calls taken out, so recorded
+/// answers can be replayed in tests.
+pub fn compose(skeleton: Option<&Draft>, content: &str, req: &PlanRequest, lib: Option<&crate::stagelib::StageLibrary>) -> Result<(Draft, Vec<String>), String> {
+    let mut draft = parse_answer(content, req)?;
+    if let (Some(sk), Some(lib)) = (skeleton, lib) {
+        let mut merged = sk.clone();
+        merge_partial(&mut merged, &draft, lib);
+        draft = merged;
+    }
+    let problems = lib.map(|l| l.expand_all(&mut draft)).unwrap_or_default();
+    Ok((draft, problems))
+}
+
+/// What a plan makes from recorded answers, with no model call: the strip answer (none for a
+/// single-call plan) and the composing answer (none when every stage was ready-made).
+pub fn draft_from_answers(req: &PlanRequest, strip: Option<&str>, answer: Option<&str>, lib: Option<&crate::stagelib::StageLibrary>) -> Result<(Draft, Vec<String>), String> {
+    let skeleton = match (strip, lib) {
+        (Some(s), Some(lib)) => Some(skeleton_from_strip(s, req, lib)?),
+        (Some(_), None) => return Err("a strip answer needs the stage library".into()),
+        (None, _) => None,
+    };
+    match (skeleton, answer) {
+        (Some((draft, 0)), None) => Ok((draft, Vec::new())),
+        (Some((_, n)), None) => Err(format!("{n} custom stage(s) and no composing answer")),
+        (Some((sk, _)), Some(a)) => compose(Some(&sk), a, req, lib),
+        (None, Some(a)) => compose(None, a, req, lib),
+        (None, None) => Err("no answers".into()),
+    }
+}
+
 impl Planner {
     async fn call(&self, req: ChatRequest) -> Result<crate::model::ChatResponse, PlanError> {
         let timed = async {
@@ -559,62 +654,7 @@ impl Planner {
     async fn pick_strip(&self, req: &PlanRequest, lib: &crate::stagelib::StageLibrary) -> Result<(Draft, usize, u64, u64), PlanError> {
         let system = format!("{}\n\n## Ready-made stages\n{}", self.strip_prompt.trim_end(), lib.describe());
         let resp = self.call(self.chat(vec![ChatMessage::new("system", system), ChatMessage::new("user", user_message(req))], strip_schema(lib))).await?;
-        let answer: StripAnswer = serde_json::from_value(extract_json(&resp.content).map_err(PlanError::Unusable)?).map_err(|e| PlanError::Unusable(e.to_string()))?;
-        let mut yaml = serde_json::Map::new();
-        yaml.insert("schemaVersion".into(), Value::String("0".into()));
-        yaml.insert("id".into(), Value::String(req.id.clone()));
-        yaml.insert("name".into(), Value::String(req.name.clone()));
-        if let Some(i) = &req.icon {
-            yaml.insert("icon".into(), Value::String(i.clone()));
-        }
-        yaml.insert("version".into(), Value::String("0.1.0".into()));
-        yaml.insert("description".into(), Value::String(String::new()));
-        yaml.insert("inputs".into(), Value::Object(Default::default()));
-        yaml.insert("modelSlots".into(), Value::Object(Default::default()));
-        yaml.insert("steps".into(), Value::Array(Vec::new()));
-        yaml.insert("outputs".into(), Value::Object(Default::default()));
-        let mut stages = Vec::new();
-        let mut taken: Vec<String> = Vec::new();
-        let mut custom = 0usize;
-        for st in answer.stages {
-            // The model often names the ready-made stage it means in the why, "(watch_pages)",
-            // instead of writing `use`. Take the hint.
-            let hinted = st.use_.clone().filter(|u| lib.get(u).is_some()).or_else(|| {
-                let text = format!("{} {}", st.name.clone().unwrap_or_default(), st.why.clone().unwrap_or_default());
-                lib.stages.iter().map(|d| d.id.clone()).find(|id| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == id))
-            });
-            match hinted.as_deref() {
-                Some(u) if taken.iter().any(|t| t == u) => continue, // a ready-made stage once; a repeat is a slip
-                Some(u) => {
-                    let mut o = serde_json::Map::new();
-                    o.insert("use".into(), Value::String(u.into()));
-                    if let Some(n) = st.name.filter(|n| !n.trim().is_empty()) {
-                        o.insert("name".into(), Value::String(n));
-                    }
-                    if let Some(w) = st.why.filter(|w| !w.trim().is_empty()) {
-                        o.insert("why".into(), Value::String(w));
-                    }
-                    taken.push(u.to_string());
-                    stages.push(Value::Object(o));
-                }
-                None => {
-                    let name = st.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Make".into());
-                    let id = st.id.filter(|i| !i.trim().is_empty() && !taken.contains(i)).unwrap_or_else(|| slug_id(&name, &taken));
-                    taken.push(id.clone());
-                    let mut o = serde_json::Map::new();
-                    o.insert("id".into(), Value::String(id));
-                    o.insert("name".into(), Value::String(name));
-                    if let Some(w) = st.why {
-                        o.insert("why".into(), Value::String(w));
-                    }
-                    custom += 1;
-                    stages.push(Value::Object(o));
-                }
-            }
-        }
-        yaml.insert("stages".into(), Value::Array(stages));
-        let mut draft = Draft { yaml: Value::Object(yaml), files: BTreeMap::new() };
-        let _ = lib.expand_all(&mut draft);
+        let (draft, custom) = skeleton_from_strip(&resp.content, req, lib).map_err(PlanError::Unusable)?;
         Ok((draft, custom, resp.prompt_tokens.unwrap_or(0), resp.completion_tokens.unwrap_or(0)))
     }
 
@@ -682,14 +722,8 @@ impl Planner {
             prompt_tokens += resp.prompt_tokens.unwrap_or(0);
             completion_tokens += resp.completion_tokens.unwrap_or(0);
             emit(PlanEvent::Checking { attempt });
-            let problems = match parse_answer(&resp.content, req) {
-                Ok(mut draft) => {
-                    if let (Some(sk), Some(lib)) = (&skeleton, lib) {
-                        let mut merged = sk.clone();
-                        merge_partial(&mut merged, &draft, lib);
-                        draft = merged;
-                    }
-                    let mut problems = lib.map(|l| l.expand_all(&mut draft)).unwrap_or_default();
+            let problems = match compose(skeleton.as_ref(), &resp.content, req, lib) {
+                Ok((draft, mut problems)) => {
                     problems.extend(draft.check(&known_tools));
                     let better = best.as_ref().map(|(_, p)| problems.len() < p.len()).unwrap_or(true);
                     if better {

@@ -1,0 +1,6 @@
+{
+  "about": "Every stage is ready-made: one call, nothing to compose. The documents Q&A pair.",
+  "request": { "goal": "Ask questions over a folder of documents", "id": "ask-docs", "name": "Ask my documents", "icon": "folder" },
+  "strip": { "stages": [ { "use": "index_folder" }, { "use": "answer_from_index" } ] },
+  "answer": null
+}

@@ -1,0 +1,6 @@
+{
+  "about": "The strip answer writes no `use` but names the ready-made stage in each why; the hint is taken and the plan ends after one call. The model's own stage name stays.",
+  "request": { "goal": "Read these pages and write a cited brief", "id": "pages-brief", "name": "Pages brief", "icon": "globe" },
+  "strip": { "stages": [ { "name": "Read the pages", "why": "Fetch each link and extract findings (read_links)." }, { "name": "Brief", "why": "One brief, cited (write_brief)." } ] },
+  "answer": null
+}

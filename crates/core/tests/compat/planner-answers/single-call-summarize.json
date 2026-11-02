@@ -1,0 +1,20 @@
+{
+  "about": "A single-call plan (no stage library): the model answers with the whole recipe and its files. A file path outside prompts/ or schemas/ is dropped.",
+  "request": { "goal": "Summarize a file", "id": "summarize-2", "name": "Summarize 2", "icon": "notes" },
+  "strip": null,
+  "answer": {
+    "recipe": {
+      "id": "ignored", "name": "Ignored",
+      "description": "Reads a file and summarizes it.",
+      "inputs": { "file": { "type": "file", "label": "File" } },
+      "modelSlots": { "writer": { "requires": ["text"] } },
+      "permissions": { "filesystem": { "read": ["input"] } },
+      "steps": [
+        { "id": "read", "kind": "tool", "tool": "file.read", "inputs": { "path": "${inputs.file}" } },
+        { "id": "sum", "kind": "model", "slot": "writer", "prompt": "prompts/sum.md", "inputs": { "text": "${steps.read.output.text}" } }
+      ],
+      "outputs": { "summary": { "from": "${steps.sum.output}", "type": "markdown" } }
+    },
+    "files": [ { "path": "prompts/sum.md", "text": "Summarize." }, { "path": "../evil.md", "text": "no" } ]
+  }
+}

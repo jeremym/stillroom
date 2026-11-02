@@ -1,0 +1,6 @@
+{
+  "about": "Every stage is ready-made: the news-log triple, where remember_seen keeps a run keep and brief_new reads two earlier stages.",
+  "request": { "goal": "Tell me what is new on the pages I follow", "id": "news", "name": "What is new", "icon": "globe" },
+  "strip": { "stages": [ { "use": "watch_pages" }, { "use": "remember_seen" }, { "use": "brief_new" } ] },
+  "answer": null
+}

@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "required": ["summary", "findings", "relevance"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": { "type": "string" },
+    "relevance": { "type": "string", "enum": ["high", "some", "none"] },
+    "findings": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["claim", "quote", "where"],
+        "additionalProperties": false,
+        "properties": {
+          "claim": { "type": "string" },
+          "quote": { "type": "string" },
+          "where": { "type": "string" }
+        }
+      }
+    }
+  }
+}

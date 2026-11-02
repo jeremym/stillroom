@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "required": ["title", "chapters"],
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string" },
+    "chapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "text", "concept"],
+        "additionalProperties": false,
+        "properties": {
+          "title": { "type": "string" },
+          "text": { "type": "string" },
+          "concept": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1115,6 +1115,17 @@ fn reveal_recipes_folder(state: State<'_, AppState>) -> CmdResult<()> {
     tauri_plugin_opener::reveal_item_in_dir(user_root).map_err(err)
 }
 
+/// Show the sample folders (`samples/`: the sample recipe and the inbox, archive, and outbox it
+/// works on) in the Finder, so the user can copy them somewhere of their own before running it.
+#[tauri::command]
+fn reveal_sample_folders(app: AppHandle) -> CmdResult<()> {
+    let dir = catalog_dir(&app, "samples");
+    if !dir.is_dir() {
+        return Err("The sample folders did not ship with this build.".into());
+    }
+    tauri_plugin_opener::reveal_item_in_dir(dir).map_err(err)
+}
+
 #[tauri::command]
 fn list_watches(state: State<'_, AppState>, rt: State<'_, WatchRuntime>) -> CmdResult<Vec<WatchView>> {
     let watches = state.store.lock().map_err(err)?.list_watches().map_err(err)?;
@@ -1303,6 +1314,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
     let view = SubmenuBuilder::new(app, "View")
         .item(&item("place-library", "Library", Some("CmdOrCtrl+0"))?)
+        .item(&item("place-browse", "Catalog", Some("CmdOrCtrl+B"))?)
         .item(&item("place-recipe", "Recipe", Some("CmdOrCtrl+1"))?)
         .item(&item("place-setup", "Set Up", Some("CmdOrCtrl+2"))?)
         .item(&item("place-running", "Running", Some("CmdOrCtrl+3"))?)
@@ -1462,6 +1474,7 @@ pub fn run() {
             delete_recipe,
             set_shelf,
             reveal_recipes_folder,
+            reveal_sample_folders,
             permission_status,
             open_privacy_pane,
             open_link,

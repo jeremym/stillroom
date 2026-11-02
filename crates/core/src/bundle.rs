@@ -393,6 +393,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&builtin).unwrap()["shelf"], serde_json::json!("catalog"));
         let sample = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::Sample).unwrap().info();
         assert_eq!(sample.shelf, ShelfState::Catalog, "a sample starts in the catalog too");
+        assert!(sample.tags.contains(&"sample".to_string()), "the sample row is found by its tag: {:?}", sample.tags);
         assert_eq!(sample.clone().with_shelf(Some(ShelfState::Shelf)).shelf, ShelfState::Shelf);
         assert_eq!(serde_json::to_value(&sample).unwrap()["source"], serde_json::json!("sample"));
         let json = serde_json::to_value(&sample).unwrap();

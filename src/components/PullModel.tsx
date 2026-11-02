@@ -6,13 +6,15 @@ import type { PullEvent } from "../types";
 import { isInstalled, suggestPull } from "../models";
 
 /* Pull a model through Ollama with a block-character progress bar. Used by Settings and the welcome. */
-/* `installed` keeps the suggestion to a model you do not have yet, and stops a pull of one you do. */
-export function PullModel({ enabled, installed = [], onDone }: { enabled: boolean; installed?: string[]; onDone?: () => void }) {
+/* `installed` keeps the suggestion to a model you do not have yet, and stops a pull of one you do.
+   `suggestion` names the model to offer instead of the usual starter (the welcome passes a planner-capable
+   one when nothing installed can draft a recipe); `prompt` makes it the button even with models here. */
+export function PullModel({ enabled, installed = [], suggestion: suggested, prompt = false, onDone }: { enabled: boolean; installed?: string[]; suggestion?: string; prompt?: boolean; onDone?: () => void }) {
   const [name, setName] = useState("");
-  const suggestion = suggestPull(installed);
+  const suggestion = suggested ?? suggestPull(installed);
   const already = isInstalled(name, installed);
   // With nothing installed the suggestion is the button; with models already here, pulling is a choice, not a prompt.
-  const first = installed.length === 0;
+  const first = installed.length === 0 || prompt;
   const [pull, setPull] = useState<PullEvent | null>(null);
   const [pulling, setPulling] = useState(false);
   useEffect(() => {

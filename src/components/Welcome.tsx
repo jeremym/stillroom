@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Glyph, Logo, isGlyphName } from "../brand";
 import { Pill, Zone } from "@overtone-foundry/app-kit";
+import { api } from "../api";
+import { canPlan } from "../planWith";
+import { suggestPlanner } from "../settings/pull";
 import { PullModel } from "./PullModel";
 import type { ModelsResponse, RecipeInfo, Settings } from "../types";
 
@@ -25,6 +28,16 @@ export function Welcome({ models, settings, recipes, onSave, onOpenSettings, onR
   const provider = models?.providers[0];
   const installed = models?.models ?? [];
   const chat = installed.filter((m) => m.capabilities.includes("text" as never));
+  // A model that can draft a recipe (plan): writes text and answers in a fixed shape (JSON). Without one,
+  // the suggested pull is a planner-capable starter sized to this Mac's memory, so a first run can plan.
+  const planners = installed.filter(canPlan);
+  const [memoryBytes, setMemoryBytes] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.previewPlanner().then((p) => { if (live) setMemoryBytes(p.memoryBytes); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  const starter = suggestPlanner(memoryBytes);
   const ready = Boolean(provider?.available) && chat.length > 0;
   const preference = settings.models?.preference ?? "accuracy";
   const textDefault = settings.models?.byCapability?.text ?? "";
@@ -60,16 +73,23 @@ export function Welcome({ models, settings, recipes, onSave, onOpenSettings, onR
             </>
           ) : chat.length === 0 ? (
             <>
-              <p>Ollama is running but has no model yet. Pull one; a model around 8 billion parameters answers in seconds on most Macs.</p>
-              <PullModel enabled installed={installed.map((m) => m.name)} onDone={onRefreshModels} />
+              <p>Ollama is running but has no model yet. Pull <span className="mono">{starter}</span>: it answers in seconds on most Macs, can draft recipes from a goal (plan), and runs on this Mac.</p>
+              <PullModel enabled installed={installed.map((m) => m.name)} suggestion={starter} onDone={onRefreshModels} />
             </>
           ) : (
             <>
               <p><Glyph name="yesno" /> Ready: {chat.length === 1 ? "one model" : `${chat.length} models`} can read and write ({chat.map((m) => m.name).slice(0, 4).join(", ")}{chat.length > 4 ? ", …" : ""}).</p>
-              <details className="trace-table">
-                <summary className="muted">Pull another model</summary>
-                <PullModel enabled installed={installed.map((m) => m.name)} onDone={onRefreshModels} />
-              </details>
+              {planners.length === 0 ? (
+                <>
+                  <p className="amber planner-starter"><Glyph name="warning" /> None of them can draft a recipe from a goal (plan): that needs a model that answers in a fixed shape (JSON). Pull <span className="mono">{starter}</span>: it drafts recipes and runs on this Mac.</p>
+                  <PullModel enabled installed={installed.map((m) => m.name)} suggestion={starter} prompt onDone={onRefreshModels} />
+                </>
+              ) : (
+                <details className="trace-table">
+                  <summary className="muted">Pull another model</summary>
+                  <PullModel enabled installed={installed.map((m) => m.name)} onDone={onRefreshModels} />
+                </details>
+              )}
             </>
           )}
         </Zone>

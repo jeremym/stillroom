@@ -1,0 +1,15 @@
+{
+  "about": "Three merge rules at once: the custom stage re-lists an input a ready-made stage already asks for (urls stays with read_links); it references a ready-made stage id as if it were a step (rewritten to the step the stage returns); write_brief's optional sibling input (files?) is dropped because read_folder is not in the recipe.",
+  "request": { "goal": "Read these links, write a brief, then list ideas", "id": "links-ideas", "name": "Links to ideas", "icon": "globe" },
+  "strip": { "stages": [ { "use": "read_links" }, { "use": "write_brief" }, { "name": "Ideas", "why": "w" } ] },
+  "answer": {
+    "recipe": {
+      "id": "x", "name": "X", "description": "d",
+      "inputs": { "urls": { "type": "urls" } }, "modelSlots": {},
+      "steps": [ { "id": "ideas", "kind": "model", "slot": "writer", "prompt": "prompts/ideas.md", "inputs": { "pages": "${steps.read_links.output}", "brief": "${steps.brief_write.output}" } } ],
+      "outputs": { "ideas": { "from": "${steps.ideas.output}", "type": "markdown" } },
+      "stages": [ { "id": "ideas", "name": "Ideas", "why": "w", "inputs": ["urls"], "steps": ["ideas"], "outputs": ["ideas"] } ]
+    },
+    "files": [ { "path": "prompts/ideas.md", "text": "Ideas." } ]
+  }
+}

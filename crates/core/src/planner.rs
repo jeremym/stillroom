@@ -48,6 +48,12 @@ pub fn planner_recipe() -> Recipe {
         outputs: IndexMap::new(),
         budget: None,
         stages: Vec::new(),
+        author: None,
+        license: None,
+        runtime: None,
+        tags: Vec::new(),
+        tests: Vec::new(),
+        extra: IndexMap::new(),
     }
 }
 
@@ -84,6 +90,8 @@ pub struct PlanOutcome {
     pub draft: Draft,
     /// Problems the checker still finds. Empty means the draft can be saved as it is.
     pub problems: Vec<String>,
+    /// The recipe format version the answer was written against.
+    pub schema_version: String,
     pub attempts: u32,
     pub model_id: String,
     pub prompt_tokens: u64,
@@ -104,8 +112,37 @@ pub enum PlanError {
 }
 
 /// What the model is asked to answer with. Loose on purpose: the real recipe schema is applied by
-/// the draft checker afterwards, and its problems go back to the model in words.
+/// the draft checker afterwards, and its problems go back to the model in words. The property
+/// lists of a step and a stage come from the recipe schema's `$defs`, so a field added there
+/// is offered to the model without anyone copying its name here; the constrained enums (step
+/// kind, keep refresh) are kept as the schema has them.
 pub fn answer_schema() -> Value {
+    let schema: Value = serde_json::from_str(crate::recipe::RECIPE_SCHEMA).unwrap_or(Value::Null);
+    let defs = &schema["$defs"];
+    let mut step_props = serde_json::Map::new();
+    let mut add = |props: Option<&Value>| {
+        for (k, v) in props.and_then(Value::as_object).into_iter().flatten() {
+            let keep_as_is = k == "kind" && v.get("enum").is_some();
+            step_props.entry(k.clone()).or_insert_with(|| if keep_as_is { v.clone() } else { json!({}) });
+        }
+    };
+    add(defs["stepBase"].get("properties"));
+    for kind in ["toolStep", "modelStep", "agentStep", "recipeStep", "branchStep", "mapStep", "reviewStep"] {
+        for part in defs[kind]["allOf"].as_array().into_iter().flatten() {
+            add(part.get("properties"));
+        }
+    }
+    let mut stage_props = serde_json::Map::new();
+    for (k, v) in defs["stage"]["properties"].as_object().into_iter().flatten() {
+        let v = match k.as_str() {
+            "keep" => json!({ "type": "object", "properties": { "refresh": v["properties"]["refresh"].clone() } }),
+            "source" => continue, // provenance is written by the app when a ready-made stage is copied, never by the model
+            "inputs" | "steps" | "outputs" => json!({ "type": "array", "items": { "type": "string" } }),
+            _ => json!({ "type": "string" }),
+        };
+        stage_props.insert(k.clone(), v);
+    }
+    stage_props.insert("use".into(), json!({ "type": "string", "description": "The id of a ready-made stage to use instead of steps" }));
     json!({
         "type": "object",
         "required": ["recipe", "files"],
@@ -120,24 +157,9 @@ pub fn answer_schema() -> Value {
                     "inputs": { "type": "object" },
                     "modelSlots": { "type": "object" },
                     "permissions": { "type": "object" },
-                    "steps": { "type": "array", "items": { "type": "object" } },
+                    "steps": { "type": "array", "items": { "type": "object", "properties": step_props } },
                     "outputs": { "type": "object" },
-                    "stages": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string" },
-                                "name": { "type": "string" },
-                                "why": { "type": "string" },
-                                "inputs": { "type": "array", "items": { "type": "string" } },
-                                "steps": { "type": "array", "items": { "type": "string" } },
-                                "outputs": { "type": "array", "items": { "type": "string" } },
-                                "keep": { "type": "object", "properties": { "refresh": { "type": "string", "enum": ["always", "when_sources_change", "manual"] } } },
-                                "use": { "type": "string", "description": "The id of a ready-made stage to use instead of steps" }
-                            }
-                        }
-                    }
+                    "stages": { "type": "array", "items": { "type": "object", "properties": stage_props } }
                 }
             },
             "files": {
@@ -236,7 +258,10 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
     for (k, val) in recipe {
         yaml.insert(k, val);
     }
-    declare_keeps(&mut yaml);
+    let mut yaml = crate::migrate::migrate(Value::Object(yaml)).map_err(|e| e.to_string())?.yaml;
+    // A drafted recipe gets every registry repair (a stage that writes a keep declares one, and
+    // so on): the same repairs the checker offers an author as Notes with a Fix.
+    crate::migrate::repair_all(&mut yaml);
     let mut files = BTreeMap::new();
     match v.get("files") {
         Some(Value::Array(items)) => {
@@ -258,48 +283,7 @@ pub fn parse_answer(content: &str, req: &PlanRequest) -> Result<Draft, String> {
         }
         _ => {}
     }
-    Ok(Draft { yaml: Value::Object(yaml), files })
-}
-
-/// A stage whose steps touch a keep without naming another stage's gets a keep declared when
-/// the model left it out: `when_sources_change` when it indexes, `always` otherwise (a log).
-/// Models reach for the tools and forget the declaration. The checker still guards recipes
-/// written by hand.
-fn declare_keeps(yaml: &mut serde_json::Map<String, Value>) {
-    fn own_keep_tool(s: &Value) -> Option<&str> {
-        let t = s.get("tool").and_then(Value::as_str)?;
-        let names_other = s.get("inputs").and_then(|i| i.get("stage")).and_then(Value::as_str).is_some();
-        (t.starts_with("keep.") && !(names_other && matches!(t, "keep.get" | "keep.query" | "keep.list" | "keep.search"))).then_some(t)
-    }
-    let mut users: Vec<(String, bool)> = Vec::new(); // (step id, indexes)
-    if let Some(steps) = yaml.get("steps").and_then(Value::as_array) {
-        for s in steps {
-            let mut tools: Vec<&str> = own_keep_tool(s).into_iter().collect();
-            if let Some(inner) = s.get("steps").and_then(Value::as_array) {
-                tools.extend(inner.iter().filter_map(own_keep_tool));
-            }
-            if !tools.is_empty() {
-                if let Some(id) = s.get("id").and_then(Value::as_str) {
-                    users.push((id.to_string(), tools.contains(&"keep.index")));
-                }
-            }
-        }
-    }
-    if users.is_empty() {
-        return;
-    }
-    if let Some(stages) = yaml.get_mut("stages").and_then(Value::as_array_mut) {
-        for st in stages.iter_mut() {
-            let ids: Vec<&str> = st.get("steps").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-            let mine: Vec<&(String, bool)> = users.iter().filter(|(id, _)| ids.contains(&id.as_str())).collect();
-            if !mine.is_empty() && !st.get("keep").is_some_and(Value::is_object) {
-                let refresh = if mine.iter().any(|(_, idx)| *idx) { "when_sources_change" } else { "always" };
-                if let Some(o) = st.as_object_mut() {
-                    o.insert("keep".into(), json!({ "refresh": refresh }));
-                }
-            }
-        }
-    }
+    Ok(Draft { yaml, files })
 }
 
 pub struct Planner {
@@ -340,7 +324,7 @@ struct StripStage {
     why: Option<String>,
 }
 
-fn strip_schema(lib: &crate::stagelib::StageLibrary) -> Value {
+pub fn strip_schema(lib: &crate::stagelib::StageLibrary) -> Value {
     let ids: Vec<Value> = lib.stages.iter().map(|s| Value::String(s.id.clone())).collect();
     json!({
         "type": "object",
@@ -519,7 +503,164 @@ fn merge_partial(skeleton: &mut Draft, partial: &Draft, lib: &crate::stagelib::S
             rewrite(outputs, &aliases);
         }
     }
-    declare_keeps(base);
+    crate::migrate::repair_all(&mut skeleton.yaml);
+}
+
+/// The strip answer as a skeleton draft: ready-made stages expanded, custom ones named with
+/// their why and no steps yet. Also how many custom stages there are (none means nothing is
+/// left to compose).
+pub fn skeleton_from_strip(content: &str, req: &PlanRequest, lib: &crate::stagelib::StageLibrary) -> Result<(Draft, usize), String> {
+    let answer: StripAnswer = serde_json::from_value(extract_json(content)?).map_err(|e| e.to_string())?;
+    let mut yaml = serde_json::Map::new();
+    yaml.insert("schemaVersion".into(), Value::String("0".into()));
+    yaml.insert("id".into(), Value::String(req.id.clone()));
+    yaml.insert("name".into(), Value::String(req.name.clone()));
+    if let Some(i) = &req.icon {
+        yaml.insert("icon".into(), Value::String(i.clone()));
+    }
+    yaml.insert("version".into(), Value::String("0.1.0".into()));
+    yaml.insert("description".into(), Value::String(String::new()));
+    yaml.insert("inputs".into(), Value::Object(Default::default()));
+    yaml.insert("modelSlots".into(), Value::Object(Default::default()));
+    yaml.insert("steps".into(), Value::Array(Vec::new()));
+    yaml.insert("outputs".into(), Value::Object(Default::default()));
+    let mut stages = Vec::new();
+    let mut taken: Vec<String> = Vec::new();
+    let mut custom = 0usize;
+    for st in answer.stages {
+        // The model often names the ready-made stage it means in the why, "(watch_pages)",
+        // instead of writing `use`. Take the hint.
+        let hinted = st.use_.clone().filter(|u| lib.get(u).is_some()).or_else(|| {
+            let text = format!("{} {}", st.name.clone().unwrap_or_default(), st.why.clone().unwrap_or_default());
+            lib.stages.iter().map(|d| d.id.clone()).find(|id| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == id))
+        });
+        match hinted.as_deref() {
+            Some(u) if taken.iter().any(|t| t == u) => continue, // a ready-made stage once; a repeat is a slip
+            Some(u) => {
+                let mut o = serde_json::Map::new();
+                o.insert("use".into(), Value::String(u.into()));
+                if let Some(n) = st.name.filter(|n| !n.trim().is_empty()) {
+                    o.insert("name".into(), Value::String(n));
+                }
+                if let Some(w) = st.why.filter(|w| !w.trim().is_empty()) {
+                    o.insert("why".into(), Value::String(w));
+                }
+                taken.push(u.to_string());
+                stages.push(Value::Object(o));
+            }
+            None => {
+                let name = st.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Make".into());
+                let id = st.id.filter(|i| !i.trim().is_empty() && !taken.contains(i)).unwrap_or_else(|| slug_id(&name, &taken));
+                taken.push(id.clone());
+                let mut o = serde_json::Map::new();
+                o.insert("id".into(), Value::String(id));
+                o.insert("name".into(), Value::String(name));
+                if let Some(w) = st.why {
+                    o.insert("why".into(), Value::String(w));
+                }
+                custom += 1;
+                stages.push(Value::Object(o));
+            }
+        }
+    }
+    yaml.insert("stages".into(), Value::Array(stages));
+    let mut draft = Draft { yaml: Value::Object(yaml), files: BTreeMap::new() };
+    let _ = lib.expand_all(&mut draft);
+    Ok((draft, custom))
+}
+
+/// A permission the planner wrote is kept only when it is `input`, `output`, or
+/// `${inputs.<a declared input>}`: what the user hands the run. A literal path or host, cloud
+/// models, running programs, or a credential is dropped and reported in words, so the fix loop
+/// sees it and the user never has to notice. What a ready-made stage brought is not touched here:
+/// it was reviewed with the stage, and it lives in the skeleton, not in the model's answer.
+pub fn whitelist_permissions(yaml: &mut Value, declared_inputs: &[String]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(perms) = yaml.get_mut("permissions").and_then(Value::as_object_mut) else { return problems };
+    let allowed = |entry: &Value| -> bool {
+        match entry.as_str() {
+            Some("input") | Some("output") => true,
+            Some(s) => s.strip_prefix("${inputs.").and_then(|r| r.strip_suffix('}')).is_some_and(|name| declared_inputs.iter().any(|d| d == name)),
+            None => false,
+        }
+    };
+    let removed = |what: &str| format!("The draft asked to {what}, which a recipe may not do on its own. Removed.");
+    if let Some(fs) = perms.get_mut("filesystem").and_then(Value::as_object_mut) {
+        for (key, verb) in [("read", "read"), ("write", "write to")] {
+            if let Some(list) = fs.get_mut(key).and_then(Value::as_array_mut) {
+                list.retain(|e| {
+                    let ok = allowed(e);
+                    if !ok {
+                        problems.push(removed(&format!("{verb} {}", e.as_str().map(String::from).unwrap_or_else(|| e.to_string()))));
+                    }
+                    ok
+                });
+            }
+        }
+        fs.retain(|_, v| !v.as_array().is_some_and(Vec::is_empty));
+    }
+    if let Some(list) = perms.get_mut("network").and_then(Value::as_array_mut) {
+        list.retain(|e| {
+            let ok = allowed(e);
+            if !ok {
+                problems.push(removed(&format!("reach {}", e.as_str().map(String::from).unwrap_or_else(|| e.to_string()))));
+            }
+            ok
+        });
+    }
+    if perms.get("cloudModels").and_then(Value::as_bool) == Some(true) {
+        problems.push(removed("use cloud models"));
+    }
+    if perms.get("shell").and_then(Value::as_bool) == Some(true) {
+        problems.push(removed("run programs on this Mac (shell)"));
+    }
+    for c in perms.get("credentials").and_then(Value::as_array).into_iter().flatten() {
+        problems.push(removed(&format!("use the credential {}", c.as_str().map(String::from).unwrap_or_else(|| c.to_string()))));
+    }
+    perms.remove("cloudModels");
+    perms.remove("shell");
+    perms.remove("credentials");
+    perms.retain(|_, v| !(v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(serde_json::Map::is_empty)));
+    problems
+}
+
+/// The composing answer folded into the skeleton (when there is one) and every `use` expanded.
+/// Returns the draft and the problems the merge itself found (a permission the planner may not
+/// ask for, an unknown ready-made stage); the caller checks the draft. This is the planner with
+/// the model calls taken out, so recorded answers can be replayed in tests.
+pub fn compose(skeleton: Option<&Draft>, content: &str, req: &PlanRequest, lib: Option<&crate::stagelib::StageLibrary>) -> Result<(Draft, Vec<String>), String> {
+    let mut draft = parse_answer(content, req)?;
+    let declared: Vec<String> = [draft.yaml.get("inputs"), skeleton.and_then(|s| s.yaml.get("inputs"))]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .flat_map(|o| o.keys().cloned())
+        .collect();
+    let mut problems = whitelist_permissions(&mut draft.yaml, &declared);
+    if let (Some(sk), Some(lib)) = (skeleton, lib) {
+        let mut merged = sk.clone();
+        merge_partial(&mut merged, &draft, lib);
+        draft = merged;
+    }
+    problems.extend(lib.map(|l| l.expand_all(&mut draft)).unwrap_or_default());
+    Ok((draft, problems))
+}
+
+/// What a plan makes from recorded answers, with no model call: the strip answer (none for a
+/// single-call plan) and the composing answer (none when every stage was ready-made).
+pub fn draft_from_answers(req: &PlanRequest, strip: Option<&str>, answer: Option<&str>, lib: Option<&crate::stagelib::StageLibrary>) -> Result<(Draft, Vec<String>), String> {
+    let skeleton = match (strip, lib) {
+        (Some(s), Some(lib)) => Some(skeleton_from_strip(s, req, lib)?),
+        (Some(_), None) => return Err("a strip answer needs the stage library".into()),
+        (None, _) => None,
+    };
+    match (skeleton, answer) {
+        (Some((draft, 0)), None) => Ok((draft, Vec::new())),
+        (Some((_, n)), None) => Err(format!("{n} custom stage(s) and no composing answer")),
+        (Some((sk, _)), Some(a)) => compose(Some(&sk), a, req, lib),
+        (None, Some(a)) => compose(None, a, req, lib),
+        (None, None) => Err("no answers".into()),
+    }
 }
 
 impl Planner {
@@ -559,62 +700,7 @@ impl Planner {
     async fn pick_strip(&self, req: &PlanRequest, lib: &crate::stagelib::StageLibrary) -> Result<(Draft, usize, u64, u64), PlanError> {
         let system = format!("{}\n\n## Ready-made stages\n{}", self.strip_prompt.trim_end(), lib.describe());
         let resp = self.call(self.chat(vec![ChatMessage::new("system", system), ChatMessage::new("user", user_message(req))], strip_schema(lib))).await?;
-        let answer: StripAnswer = serde_json::from_value(extract_json(&resp.content).map_err(PlanError::Unusable)?).map_err(|e| PlanError::Unusable(e.to_string()))?;
-        let mut yaml = serde_json::Map::new();
-        yaml.insert("schemaVersion".into(), Value::String("0".into()));
-        yaml.insert("id".into(), Value::String(req.id.clone()));
-        yaml.insert("name".into(), Value::String(req.name.clone()));
-        if let Some(i) = &req.icon {
-            yaml.insert("icon".into(), Value::String(i.clone()));
-        }
-        yaml.insert("version".into(), Value::String("0.1.0".into()));
-        yaml.insert("description".into(), Value::String(String::new()));
-        yaml.insert("inputs".into(), Value::Object(Default::default()));
-        yaml.insert("modelSlots".into(), Value::Object(Default::default()));
-        yaml.insert("steps".into(), Value::Array(Vec::new()));
-        yaml.insert("outputs".into(), Value::Object(Default::default()));
-        let mut stages = Vec::new();
-        let mut taken: Vec<String> = Vec::new();
-        let mut custom = 0usize;
-        for st in answer.stages {
-            // The model often names the ready-made stage it means in the why, "(watch_pages)",
-            // instead of writing `use`. Take the hint.
-            let hinted = st.use_.clone().filter(|u| lib.get(u).is_some()).or_else(|| {
-                let text = format!("{} {}", st.name.clone().unwrap_or_default(), st.why.clone().unwrap_or_default());
-                lib.stages.iter().map(|d| d.id.clone()).find(|id| text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|w| w == id))
-            });
-            match hinted.as_deref() {
-                Some(u) if taken.iter().any(|t| t == u) => continue, // a ready-made stage once; a repeat is a slip
-                Some(u) => {
-                    let mut o = serde_json::Map::new();
-                    o.insert("use".into(), Value::String(u.into()));
-                    if let Some(n) = st.name.filter(|n| !n.trim().is_empty()) {
-                        o.insert("name".into(), Value::String(n));
-                    }
-                    if let Some(w) = st.why.filter(|w| !w.trim().is_empty()) {
-                        o.insert("why".into(), Value::String(w));
-                    }
-                    taken.push(u.to_string());
-                    stages.push(Value::Object(o));
-                }
-                None => {
-                    let name = st.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Make".into());
-                    let id = st.id.filter(|i| !i.trim().is_empty() && !taken.contains(i)).unwrap_or_else(|| slug_id(&name, &taken));
-                    taken.push(id.clone());
-                    let mut o = serde_json::Map::new();
-                    o.insert("id".into(), Value::String(id));
-                    o.insert("name".into(), Value::String(name));
-                    if let Some(w) = st.why {
-                        o.insert("why".into(), Value::String(w));
-                    }
-                    custom += 1;
-                    stages.push(Value::Object(o));
-                }
-            }
-        }
-        yaml.insert("stages".into(), Value::Array(stages));
-        let mut draft = Draft { yaml: Value::Object(yaml), files: BTreeMap::new() };
-        let _ = lib.expand_all(&mut draft);
+        let (draft, custom) = skeleton_from_strip(&resp.content, req, lib).map_err(PlanError::Unusable)?;
         Ok((draft, custom, resp.prompt_tokens.unwrap_or(0), resp.completion_tokens.unwrap_or(0)))
     }
 
@@ -639,8 +725,17 @@ impl Planner {
                     prompt_tokens += pt;
                     completion_tokens += ct;
                     if custom == 0 && draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
-                        let problems = draft.check(&known_tools);
-                        return Ok(PlanOutcome { draft, problems, attempts: 1, model_id: self.model_id.clone(), prompt_tokens, completion_tokens, duration_ms: started.elapsed().as_millis() as u64 });
+                        let problems = draft.problems(&known_tools);
+                        return Ok(PlanOutcome {
+                            draft,
+                            problems,
+                            schema_version: crate::migrate::CURRENT_SCHEMA_VERSION.into(),
+                            attempts: 1,
+                            model_id: self.model_id.clone(),
+                            prompt_tokens,
+                            completion_tokens,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                        });
                     }
                     if draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
                         skeleton = Some(draft);
@@ -682,15 +777,9 @@ impl Planner {
             prompt_tokens += resp.prompt_tokens.unwrap_or(0);
             completion_tokens += resp.completion_tokens.unwrap_or(0);
             emit(PlanEvent::Checking { attempt });
-            let problems = match parse_answer(&resp.content, req) {
-                Ok(mut draft) => {
-                    if let (Some(sk), Some(lib)) = (&skeleton, lib) {
-                        let mut merged = sk.clone();
-                        merge_partial(&mut merged, &draft, lib);
-                        draft = merged;
-                    }
-                    let mut problems = lib.map(|l| l.expand_all(&mut draft)).unwrap_or_default();
-                    problems.extend(draft.check(&known_tools));
+            let problems = match compose(skeleton.as_ref(), &resp.content, req, lib) {
+                Ok((draft, mut problems)) => {
+                    problems.extend(draft.problems(&known_tools));
                     let better = best.as_ref().map(|(_, p)| problems.len() < p.len()).unwrap_or(true);
                     if better {
                         best = Some((draft, problems.clone()));
@@ -719,6 +808,7 @@ impl Planner {
         Ok(PlanOutcome {
             draft,
             problems,
+            schema_version: crate::migrate::CURRENT_SCHEMA_VERSION.into(),
             attempts: attempts + if skeleton.is_some() { 1 } else { 0 },
             model_id: self.model_id.clone(),
             prompt_tokens,
@@ -826,6 +916,7 @@ mod tests {
         assert_eq!(d.yaml["stages"][1]["keep"]["refresh"], "always");
         let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
         assert!(d.check(&known).is_empty(), "{:?}", d.check(&known));
+        assert!(d.problems(&known).is_empty());
     }
 
     #[tokio::test]
@@ -852,6 +943,7 @@ mod tests {
         p.library = Some(lib.clone());
         let out = p.plan(&req(), None).await.unwrap();
         assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert_eq!(out.schema_version, "0");
         assert_eq!(out.attempts, 2, "one strip call, one composing call");
         let y = &out.draft.yaml;
         assert_eq!(y["stages"][0]["id"], "summarize_file");
@@ -919,6 +1011,70 @@ mod tests {
         assert!(out.draft.yaml["outputs"].get("answer").is_some());
         let s = assemble_system_with("P", &ToolRegistry::builtin().catalog(), Some(&lib));
         assert!(s.contains("- `summarize_file`:") && s.contains("use after `index_folder`"));
+    }
+
+    #[tokio::test]
+    async fn a_permission_the_planner_may_not_ask_for_is_dropped_and_said_in_words() {
+        let mut v: Value = serde_json::from_str(&answer("file.read")).unwrap();
+        v["recipe"]["permissions"] = json!({
+            "filesystem": { "read": ["input", "~", "${inputs.file}", "${inputs.nope}"], "write": ["output", "/tmp/out"] },
+            "network": ["input", "example.com"],
+            "cloudModels": true,
+            "shell": true,
+            "credentials": ["github"]
+        });
+        let (p, _) = planner(vec![v.to_string(), v.to_string(), v.to_string()]);
+        let out = p.plan(&req(), None).await.unwrap();
+        assert_eq!(
+            out.problems,
+            vec![
+                "The draft asked to read ~, which a recipe may not do on its own. Removed.",
+                "The draft asked to read ${inputs.nope}, which a recipe may not do on its own. Removed.",
+                "The draft asked to write to /tmp/out, which a recipe may not do on its own. Removed.",
+                "The draft asked to reach example.com, which a recipe may not do on its own. Removed.",
+                "The draft asked to use cloud models, which a recipe may not do on its own. Removed.",
+                "The draft asked to run programs on this Mac (shell), which a recipe may not do on its own. Removed.",
+                "The draft asked to use the credential github, which a recipe may not do on its own. Removed.",
+            ]
+        );
+        assert_eq!(out.draft.yaml["permissions"], json!({ "filesystem": { "read": ["input", "${inputs.file}"], "write": ["output"] }, "network": ["input"] }));
+        let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
+        assert!(out.draft.check(&known).is_empty(), "what is left is a recipe that saves: {:?}", out.draft.check(&known));
+
+        // A ready-made stage's own permissions are not the model's and stay.
+        let lib = Arc::new(crate::stagelib::StageLibrary::load(&crate::stagelib::repo_stages_dir()).unwrap());
+        let strip = json!({ "stages": [ { "use": "read_links" }, { "name": "Notes", "why": "w" } ] }).to_string();
+        let answer = json!({
+            "recipe": { "id": "x", "name": "X", "description": "d", "inputs": {}, "modelSlots": {},
+                "permissions": { "network": ["news.example"] },
+                "steps": [ { "id": "notes", "kind": "model", "slot": "reader", "prompt": "prompts/notes.md", "inputs": { "pages": "${steps.links_pages.output}" } } ],
+                "outputs": { "notes": { "from": "${steps.notes.output}", "type": "markdown" } },
+                "stages": [ { "id": "notes", "name": "Notes", "why": "w", "steps": ["notes"], "outputs": ["notes"] } ] },
+            "files": [ { "path": "prompts/notes.md", "text": "Notes." } ]
+        })
+        .to_string();
+        let (mut p, _) = planner(vec![strip, answer.clone(), answer.clone()]);
+        p.library = Some(lib);
+        let out = p.plan(&req(), None).await.unwrap();
+        assert_eq!(out.problems, vec!["The draft asked to reach news.example, which a recipe may not do on its own. Removed."]);
+        assert_eq!(out.draft.yaml["permissions"]["network"], json!(["input"]), "what read_links brought");
+    }
+
+    #[test]
+    fn the_answer_schema_follows_the_recipe_schema() {
+        let s = answer_schema();
+        let step = &s["properties"]["recipe"]["properties"]["steps"]["items"]["properties"];
+        for k in ["id", "kind", "tool", "slot", "prompt", "over", "as", "items", "allowedTools", "outputSchema", "when", "dependsOn"] {
+            assert!(step.get(k).is_some(), "step property {k} missing");
+        }
+        assert_eq!(step["kind"]["enum"].as_array().unwrap().len(), 7, "the kind enum is kept");
+        let stage = &s["properties"]["recipe"]["properties"]["stages"]["items"]["properties"];
+        for k in ["id", "name", "why", "inputs", "steps", "outputs", "keep", "use"] {
+            assert!(stage.get(k).is_some(), "stage property {k} missing");
+        }
+        assert!(stage.get("source").is_none(), "provenance is the app's to write");
+        assert_eq!(stage["keep"]["properties"]["refresh"]["enum"], json!(["always", "when_sources_change", "manual"]));
+        assert_eq!(serde_json::to_value(crate::migrate::CURRENT_SCHEMA_VERSION).unwrap(), "0");
     }
 
     #[test]

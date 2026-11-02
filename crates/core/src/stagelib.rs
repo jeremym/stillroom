@@ -7,13 +7,22 @@ use crate::draft::Draft;
 use crate::recipe::KeepSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+fn one() -> u32 {
+    1
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StageDef {
     pub id: String,
+    /// Bumped whenever the stage's steps, prompts, or keep rule change, so a recipe that copied
+    /// an earlier version can be told a newer one exists.
+    #[serde(default = "one")]
+    pub version: u32,
     pub name: String,
     pub why: String,
     /// One line for the planner's list.
@@ -122,15 +131,42 @@ impl StageLibrary {
 
     /// Copy a library stage into a draft: inputs, slots, permissions, steps, outputs, files; and
     /// replace the stage entry at `index` with the real one (keeping any name or why override).
+    /// A step the recipe already has is left alone; see `update_into` for the other way.
     pub fn expand_into(&self, draft: &mut Draft, index: usize, use_id: &str) -> Result<(), String> {
+        self.expand(draft, index, use_id, false)
+    }
+
+    /// Bring a stage copied earlier up to the library's current version: its steps and files are
+    /// replaced with the current ones, and the stage entry's provenance is rewritten. Only for a
+    /// copy whose steps are still as copied; the checker makes sure of that before offering it.
+    pub fn update_into(&self, draft: &mut Draft, index: usize, use_id: &str) -> Result<(), String> {
+        self.expand(draft, index, use_id, true)
+    }
+
+    fn expand(&self, draft: &mut Draft, index: usize, use_id: &str, replace: bool) -> Result<(), String> {
         let def = self.get(use_id).ok_or_else(|| format!("no ready-made stage called “{use_id}”"))?;
         let yaml = draft.yaml.as_object_mut().ok_or("recipe is not an object")?;
-        // Inputs and slots: add what is missing, never overwrite what the recipe declares.
-        for (section, items) in [("inputs", &def.inputs), ("modelSlots", &def.model_slots)] {
-            let entry = yaml.entry(section).or_insert_with(|| Value::Object(Default::default()));
+        // Inputs: add what is missing, never overwrite what the recipe declares.
+        {
+            let entry = yaml.entry("inputs").or_insert_with(|| Value::Object(Default::default()));
             if let Some(map) = entry.as_object_mut() {
-                for (k, v) in items {
+                for (k, v) in &def.inputs {
                     map.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+        }
+        // Slots: two stages that declare the same slot share it, asking for everything either
+        // needs (the union of `requires`) and the larger context window.
+        {
+            let entry = yaml.entry("modelSlots").or_insert_with(|| Value::Object(Default::default()));
+            if let Some(map) = entry.as_object_mut() {
+                for (k, v) in &def.model_slots {
+                    match map.get_mut(k) {
+                        Some(existing) => merge_slot(existing, v),
+                        None => {
+                            map.insert(k.clone(), v.clone());
+                        }
+                    }
                 }
             }
         }
@@ -138,18 +174,22 @@ impl StageLibrary {
             merge_permissions(yaml.entry("permissions").or_insert_with(|| Value::Object(Default::default())), p);
         }
         let step_ids: Vec<String> = def.steps.iter().filter_map(|s| s.get("id").and_then(Value::as_str).map(String::from)).collect();
+        let digest;
         {
             let steps = yaml.entry("steps").or_insert_with(|| Value::Array(Vec::new()));
-            if let Some(arr) = steps.as_array_mut() {
-                let mut present: Vec<String> = arr.iter().filter_map(|x| x.get("id").and_then(Value::as_str).map(String::from)).collect();
-                present.extend(step_ids.iter().cloned());
-                for s in &def.steps {
-                    let id = s.get("id").and_then(Value::as_str).unwrap_or("");
-                    if !arr.iter().any(|x| x.get("id").and_then(Value::as_str) == Some(id)) {
-                        arr.push(resolve_optional_inputs(s.clone(), &present));
-                    }
+            let arr = steps.as_array_mut().ok_or("steps is not a list")?;
+            let mut present: Vec<String> = arr.iter().filter_map(|x| x.get("id").and_then(Value::as_str).map(String::from)).collect();
+            present.extend(step_ids.iter().cloned());
+            for s in &def.steps {
+                let id = s.get("id").and_then(Value::as_str).unwrap_or("");
+                let resolved = resolve_optional_inputs(s.clone(), &present);
+                match arr.iter_mut().find(|x| x.get("id").and_then(Value::as_str) == Some(id)) {
+                    Some(existing) if replace => *existing = resolved,
+                    Some(_) => {}
+                    None => arr.push(resolved),
                 }
             }
+            digest = steps_digest(&steps_named(arr, &step_ids));
         }
         {
             let outputs = yaml.entry("outputs").or_insert_with(|| Value::Object(Default::default()));
@@ -160,7 +200,11 @@ impl StageLibrary {
             }
         }
         for (path, text) in &def.files {
-            draft.files.entry(path.clone()).or_insert_with(|| text.clone());
+            if replace {
+                draft.files.insert(path.clone(), text.clone());
+            } else {
+                draft.files.entry(path.clone()).or_insert_with(|| text.clone());
+            }
         }
         let stages = yaml.entry("stages").or_insert_with(|| Value::Array(Vec::new()));
         if let Some(arr) = stages.as_array_mut() {
@@ -189,6 +233,7 @@ impl StageLibrary {
             if let Some(k) = &def.keep {
                 st.insert("keep".into(), serde_json::to_value(k).unwrap_or(Value::Null));
             }
+            st.insert("source".into(), serde_json::json!({ "stage": def.id, "version": def.version, "digest": digest }));
             if index < arr.len() {
                 arr[index] = Value::Object(st);
             } else {
@@ -231,6 +276,59 @@ fn resolve_optional_inputs(mut step: Value, present: &[String]) -> Value {
         }
     }
     step
+}
+
+/// The steps of a stage as the recipe holds them, in the stage's order; what the digest covers.
+pub fn steps_named(steps: &[Value], ids: &[String]) -> Vec<Value> {
+    ids.iter().filter_map(|id| steps.iter().find(|s| s.get("id").and_then(Value::as_str) == Some(id.as_str())).cloned()).collect()
+}
+
+/// `sha256:<hex>` of the canonical JSON (keys sorted, no spaces) of some steps. Two copies of a
+/// stage with the same steps digest the same whatever order their keys were written in.
+pub fn steps_digest(steps: &[Value]) -> String {
+    fn canonical(v: &Value) -> Value {
+        match v {
+            Value::Object(o) => {
+                let sorted: BTreeMap<&String, Value> = o.iter().map(|(k, v)| (k, canonical(v))).collect();
+                Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect())
+            }
+            Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+            _ => v.clone(),
+        }
+    }
+    let text = serde_json::to_string(&canonical(&Value::Array(steps.to_vec()))).unwrap_or_default();
+    let mut h = Sha256::new();
+    h.update(text.as_bytes());
+    format!("sha256:{:x}", h.finalize())
+}
+
+/// Two declarations of one slot become one that satisfies both: `requires` is the union, the
+/// larger `minContext` wins, and the first description, preference, and recommendation stay.
+pub fn merge_slot(into: &mut Value, from: &Value) {
+    let (Some(a), Some(b)) = (into.as_object_mut(), from.as_object()) else { return };
+    if let Some(Value::Array(theirs)) = b.get("requires") {
+        let mine = a.entry("requires").or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(mine) = mine.as_array_mut() {
+            for x in theirs {
+                if !mine.contains(x) {
+                    mine.push(x.clone());
+                }
+            }
+        }
+    }
+    if let Some(theirs) = b.get("minContext").and_then(Value::as_u64) {
+        let mine = a.get("minContext").and_then(Value::as_u64).unwrap_or(0);
+        if theirs > mine {
+            a.insert("minContext".into(), Value::from(theirs));
+        }
+    }
+    for k in ["preference", "recommended", "description"] {
+        if !a.contains_key(k)
+            && let Some(v) = b.get(k)
+        {
+            a.insert(k.into(), v.clone());
+        }
+    }
 }
 
 pub fn merge_permissions(into: &mut Value, from: &Value) {
@@ -299,11 +397,81 @@ mod tests {
                 let n = draft.yaml["stages"].as_array().map(Vec::len).unwrap_or(1);
                 draft.yaml["stages"][n - 1]["outputs"] = serde_json::json!(["result"]);
             }
-            let problems = draft.check(&known);
-            assert!(problems.is_empty(), "{}: {:?}", st.id, problems);
+            let findings = draft.check(&known);
+            assert!(findings.is_empty(), "{}: {:?}", st.id, findings);
             assert!(!st.summary.is_empty() && !st.why.is_empty(), "{} has a summary and a why", st.id);
         }
         let text = lib.describe();
         assert!(text.contains("- `index_folder`:"));
+    }
+
+    #[test]
+    fn an_expanded_stage_carries_its_provenance_and_shared_slots_are_unioned() {
+        let lib = StageLibrary::load(&repo_stages_dir()).unwrap();
+        let mut draft = Draft {
+            yaml: serde_json::json!({ "schemaVersion": "0", "id": "x", "name": "X", "steps": [], "outputs": {}, "stages": [{ "use": "index_folder" }, { "use": "answer_from_index" }] }),
+            files: Default::default(),
+        };
+        assert!(lib.expand_all(&mut draft).is_empty());
+        let st = &draft.yaml["stages"][0];
+        assert_eq!(st["source"]["stage"], "index_folder");
+        assert_eq!(st["source"]["version"], 1);
+        let digest = st["source"]["digest"].as_str().unwrap().to_string();
+        assert!(digest.starts_with("sha256:") && digest.len() == 71, "{digest}");
+        let ids: Vec<String> = st["steps"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        assert_eq!(steps_digest(&steps_named(draft.yaml["steps"].as_array().unwrap(), &ids)), digest, "the digest is of the steps as copied");
+        let recipe: crate::recipe::Recipe = serde_json::from_value(draft.yaml.clone()).unwrap();
+        assert_eq!(recipe.stages[0].source.as_ref().map(|s| s.version), Some(1));
+        assert_eq!(recipe.stages[0].keep_id(), "index_folder", "a keep is named after its stage unless it says otherwise");
+        let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
+        assert!(draft.check(&known).is_empty(), "{:?}", draft.check(&known));
+
+        // Two stages declaring one slot: the recipe gets one slot that asks for both.
+        let mut a = serde_json::json!({ "requires": ["text"], "minContext": 8192, "description": "first" });
+        merge_slot(&mut a, &serde_json::json!({ "requires": ["text", "structured_output"], "minContext": 32768, "preference": "speed", "description": "second" }));
+        assert_eq!(a, serde_json::json!({ "requires": ["text", "structured_output"], "minContext": 32768, "description": "first", "preference": "speed" }));
+        let mut lib2 = lib.clone();
+        let w = lib2.stages.iter_mut().find(|s| s.id == "write_brief").unwrap();
+        w.model_slots.insert("reader".into(), serde_json::json!({ "requires": ["vision"], "minContext": 65536 }));
+        let mut d2 = Draft { yaml: serde_json::json!({ "schemaVersion": "0", "id": "x", "name": "X", "steps": [], "outputs": {}, "stages": [{ "use": "read_links" }, { "use": "write_brief" }] }), files: Default::default() };
+        assert!(lib2.expand_all(&mut d2).is_empty());
+        assert_eq!(d2.yaml["modelSlots"]["reader"]["requires"], serde_json::json!(["text", "structured_output", "vision"]));
+        assert_eq!(d2.yaml["modelSlots"]["reader"]["minContext"], 65536);
+    }
+
+    #[test]
+    fn a_newer_library_version_is_a_note_only_while_the_copy_is_untouched() {
+        let lib = StageLibrary::load(&repo_stages_dir()).unwrap();
+        let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
+        let mut draft = Draft { yaml: serde_json::json!({ "schemaVersion": "0", "id": "x", "name": "X", "steps": [], "outputs": {}, "stages": [{ "use": "summarize_file", "name": "Read it" }] }), files: Default::default() };
+        assert!(lib.expand_all(&mut draft).is_empty());
+        assert!(draft.check_with(&known, Some(&lib)).is_empty(), "same version: nothing to say");
+
+        // The library moves on: version 2 with a different prompt and a step tweak.
+        let mut newer = lib.clone();
+        {
+            let def = newer.stages.iter_mut().find(|s| s.id == "summarize_file").unwrap();
+            def.version = 2;
+            def.files.insert("prompts/summarize_file.md".into(), "Summarize in two lines.".into());
+            def.steps[1]["params"] = serde_json::json!({ "temperature": 0.1 });
+        }
+        let findings = draft.check_with(&known, Some(&newer));
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].text, "A newer version of the ready-made stage “Summarize a file” exists.");
+        assert_eq!(findings[0].fix.as_deref(), Some("update_stage:summarize_file"));
+        assert_eq!(findings[0].fix_label.as_deref(), Some("Update it"));
+        assert!(draft.check(&known).is_empty(), "without the library in hand there is nothing to compare with");
+        assert!(draft.fix(&["update_stage:summarize_file".into()]).is_err(), "the update needs the library");
+        let updated = draft.fix_with(&["update_stage:summarize_file".into()], Some(&newer)).unwrap();
+        assert_eq!(updated.yaml["stages"][0]["source"]["version"], 2);
+        assert_eq!(updated.yaml["stages"][0]["name"], "Read it", "the author's name for the stage stays");
+        assert_eq!(updated.yaml["steps"][1]["params"]["temperature"], 0.1);
+        assert_eq!(updated.files["prompts/summarize_file.md"], "Summarize in two lines.");
+        assert!(updated.check_with(&known, Some(&newer)).is_empty(), "{:?}", updated.check_with(&known, Some(&newer)));
+
+        // An edited copy is never touched: the digest no longer matches, so no Note.
+        let mut edited = draft.clone();
+        edited.yaml["steps"][1]["inputs"]["text"] = serde_json::json!("${steps.summary_read.output.text} (edited)");
+        assert!(edited.check_with(&known, Some(&newer)).is_empty(), "{:?}", edited.check_with(&known, Some(&newer)));
     }
 }

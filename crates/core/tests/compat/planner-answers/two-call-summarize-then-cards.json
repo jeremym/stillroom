@@ -1,0 +1,20 @@
+{
+  "about": "Two calls: the strip picks a ready-made stage (summarize_file, renamed) and one custom stage; the composing answer writes only the custom stage and reads what the ready-made one returns.",
+  "request": { "goal": "Summarize a file and make study cards from the summary", "id": "summary-cards", "name": "Summary cards", "icon": "learn" },
+  "strip": { "stages": [ { "use": "summarize_file", "name": "Read it" }, { "name": "Cards", "why": "Cards from the summary." } ] },
+  "answer": {
+    "recipe": {
+      "id": "x", "name": "X", "description": "Summarize then make cards.",
+      "inputs": {}, "modelSlots": {},
+      "steps": [
+        { "id": "cards", "kind": "model", "slot": "writer", "prompt": "prompts/cards.md", "inputs": { "text": "${steps.summary_write.output}" } }
+      ],
+      "outputs": { "cards": { "from": "${steps.cards.output}", "type": "markdown" } },
+      "stages": [
+        { "use": "summarize_file", "name": "Read it" },
+        { "id": "cards", "name": "Cards", "why": "w", "steps": ["cards"], "outputs": ["cards"] }
+      ]
+    },
+    "files": [ { "path": "prompts/cards.md", "text": "Make cards." } ]
+  }
+}

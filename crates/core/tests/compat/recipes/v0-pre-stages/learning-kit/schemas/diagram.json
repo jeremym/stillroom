@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["format", "kind", "title", "source"],
+  "additionalProperties": false,
+  "properties": {
+    "format": { "type": "string", "enum": ["mermaid"] },
+    "kind": { "type": "string", "enum": ["flowchart", "sequenceDiagram", "stateDiagram-v2"] },
+    "title": { "type": "string" },
+    "source": { "type": "string" }
+  }
+}

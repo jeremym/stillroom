@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "required": ["items"],
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["title", "url", "line", "date"],
+        "additionalProperties": false,
+        "properties": {
+          "title": { "type": "string" },
+          "url": { "type": "string" },
+          "line": { "type": "string" },
+          "date": { "type": "string" }
+        }
+      }
+    }
+  }
+}

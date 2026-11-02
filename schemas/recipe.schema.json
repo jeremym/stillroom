@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://stillroom.dev/schemas/recipe/v0.json",
   "title": "Stillroom Recipe",
-  "description": "A complete, reusable process for accomplishing a goal. Version 0: subject to breaking changes until 1.0.",
+  "description": "A complete, reusable process for accomplishing a goal. Version 0: subject to breaking changes until 1.0. Keys that start with x- are experiments: kept, never read by the engine, promoted by a migration once settled.",
   "type": "object",
   "required": [
     "schemaVersion",
@@ -11,12 +11,17 @@
     "steps",
     "outputs"
   ],
+  "patternProperties": {
+    "^x-": {}
+  },
   "additionalProperties": false,
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "0",
-      "description": "Recipe format version. Bumped on breaking changes."
+      "enum": [
+        "0"
+      ],
+      "description": "Recipe format version, as text. Every version listed here is read; older ones are rewritten to the current shape by the migrate chain before anything else reads them."
     },
     "id": {
       "type": "string",
@@ -148,6 +153,9 @@
       "required": [
         "type"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "properties": {
         "type": {
           "type": "string",
@@ -209,6 +217,9 @@
       "required": [
         "requires"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "properties": {
         "requires": {
           "type": "array",
@@ -348,6 +359,9 @@
         "id",
         "kind"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "properties": {
         "id": {
           "type": "string",
@@ -705,6 +719,9 @@
         "from",
         "type"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "properties": {
         "from": {
           "$ref": "#/$defs/ref"
@@ -778,6 +795,9 @@
         "id",
         "name"
       ],
+      "patternProperties": {
+        "^x-": {}
+      },
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -816,11 +836,40 @@
           "uniqueItems": true,
           "description": "Output names this stage delivers."
         },
+        "source": {
+          "type": "object",
+          "description": "Where this stage came from, when it was copied from a ready-made stage: its id, its version then, and a digest of the steps as copied. Lets the app say a newer version exists, and never touch an edited copy.",
+          "required": [
+            "stage",
+            "version",
+            "digest"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "stage": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
         "keep": {
           "type": "object",
           "additionalProperties": false,
           "description": "A run keep: what this stage holds on to between runs (records, files). Built by runs, mutable, journaled.",
           "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+              "description": "The keep's own name on disk, so a stage can be renamed without orphaning what it kept. Defaults to the stage id."
+            },
             "refresh": {
               "type": "string",
               "enum": [

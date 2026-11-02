@@ -1,4 +1,5 @@
 id: study_cards
+version: 1
 name: Make study cards
 summary: Turn a text (a document's text, notes, or an answer) into flashcards and a short quiz with answers, for learning it.
 why: An AI step pulls the concepts out of the text and writes a flashcard for each (question on the front, answer on the back), then a short quiz with answers, so you can test yourself.

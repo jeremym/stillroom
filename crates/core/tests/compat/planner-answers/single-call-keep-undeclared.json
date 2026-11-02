@@ -1,0 +1,23 @@
+{
+  "about": "A single-call plan whose stage writes a keep (keep.put) without declaring one. The planner path declares it (refresh: always, since nothing indexes).",
+  "request": { "goal": "Fetch my links every day and remember what was fetched", "id": "fetch-log", "name": "Fetch log", "icon": "globe" },
+  "strip": null,
+  "answer": {
+    "recipe": {
+      "id": "x", "name": "X", "description": "Fetches links and remembers them.",
+      "inputs": { "urls": { "type": "urls" } },
+      "modelSlots": {},
+      "permissions": { "network": ["input"] },
+      "steps": [
+        { "id": "fetch", "kind": "map", "over": "${inputs.urls}", "steps": [ { "id": "get", "kind": "tool", "tool": "http.fetch", "inputs": { "url": "${item}" } } ] },
+        { "id": "log", "kind": "tool", "tool": "keep.put", "inputs": { "data": "${steps.fetch.output}" } }
+      ],
+      "outputs": { "all": { "from": "${steps.log.output}", "type": "json" } },
+      "stages": [
+        { "id": "read", "name": "Read", "why": "Fetch each link.", "inputs": ["urls"], "steps": ["fetch"] },
+        { "id": "remember", "name": "Remember", "why": "Keep what was fetched.", "steps": ["log"], "outputs": ["all"] }
+      ]
+    },
+    "files": []
+  }
+}

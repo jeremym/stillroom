@@ -1,4 +1,5 @@
 id: rewrite_in_voice
+version: 1
 name: Rewrite in my voice
 summary: Rewrite a piece of text so it reads like the user's own writing, from a few samples they paste, keeping every fact; outputs the rewrite and a short note on what changed.
 why: An AI step studies the samples for tone, rhythm, and word choice, then rewrites the text to match while keeping every fact and the original order; a second note says what it changed, so nothing is hidden.

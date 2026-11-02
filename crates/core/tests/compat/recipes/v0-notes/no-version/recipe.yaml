@@ -1,0 +1,42 @@
+# A hand-copied recipe that forgot to say which recipe format it uses. It reads as "0" with a Note.
+id: no-version
+name: Summarize, no version line
+icon: notes
+version: 0.1.0
+description: The summarize recipe without a schemaVersion line.
+
+inputs:
+  file:
+    type: file
+    label: File to summarize
+
+modelSlots:
+  writer:
+    requires: [text]
+    preference: accuracy
+
+permissions:
+  filesystem:
+    read: [input]
+
+steps:
+  - id: read
+    kind: tool
+    name: Read the file
+    tool: file.read
+    inputs:
+      path: ${inputs.file}
+
+  - id: summarize
+    kind: model
+    name: Summarize
+    slot: writer
+    prompt: prompts/summarize.md
+    inputs:
+      text: ${steps.read.output.text}
+
+outputs:
+  summary:
+    from: ${steps.summarize.output}
+    type: markdown
+    label: Summary

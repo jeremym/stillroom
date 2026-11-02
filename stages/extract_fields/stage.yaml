@@ -1,4 +1,5 @@
 id: extract_fields
+version: 1
 name: Pull out the fields
 summary: Read every PDF, Word, Markdown, or text file in a folder and pull out the same fields from each (dates, amounts, names, whatever the user lists) into one table; kept between runs.
 why: Each file is read and an AI step fills in the fields you asked for, exactly as the file states them; the rows become one table you can save as a spreadsheet. Unchanged files are not read again next time.

@@ -18,6 +18,8 @@ pub enum RecipeError {
     Json(#[from] serde_json::Error),
     #[error("schema compile error: {0}")]
     SchemaCompile(String),
+    #[error("{0}")]
+    Migrate(#[from] crate::migrate::MigrateError),
     #[error("recipe failed schema validation:\n{0}")]
     Invalid(String),
 }
@@ -50,6 +52,59 @@ pub struct Recipe {
     /// The strip: ordered chapters, each grouping inputs, steps, and outputs with a why.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<Stage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<Author>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    /// Which Stillroom versions can run this recipe. `minVersion` is stamped on save from the
+    /// features the recipe uses, and checked when a bundle loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Paths to test case files, relative to the recipe root.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<String>,
+    /// Experiments: every `x-` key, kept as written and never read by the engine.
+    #[serde(flatten, default, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Author {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Runtime {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_version: Option<String>,
+}
+
+/// Compare two version strings the way "0.5" and "0.3.0" ask to be compared: numbers, dot by
+/// dot, missing parts as zero, anything after a `-` or `+` ignored. Lenient on purpose; an
+/// author writes "0.5", Cargo writes "0.5.0", and both mean the same floor.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parts(v: &str) -> Vec<u64> {
+        let core = v.trim().trim_start_matches('v').split(['-', '+']).next().unwrap_or("");
+        core.split('.').map(|p| p.trim().parse::<u64>().unwrap_or(0)).collect()
+    }
+    let (a, b) = (parts(a), parts(b));
+    let n = a.len().max(b.len());
+    for i in 0..n {
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y {
+            return x.cmp(&y);
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 /// One chapter of a recipe, as the user reads it in the strip.
@@ -69,6 +124,27 @@ pub struct Stage {
     /// A run keep: what this stage holds on to between runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep: Option<KeepSpec>,
+    /// Where the stage was copied from, when it came from a ready-made stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<StageSource>,
+}
+
+impl Stage {
+    /// The name of the stage's keep on disk: `keep.id` when set, else the stage id, so a stage
+    /// can be renamed without orphaning what it kept.
+    pub fn keep_id(&self) -> &str {
+        self.keep.as_ref().and_then(|k| k.id.as_deref()).unwrap_or(&self.id)
+    }
+}
+
+/// Provenance of a stage copied from the ready-made library: which one, which version, and a
+/// digest of the steps as copied, so an edited copy is told apart from an untouched one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageSource {
+    pub stage: String,
+    pub version: u32,
+    pub digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -76,6 +152,9 @@ pub struct Stage {
 pub struct KeepSpec {
     #[serde(default)]
     pub refresh: Refresh,
+    /// The keep's own name on disk; defaults to the stage id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// When a stage with a keep runs again.
@@ -430,9 +509,11 @@ pub struct OpaqueStep {
 }
 
 impl Recipe {
-    /// Parse a `recipe.yaml` string, validate it against the JSON Schema, and return typed data.
+    /// Parse a `recipe.yaml` string, bring it up to the current format, validate it against the
+    /// JSON Schema, and return typed data.
     pub fn from_yaml(yaml: &str) -> Result<Self, RecipeError> {
         let value: Value = serde_yaml::from_str(yaml)?;
+        let value = crate::migrate::migrate(value)?.yaml;
         Self::validate_value(&value)?;
         Ok(serde_json::from_value(value)?)
     }
@@ -467,7 +548,7 @@ impl Recipe {
         let steps: Vec<String> = self.steps.iter().map(|s| s.id().to_string()).filter(|k| !assigned(&|s| &s.steps, k)).collect();
         let outputs: Vec<String> = self.outputs.keys().filter(|k| !assigned(&|s| &s.outputs, k)).cloned().collect();
         if stages.is_empty() {
-            let mut make = Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs, keep: None };
+            let mut make = Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs, steps, outputs, keep: None, source: None };
             make.why = Some(self.plain_why(&make));
             return vec![make];
         }
@@ -480,7 +561,7 @@ impl Recipe {
                     make.steps.extend(steps);
                     make.outputs.extend(outputs);
                 }
-                None => stages.push(Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs: Vec::new(), steps, outputs, keep: None }),
+                None => stages.push(Stage { id: IMPLIED_STAGE.into(), name: "Make".into(), why: None, inputs: Vec::new(), steps, outputs, keep: None, source: None }),
             }
         }
         for st in stages.iter_mut() {
@@ -590,6 +671,73 @@ outputs:
         assert_eq!(r.model_slots["writer"].requires, vec![Capability::Text]);
         assert!(matches!(r.steps[0], Step::Model(_)));
         assert_eq!(r.outputs["summary"].kind, "markdown");
+    }
+
+    #[test]
+    fn versions_compare_by_number_not_by_text() {
+        use std::cmp::Ordering::*;
+        assert_eq!(compare_versions("0.5", "0.3.0"), Greater);
+        assert_eq!(compare_versions("0.3", "0.3.0"), Equal);
+        assert_eq!(compare_versions("0.10.0", "0.9.9"), Greater);
+        assert_eq!(compare_versions("1.0.0-beta.1", "0.9"), Greater);
+        assert_eq!(compare_versions("v0.2.0", "0.2.0"), Equal);
+        assert_eq!(compare_versions("", "0.0.0"), Equal);
+    }
+
+    #[test]
+    fn a_recipe_round_trips_every_schema_field() {
+        let yaml = include_str!("../../../recipes/research-brief/recipe.yaml");
+        let r = Recipe::from_yaml(yaml).unwrap();
+        assert_eq!(r.author.as_ref().and_then(|a| a.name.as_deref()), Some("Stillroom"));
+        assert_eq!(r.license.as_deref(), Some("MIT"));
+        assert!(r.tags.contains(&"research".to_string()));
+        let with_runtime = yaml.replace("license: MIT", "license: MIT\nruntime: { minVersion: \"0.3\" }\ntests: [tests/a.json]");
+        let r = Recipe::from_yaml(&with_runtime).unwrap();
+        assert_eq!(r.runtime.as_ref().and_then(|x| x.min_version.as_deref()), Some("0.3"));
+        assert_eq!(r.tests, vec!["tests/a.json"]);
+        let back: Value = serde_json::to_value(&r).unwrap();
+        assert_eq!(back["runtime"]["minVersion"], "0.3");
+        assert_eq!(back["author"]["name"], "Stillroom");
+        assert!(back["runtime"].get("maxVersion").is_none(), "an unset field is left out, not written as null");
+        assert!(back.get("tests").is_some() && back.get("license").is_some());
+    }
+
+    #[test]
+    fn x_keys_ride_along_at_every_level() {
+        let yaml = r#"
+schemaVersion: "0"
+id: x-everywhere
+name: Experiments everywhere
+x-shelf: { pinned: true }
+inputs:
+  source: { type: text, x-shelf: { pinned: true } }
+modelSlots:
+  writer: { requires: [text], x-shelf: { pinned: true } }
+steps:
+  - id: summarize
+    kind: model
+    slot: writer
+    prompt: prompts/summarize.md
+    inputs: { text: "${inputs.source}" }
+    x-shelf: { pinned: true }
+outputs:
+  summary: { from: "${steps.summarize.output}", type: markdown, x-shelf: { pinned: true } }
+stages:
+  - { id: make, name: Make, steps: [summarize], outputs: [summary], x-shelf: { pinned: true } }
+"#;
+        let r = Recipe::from_yaml(yaml).expect("x- keys are allowed at every level");
+        assert_eq!(r.extra["x-shelf"]["pinned"], true, "the top-level experiment is kept on the typed recipe");
+        let bad = yaml.replace("x-shelf: { pinned: true }
+inputs:", "y-shelf: { pinned: true }
+inputs:");
+        assert!(Recipe::from_yaml(&bad).is_err(), "only the x- prefix is open");
+        let d = crate::draft::Draft { yaml: serde_yaml::from_str(yaml).unwrap(), files: [("prompts/summarize.md".to_string(), "Sum.".to_string())].into_iter().collect() };
+        assert!(d.check(&["file.read".into()]).is_empty(), "{:?}", d.check(&["file.read".into()]));
+        let tmp = std::env::temp_dir().join(format!("stillroom-x-{}", uuid::Uuid::now_v7()));
+        d.write(&tmp, &["file.read".into()]).unwrap();
+        let written = std::fs::read_to_string(tmp.join("recipe.yaml")).unwrap();
+        assert_eq!(written.matches("x-shelf:").count(), 6, "every x- key survives a save:\n{written}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

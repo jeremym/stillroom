@@ -13,7 +13,7 @@ use stillroom_core::trace::RunSummary;
 use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
+    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
     PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
@@ -795,7 +795,7 @@ async fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResu
     }
     let mut out = Vec::new();
     for st in bundle.recipe.stages.iter().filter(|s| s.keep.is_some()) {
-        let keep = Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, &st.id)).map_err(err)?;
+        let keep = Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, st.keep_id())).map_err(err)?;
         let manifest = keep.manifest().map_err(err)?;
         let built = manifest.built_at.is_some() && st.steps.iter().all(|s| manifest.outputs.contains_key(s));
         let refresh = st.keep.as_ref().map(|k| k.refresh).unwrap_or_default();
@@ -803,7 +803,8 @@ async fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResu
             stillroom_core::recipe::Refresh::Always => false,
             stillroom_core::recipe::Refresh::Manual => true,
             stillroom_core::recipe::Refresh::WhenSourcesChange => {
-                manifest.source_fingerprint.as_deref() == Some(stage_fingerprint(&bundle.recipe, &bundle.prompts, st, &inputs).as_str())
+                keep.format().ok().flatten() == Some(stillroom_core::FINGERPRINT_FORMAT)
+                    && manifest.source_fingerprint.as_deref() == Some(stage_fingerprint(&bundle.recipe, &bundle.prompts, st, &inputs).as_str())
                     && resolutions.as_ref().is_none_or(|r| manifest.models == stage_models(&bundle.recipe, st, r))
             }
         });
@@ -823,10 +824,10 @@ async fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResu
 /// it becomes part of a path, so the webview cannot name a folder the recipe does not have.
 fn open_keep(state: &AppState, recipe_id: &str, stage: &str) -> CmdResult<Keep> {
     let bundle = state.library.find(recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
-    if !bundle.recipe.stages.iter().any(|s| s.id == stage) {
+    let Some(st) = bundle.recipe.stages.iter().find(|s| s.id == stage) else {
         return Err(format!("recipe {recipe_id} has no stage named {stage}"));
-    }
-    Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, stage)).map_err(err)
+    };
+    Keep::open(keep_dir(&state.keep_base, &bundle.recipe.id, st.keep_id())).map_err(err)
 }
 
 /// Empty a stage's run keep now; the next run builds it again from scratch.
@@ -859,10 +860,19 @@ fn known_tools(state: &AppState) -> Vec<String> {
     state.tools.ids().into_iter().map(String::from).collect()
 }
 
-/// Problems with a draft, in words. Empty means it would load and run.
+/// Everything the checker has to say about a draft, in words: Problems (which stop a save) and
+/// Notes (which do not, and may carry a fix id for `fix_recipe_draft`). Empty means it would
+/// load and run as it is.
 #[tauri::command]
-fn check_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Vec<String>> {
-    Ok(draft.check(&known_tools(&state)))
+fn check_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Vec<Finding>> {
+    Ok(draft.check_with(&known_tools(&state), Some(&state.stage_library)))
+}
+
+/// Apply the named fixes (the ids on the Notes `check_recipe_draft` returned) and hand back the
+/// rewritten draft. Nothing is written to disk. An unknown fix id is an error.
+#[tauri::command]
+fn fix_recipe_draft(state: State<'_, AppState>, draft: Draft, fixes: Vec<String>) -> CmdResult<Draft> {
+    draft.fix_with(&fixes, Some(&state.stage_library))
 }
 
 #[derive(Serialize)]
@@ -1278,10 +1288,10 @@ pub fn run() {
             std::fs::create_dir_all(&keep_base)?;
             let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
-            let library = RecipeLibrary::new(vec![
-                (builtin_recipes_dir(app.handle()), RecipeSource::Builtin),
-                (user_recipes, RecipeSource::User),
-            ]);
+            let library = RecipeLibrary::with_app_version(
+                vec![(builtin_recipes_dir(app.handle()), RecipeSource::Builtin), (user_recipes, RecipeSource::User)],
+                env!("CARGO_PKG_VERSION"),
+            );
             app.manage(AppState {
                 store: Arc::new(Mutex::new(store)),
                 secrets: Mutex::new(BTreeMap::new()),
@@ -1338,6 +1348,7 @@ pub fn run() {
             list_tools,
             read_recipe_draft,
             check_recipe_draft,
+            fix_recipe_draft,
             save_recipe_draft,
             list_system_prompts,
             read_system_prompt,

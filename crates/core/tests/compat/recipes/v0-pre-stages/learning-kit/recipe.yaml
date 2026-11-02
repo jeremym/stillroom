@@ -1,0 +1,184 @@
+schemaVersion: "0"
+id: learning-kit
+name: Learning Kit
+icon: learn
+version: 0.1.0
+description: Turns a document into a Knowledge Spine (concepts, claims, relationships), then short notes, a narrated audio lesson, slides, flashcards, a concept map, and a process diagram, all generated from the spine.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, learning]
+
+inputs:
+  file:
+    type: file
+    label: Source document
+    description: A plain-text or Markdown file to learn from.
+    accept: [".txt", ".md", ".markdown"]
+  focus:
+    type: string
+    label: What do you want to understand?
+    description: Optional. Steers which concepts get the most attention.
+    required: false
+  voice:
+    type: string
+    label: Narration voice
+    description: Optional. A system voice name (run "say -v ?" to list them). Leave empty for the default voice.
+    required: false
+
+modelSlots:
+  analyst:
+    requires: [text, structured_output]
+    preference: accuracy
+    description: Reads the source and builds the Knowledge Spine.
+  writer:
+    requires: [text]
+    preference: accuracy
+    description: Turns the spine into notes, slides, flashcards, and a process diagram.
+
+permissions:
+  filesystem:
+    read: [input]
+    write: [output]
+
+steps:
+  - id: read
+    kind: tool
+    name: Read the source
+    tool: file.read
+    inputs:
+      path: ${inputs.file}
+
+  - id: extract
+    kind: model
+    name: Build the Knowledge Spine
+    slot: analyst
+    prompt: prompts/extract-spine.md
+    inputs:
+      text: ${steps.read.output.text}
+      focus: ${inputs.focus}
+    outputSchema: schemas/knowledge-spine.json
+    params:
+      temperature: 0.1
+      contextLength: 32768
+
+  - id: notes
+    kind: model
+    name: Write short notes
+    slot: writer
+    prompt: prompts/notes.md
+    inputs:
+      spine: ${steps.extract.output}
+    params:
+      think: false
+      temperature: 0.3
+      contextLength: 16384
+
+  - id: flashcards
+    kind: model
+    name: Write flashcards
+    slot: writer
+    prompt: prompts/flashcards.md
+    inputs:
+      spine: ${steps.extract.output}
+    outputSchema: schemas/flashcards.json
+    params:
+      think: false
+      temperature: 0.3
+      contextLength: 16384
+
+  - id: script
+    kind: model
+    name: Write the narration script
+    slot: writer
+    prompt: prompts/script.md
+    inputs:
+      notes: ${steps.notes.output}
+    outputSchema: schemas/script.json
+    params:
+      think: false
+      temperature: 0.3
+      contextLength: 16384
+
+  - id: narrate
+    kind: tool
+    name: Read the script aloud
+    tool: speech.synthesize
+    inputs:
+      script: ${steps.script.output}
+      voice: ${inputs.voice}
+      name: narration
+
+  - id: slides
+    kind: model
+    name: Write the slides
+    slot: writer
+    prompt: prompts/slides.md
+    inputs:
+      spine: ${steps.extract.output}
+    outputSchema: schemas/slides.json
+    params:
+      think: false
+      temperature: 0.3
+      contextLength: 16384
+
+  - id: concept_map
+    kind: tool
+    name: Draw the concept map
+    tool: spine.concept_map
+    inputs:
+      spine: ${steps.extract.output}
+      direction: TD
+
+  - id: diagram
+    kind: model
+    name: Draw the main process
+    slot: writer
+    prompt: prompts/diagram.md
+    inputs:
+      spine: ${steps.extract.output}
+    outputSchema: schemas/diagram.json
+    params:
+      think: false
+      temperature: 0.2
+      contextLength: 16384
+
+outputs:
+  notes:
+    from: ${steps.notes.output}
+    type: markdown
+    label: Short notes
+  narration:
+    from: ${steps.narrate.output}
+    type: audio
+    label: Audio lesson
+    description: The script read aloud by the system voice. Chapter pauses are built in.
+  script:
+    from: ${steps.script.output}
+    type: json
+    label: Narration script
+    description: What the voice says, chapter by chapter. Edit a chapter and only the narration is re-recorded.
+  slides:
+    from: ${steps.slides.output}
+    type: slides
+    label: Slides
+    description: A short teaching deck with speaker notes, one slide per concept in prerequisite order.
+  conceptMap:
+    from: ${steps.concept_map.output}
+    type: diagram
+    label: Concept map
+    description: Drawn directly from the spine. Solid arrows mean "understand this first"; dotted lines mean "related".
+  diagram:
+    from: ${steps.diagram.output}
+    type: diagram
+    label: Process diagram
+    description: The main flow or relationship in the document, drawn by the writer model.
+  flashcards:
+    from: ${steps.flashcards.output}
+    type: json
+    label: Flashcards
+  spine:
+    from: ${steps.extract.output}
+    type: json
+    label: Knowledge Spine
+    description: Concepts, claims, and how they relate. Every other artifact is a view of this. Edit a concept and everything downstream is regenerated.

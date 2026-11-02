@@ -6,6 +6,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct RecipeLibrary {
     roots: Vec<(PathBuf, RecipeSource)>,
+    /// The running app's version, which a recipe's `runtime.minVersion` is judged against.
+    app_version: String,
 }
 
 #[derive(Debug, Default)]
@@ -16,8 +18,17 @@ pub struct ScanResult {
 }
 
 impl RecipeLibrary {
+    /// A library judged against this crate's own version. The shell uses `with_app_version`.
     pub fn new(roots: Vec<(PathBuf, RecipeSource)>) -> Self {
-        Self { roots }
+        Self::with_app_version(roots, env!("CARGO_PKG_VERSION"))
+    }
+
+    pub fn with_app_version(roots: Vec<(PathBuf, RecipeSource)>, app_version: &str) -> Self {
+        Self { roots, app_version: app_version.to_string() }
+    }
+
+    pub fn app_version(&self) -> &str {
+        &self.app_version
     }
 
     pub fn roots(&self) -> &[(PathBuf, RecipeSource)] {
@@ -36,7 +47,7 @@ impl RecipeLibrary {
                 .collect();
             dirs.sort();
             for dir in dirs {
-                match RecipeBundle::load(&dir, *source) {
+                match RecipeBundle::load_for(&dir, *source, &self.app_version) {
                     Ok(b) => {
                         result.bundles.retain(|x| x.recipe.id != b.recipe.id || x.source == RecipeSource::User);
                         if !result.bundles.iter().any(|x| x.recipe.id == b.recipe.id) {
@@ -72,5 +83,20 @@ mod tests {
         assert!(ids.contains(&"summarize-file"));
         assert!(ids.contains(&"learning-kit"));
         assert!(lib.find("learning-kit").is_some());
+    }
+
+    #[test]
+    fn a_too_new_recipe_is_listed_as_an_error_in_words() {
+        let tmp = std::env::temp_dir().join(format!("stillroom-lib-newer-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(tmp.join("future/prompts")).unwrap();
+        std::fs::write(tmp.join("future/prompts/summarize.md"), "Summarize.").unwrap();
+        let yaml = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../recipes/summarize-file/recipe.yaml")).unwrap();
+        std::fs::write(tmp.join("future/recipe.yaml"), yaml.replace("license: MIT", "license: MIT\nruntime: { minVersion: \"0.5\" }")).unwrap();
+        let lib = RecipeLibrary::with_app_version(vec![(tmp.clone(), RecipeSource::User)], "0.3.0");
+        let r = lib.scan();
+        assert!(r.bundles.is_empty());
+        assert_eq!(r.errors.len(), 1);
+        assert_eq!(r.errors[0].1, "This recipe needs Stillroom 0.5 or newer; you have 0.3.0.");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

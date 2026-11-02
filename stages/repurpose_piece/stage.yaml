@@ -1,4 +1,5 @@
 id: repurpose_piece
+version: 1
 name: Repurpose a piece
 summary: Turn one article or long post into a short post, a thread of short posts, a one-paragraph summary, and a bullet outline, each faithful to the original.
 why: One AI step per form rewrites the piece as a short post, a thread, a one-paragraph summary, and an outline; each keeps to what the piece says, so you can pick and paste.

@@ -1,0 +1,169 @@
+schemaVersion: "0"
+id: batch-briefing
+name: Batch Briefing
+icon: files
+version: 0.1.0
+description: Give it a folder of documents and, if you like, a few links, and say what you need to know. It reads everything once, remembers what each file said, and writes one brief that cites which file or page each point came from.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, documents, keep]
+
+inputs:
+  folder:
+    type: directory
+    label: Your documents
+    description: A folder of .pdf, .docx, .md, or .txt files. Subfolders are read too.
+  urls:
+    type: urls
+    label: Pages to read too
+    description: Optional. One link per line; the recipe reaches these sites and no others.
+    required: false
+  focus:
+    type: text
+    label: What do you need to know?
+    description: A question or a sentence about what matters. The brief keeps to this.
+
+modelSlots:
+  reader:
+    requires: [text, structured_output]
+    preference: accuracy
+    description: Reads each file or page and pulls out what it says about the focus.
+  writer:
+    requires: [text]
+    preference: accuracy
+    description: Writes the brief from the findings.
+
+permissions:
+  filesystem:
+    read: [input]
+  network: [input]
+
+steps:
+  - id: list
+    kind: tool
+    name: List the files
+    tool: fs.list
+    inputs:
+      path: ${inputs.folder}
+      extensions: [pdf, docx, md, markdown, txt]
+      recursive: true
+
+  - id: files
+    kind: map
+    name: Read each file
+    over: ${steps.list.output.entries}
+    as: file
+    concurrency: 2
+    steps:
+      - id: text
+        kind: tool
+        name: Read the file
+        tool: doc.text
+        inputs:
+          path: ${file.path}
+
+      - id: findings
+        kind: model
+        name: Pull out what it says
+        slot: reader
+        prompt: prompts/findings.md
+        inputs:
+          focus: ${inputs.focus}
+          source: ${file.path}
+          text: ${steps.text.output.text}
+        outputSchema: schemas/findings.json
+        params:
+          think: false
+          temperature: 0.1
+          contextLength: 32768
+
+  - id: pages
+    kind: map
+    name: Read each page
+    over: ${inputs.urls}
+    as: url
+    concurrency: 3
+    steps:
+      - id: fetch
+        kind: tool
+        name: Fetch the page
+        tool: http.fetch
+        inputs:
+          url: ${url}
+          maxChars: 14000
+
+      - id: findings
+        kind: model
+        name: Pull out what it says
+        slot: reader
+        prompt: prompts/findings.md
+        inputs:
+          focus: ${inputs.focus}
+          source: ${url}
+          text: ${steps.fetch.output.text}
+        outputSchema: schemas/findings.json
+        params:
+          think: false
+          temperature: 0.1
+          contextLength: 16384
+
+  - id: brief
+    kind: model
+    name: Write the brief
+    slot: writer
+    prompt: prompts/brief.md
+    inputs:
+      focus: ${inputs.focus}
+      files: ${steps.files.output}
+      pages: ${steps.pages.output}
+    params:
+      think: false
+      temperature: 0.3
+      contextLength: 32768
+
+  - id: sources
+    kind: tool
+    name: List the files read
+    tool: list.table
+    inputs:
+      items: ${steps.files.output}
+      columns:
+        File: file.path
+        Kind: text.kind
+        Characters: text.chars
+        About: findings.summary
+        Findings: findings.findings
+        Note: text.note
+
+outputs:
+  brief:
+    from: ${steps.brief.output}
+    type: markdown
+    label: Brief
+    description: What the documents and pages say about your focus, cited by file and page.
+  sources:
+    from: ${steps.sources.output.rows}
+    type: table
+    label: Files read
+    description: Every file, what it is about, and what was found in it.
+
+stages:
+  - id: gather
+    name: What to read
+    why: The folder, any links, and what you need to know; the recipe reads those and reaches those sites, nothing else.
+    inputs: [folder, urls, focus]
+  - id: files
+    name: Read the files
+    why: Each file is read and an AI step pulls out what it says about your focus, with exact quotes and page numbers. What it found is remembered, so unchanged files are not read again next time.
+    keep: { refresh: when_sources_change }
+    steps: [list, files]
+  - id: pages
+    name: Read the pages
+    why: Each link is fetched and read the same way; a page that fails to load is reported, not fatal.
+    steps: [pages]
+  - id: brief
+    name: Write the brief
+    why: The findings become one brief that answers your focus and cites each point by file and page or by link.
+    steps: [brief, sources]
+    outputs: [brief, sources]

@@ -2,7 +2,7 @@ schemaVersion: "0"
 id: ask-your-documents
 name: Ask Your Documents
 icon: search
-version: 0.1.0
+version: 0.2.0
 description: Point it at a folder of PDFs, Word files, Markdown, or text. It reads them once and builds an index it keeps; then ask it anything and get an answer that quotes the passages it used, with the file and page. Ask again as often as you like; the index is rebuilt only when the files change.
 author:
   name: Stillroom

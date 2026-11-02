@@ -26,6 +26,8 @@ pub enum BundleError {
     Json { path: PathBuf, source: serde_json::Error },
     #[error("path {0} escapes the recipe directory")]
     Escape(String),
+    #[error("This recipe needs Stillroom {needs} or newer; you have {have}.")]
+    NeedsNewer { needs: String, have: String },
 }
 
 #[derive(Debug, Clone)]
@@ -179,10 +181,24 @@ fn load_step(root: &Path, step: &mut Step, prompts: &mut HashMap<String, String>
 
 impl RecipeBundle {
     /// Load `root/recipe.yaml`, every prompt a model step references, and inline any
-    /// `outputSchema` given as a file path.
+    /// `outputSchema` given as a file path. The version floor is judged against this crate's
+    /// own version; the shell passes its own through `load_for`.
     pub fn load(root: impl Into<PathBuf>, source: RecipeSource) -> Result<Self, BundleError> {
+        Self::load_for(root, source, env!("CARGO_PKG_VERSION"))
+    }
+
+    /// `load`, with the running app's version: a recipe whose `runtime.minVersion` is above what
+    /// this build understands is refused in words before anything else reads it, so a recipe
+    /// from a newer Stillroom never surfaces as a schema message.
+    pub fn load_for(root: impl Into<PathBuf>, source: RecipeSource, app_version: &str) -> Result<Self, BundleError> {
         let root = root.into();
         let yaml = read(&root, "recipe.yaml")?;
+        if let Some(needs) = serde_yaml::from_str::<Value>(&yaml).ok().and_then(|v| v.get("runtime")?.get("minVersion")?.as_str().map(String::from)) {
+            let have = crate::migrate::supported_version(app_version);
+            if crate::recipe::compare_versions(&needs, &have) == std::cmp::Ordering::Greater {
+                return Err(BundleError::NeedsNewer { needs, have: app_version.to_string() });
+            }
+        }
         let mut recipe = Recipe::from_yaml(&yaml)?;
         let mut prompts = HashMap::new();
 
@@ -282,6 +298,25 @@ mod tests {
             _ => panic!(),
         }
         assert!(info.permissions.is_some());
+    }
+
+    #[test]
+    fn a_recipe_from_a_newer_stillroom_is_refused_in_words() {
+        let tmp = std::env::temp_dir().join(format!("stillroom-needs-newer-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(tmp.join("prompts")).unwrap();
+        std::fs::write(tmp.join("prompts/summarize.md"), "Summarize.").unwrap();
+        let yaml = std::fs::read_to_string(repo_recipes().join("summarize-file/recipe.yaml")).unwrap().replace("license: MIT", "license: MIT\nruntime: { minVersion: \"0.5\" }\nnewThing: true");
+        std::fs::write(tmp.join("recipe.yaml"), &yaml).unwrap();
+        let err = RecipeBundle::load_for(&tmp, RecipeSource::User, "0.3.0").unwrap_err();
+        assert!(matches!(err, BundleError::NeedsNewer { .. }), "{err}");
+        assert_eq!(err.to_string(), "This recipe needs Stillroom 0.5 or newer; you have 0.3.0.");
+        // The same recipe on a build that is new enough gets the ordinary schema message instead.
+        let err = RecipeBundle::load_for(&tmp, RecipeSource::User, "0.5.0").unwrap_err();
+        assert!(matches!(err, BundleError::Recipe(_)), "{err}");
+        // And a floor this build's features already cover loads, whatever Cargo says the version is.
+        std::fs::write(tmp.join("recipe.yaml"), yaml.replace("\nnewThing: true", "").replace("\"0.5\"", "\"0.3\"")).unwrap();
+        assert!(RecipeBundle::load_for(&tmp, RecipeSource::User, "0.2.0").is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

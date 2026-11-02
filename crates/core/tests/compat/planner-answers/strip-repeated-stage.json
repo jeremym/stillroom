@@ -1,0 +1,6 @@
+{
+  "about": "A ready-made stage named twice (once by use, once by a why hint) is kept once.",
+  "request": { "goal": "Read these pages and write a cited brief", "id": "pages-brief-2", "name": "Pages brief 2", "icon": "globe" },
+  "strip": { "stages": [ { "use": "read_links" }, { "name": "Again", "why": "the same (read_links)" }, { "use": "write_brief" } ] },
+  "answer": null
+}

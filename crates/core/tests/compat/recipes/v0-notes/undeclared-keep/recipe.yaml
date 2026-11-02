@@ -1,0 +1,53 @@
+# A hand-written log recipe whose Remember stage writes a keep (keep.put) without declaring one.
+# The checker says so in a Note with a Fix, "Declare the keep", and the save goes through.
+schemaVersion: "0"
+id: undeclared-keep
+name: Fetch log, keep undeclared
+icon: globe
+version: 0.1.0
+description: Fetches the links you give and remembers what it fetched.
+
+inputs:
+  urls:
+    type: urls
+    label: Pages to fetch
+
+permissions:
+  network: [input]
+
+steps:
+  - id: fetch
+    kind: map
+    name: Fetch each page
+    over: ${inputs.urls}
+    as: url
+    steps:
+      - id: get
+        kind: tool
+        tool: http.fetch
+        inputs:
+          url: ${url}
+  - id: log
+    kind: tool
+    name: Remember what was fetched
+    tool: keep.put
+    inputs:
+      data: ${steps.fetch.output}
+
+outputs:
+  all:
+    from: ${steps.log.output}
+    type: json
+    label: What was kept
+
+stages:
+  - id: read
+    name: Read
+    why: Each link is fetched.
+    inputs: [urls]
+    steps: [fetch]
+  - id: remember
+    name: Remember
+    why: What was fetched is kept between runs.
+    steps: [log]
+    outputs: [all]

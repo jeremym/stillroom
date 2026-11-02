@@ -1045,7 +1045,7 @@ mod tests {
             self.seen.lock().unwrap().push(req);
             let mut a = self.answers.lock().unwrap();
             let content = if a.is_empty() { "{}".to_string() } else { a.remove(0) };
-            Ok(ChatResponse { content, tool_calls: vec![], prompt_tokens: Some(10), completion_tokens: Some(5) })
+            Ok(ChatResponse { content, tool_calls: vec![], prompt_tokens: Some(10), completion_tokens: Some(5), completion_tokens_per_second: None })
         }
 
         /// Streams the answer in three pieces, as a provider would.

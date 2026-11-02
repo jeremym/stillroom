@@ -13,7 +13,7 @@ use stillroom_core::trace::RunSummary;
 use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, validate_edit, Cancel, Draft, Executor, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
+    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
     PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
@@ -777,12 +777,18 @@ struct KeepStateArgs {
     recipe_id: String,
     #[serde(default)]
     inputs: indexmap::IndexMap<String, Value>,
+    /// The user's model choices for this recipe, so the preview agrees with the run about which model a stage would use.
+    #[serde(default)]
+    pins: BTreeMap<String, String>,
 }
 
 /// What each kept stage of a recipe holds and whether it is fresh for these inputs.
 #[tauri::command]
-fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResult<Vec<KeepState>> {
+async fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResult<Vec<KeepState>> {
     let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    // The models a run would use now; when nothing fits, freshness is judged by sources alone.
+    let installed = state.router().list_all().await;
+    let resolutions = resolve_slots_with(&bundle.recipe, &installed, &args.pins, &state.resolve_defaults()).ok();
     let mut inputs = args.inputs;
     for (name, default) in bundle.recipe.optional_inputs() {
         inputs.entry(name).or_insert(default);
@@ -798,6 +804,7 @@ fn keep_states(state: State<'_, AppState>, args: KeepStateArgs) -> CmdResult<Vec
             stillroom_core::recipe::Refresh::Manual => true,
             stillroom_core::recipe::Refresh::WhenSourcesChange => {
                 manifest.source_fingerprint.as_deref() == Some(stage_fingerprint(&bundle.recipe, &bundle.prompts, st, &inputs).as_str())
+                    && resolutions.as_ref().is_none_or(|r| manifest.models == stage_models(&bundle.recipe, st, r))
             }
         });
         out.push(KeepState {

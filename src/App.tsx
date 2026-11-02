@@ -76,8 +76,8 @@ function App() {
   const [setupInputs, setSetupInputs] = useState<Record<string, unknown>>({});
   // What each kept stage of the open recipe holds, for the inputs typed so far.
   const [keeps, setKeeps] = useState<Record<string, KeepState>>({});
-  const keepsFor = useCallback((id: string, inputs: Record<string, unknown>) => {
-    api.keepStates(id, inputs).then((list) => setKeeps(Object.fromEntries(list.map((k) => [k.stage, k])))).catch(() => setKeeps({}));
+  const keepsFor = useCallback((id: string, inputs: Record<string, unknown>, pins: Record<string, string> = {}) => {
+    api.keepStates(id, inputs, pins).then((list) => setKeeps(Object.fromEntries(list.map((k) => [k.stage, k])))).catch(() => setKeeps({}));
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
@@ -464,9 +464,9 @@ function App() {
 
   useEffect(() => {
     if (!recipe || !recipe.stages.some((st) => st.keep)) { setKeeps({}); return; }
-    const t = setTimeout(() => keepsFor(recipe.id, setupInputs), 250);
+    const t = setTimeout(() => keepsFor(recipe.id, setupInputs, pins), 250);
     return () => clearTimeout(t);
-  }, [recipe, setupInputs, history, keepsFor]);
+  }, [recipe, setupInputs, pins, history, keepsFor]);
 
   const flowFor = (r: RecipeInfo | null, editable = true) => {
     if (!r) return null;
@@ -625,7 +625,7 @@ function App() {
           {place === "setup" && recipes && recipe && (
             <RecipePanel recipes={recipes.recipes} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
               models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} onInputsChange={setSetupInputs}
-              keeps={keeps} onRebuild={(stage) => api.rebuildKeep(recipe.id, stage).then(() => keepsFor(recipe.id, setupInputs)).catch((e) => setError(String(e)))} />
+              keeps={keeps} onRebuild={(stage) => api.rebuildKeep(recipe.id, stage).then(() => keepsFor(recipe.id, setupInputs, pins)).catch((e) => setError(String(e)))} />
           )}
 
           {place === "running" && (

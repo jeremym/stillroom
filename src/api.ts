@@ -25,7 +25,7 @@ export const api = {
   runRecipe: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>, reuse = true, rebuild: string[] = []) =>
     invoke<Run>("run_recipe", { args: { recipeId, inputs, pins, reuse, rebuild } }),
   /** What each kept stage holds and whether it is fresh for these inputs. */
-  keepStates: (recipeId: string, inputs: Record<string, unknown>) => invoke<KeepState[]>("keep_states", { args: { recipeId, inputs } }),
+  keepStates: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string> = {}) => invoke<KeepState[]>("keep_states", { args: { recipeId, inputs, pins } }),
   /** Empty a stage's keep now; the next run builds it again. */
   rebuildKeep: (recipeId: string, stage: string) => invoke<void>("rebuild_keep", { recipeId, stage }),
   keepJournal: (recipeId: string, stage: string, limit = 50) => invoke<JournalEntry[]>("keep_journal", { recipeId, stage, limit }),

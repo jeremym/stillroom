@@ -25,7 +25,7 @@ pub mod watch;
 pub use bundle::{RecipeBundle, RecipeInfo, RecipeSource};
 pub use cache::{CachedStep, MemoryCache, StepCache};
 pub use draft::{Draft, DraftError};
-pub use executor::{stage_fingerprint, Cancel, Executor, ModelDefaults, RunRequest};
+pub use executor::{stage_fingerprint, stage_models, Cancel, Executor, ModelDefaults, RunRequest};
 pub use keep::{Keep, KeepError, KeepManifest, KeepRecord, KeepSummary, JournalEntry};
 pub use library::RecipeLibrary;
 pub use stagelib::{StageDef, StageLibrary};

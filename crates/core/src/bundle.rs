@@ -64,6 +64,12 @@ pub struct RecipeInfo {
     pub icon: Option<String>,
     pub source: RecipeSource,
     pub path: String,
+    /// Who wrote it, when the recipe says (`author: { name, url }`).
+    #[serde(default)]
+    pub author: Option<crate::recipe::Author>,
+    /// The recipe's own tags (`documents`, `research`, `sample`, ...); the catalog filters by them.
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub inputs: IndexMap<String, Value>,
     pub model_slots: IndexMap<String, crate::recipe::ModelSlot>,
     pub permissions: Option<Value>,
@@ -251,6 +257,8 @@ impl RecipeBundle {
             icon: self.recipe.icon.clone(),
             source: self.source,
             path: self.root.to_string_lossy().into_owned(),
+            author: self.recipe.author.clone(),
+            tags: self.recipe.tags.clone(),
             inputs: self.recipe.inputs.clone(),
             model_slots: self.recipe.model_slots.clone(),
             permissions: self.recipe.permissions.clone(),
@@ -298,6 +306,11 @@ mod tests {
         let info = b.info();
         assert_eq!(info.steps[1].slot.as_deref(), Some("writer"));
         assert_eq!(info.steps[1].depends_on, vec!["read".to_string()]);
+        assert_eq!(info.author.as_ref().and_then(|a| a.name.as_deref()), Some("Stillroom"));
+        assert!(info.tags.contains(&"built-in".to_string()), "{:?}", info.tags);
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["author"]["name"], "Stillroom");
+        assert!(json["tags"].is_array());
     }
 
     #[test]

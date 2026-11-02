@@ -799,6 +799,28 @@ mod settings_tests {
         assert!(err.ends_with("is not a program Stillroom can run"), "{err}");
     }
 
+    /// The engine's speed table lives under `models.speed` beside the user's model defaults and
+    /// survives them being rewritten.
+    #[test]
+    fn a_models_speed_is_recorded_and_read_back_without_touching_the_rest() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_setting(MODELS_SETTING, &json!({ "preference": "speed", "timeoutSecs": 30 })).unwrap();
+        record_speed(&store, "ollama:qwen3:8b", 66.44).unwrap();
+        record_speed(&store, "ollama:gemma3:12b", 41.0).unwrap();
+        let models = store.get_setting(MODELS_SETTING).unwrap().unwrap();
+        assert_eq!(models["preference"], "speed", "the user's defaults stay");
+        assert_eq!(models["timeoutSecs"], 30);
+        assert_eq!(models["speed"]["ollama:qwen3:8b"]["tokensPerSecond"], 66.4, "one decimal");
+        let speeds = speeds_of(&store);
+        assert_eq!(speeds.len(), 2);
+        assert_eq!(speeds["ollama:gemma3:12b"].tokens_per_second, 41.0);
+        assert!(speeds["ollama:gemma3:12b"].at.starts_with("20"));
+        // A later answer replaces the earlier one for that model.
+        record_speed(&store, "ollama:qwen3:8b", 70.0).unwrap();
+        assert_eq!(speeds_of(&store)["ollama:qwen3:8b"].tokens_per_second, 70.0);
+        assert!(speeds_of(&Store::open_in_memory().unwrap()).is_empty(), "nothing recorded yet: an empty table");
+    }
+
     #[test]
     fn service_addresses_are_web_addresses_without_credentials() {
         assert_eq!(checked_setting("ollama", &json!({ "baseUrl": "http://localhost:11434" })).unwrap(), json!({ "baseUrl": "http://localhost:11434" }));

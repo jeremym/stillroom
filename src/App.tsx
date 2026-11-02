@@ -497,7 +497,7 @@ function App() {
       } else {
         draft = blankRecipe(req.id, req.name, req.icon);
       }
-      const saved = await api.saveRecipeDraft(draft);
+      const saved = await api.saveRecipeDraft(draft, true);
       await refreshRecipes();
       setRecipeId(saved.recipe.id);
       setFreshId(saved.recipe.id);
@@ -514,7 +514,7 @@ function App() {
   async function duplicateRecipe(r: RecipeInfo) {
     setError(null);
     try {
-      const taken = recipesRef.current?.recipes.map((x) => x.id) ?? [];
+      const taken = [...(recipesRef.current?.recipes.map((x) => x.id) ?? []), ...(recipesRef.current?.reserved ?? [])];
       const id = uniqueId(`${slugify(r.name)}-copy`, taken);
       const info = await api.duplicateRecipe(r.id, id, `${r.name} (copy)`);
       await refreshRecipes();
@@ -770,7 +770,7 @@ function App() {
           )}
 
           {place === "new" && recipes && (
-            <NewRecipe recipes={recipes.recipes} busy={creating} error={createError} progress={planProgress} problems={planProblems} onCreate={createRecipe}
+            <NewRecipe recipes={recipes.recipes} reserved={recipes.reserved ?? []} busy={creating} error={createError} progress={planProgress} problems={planProblems} onCreate={createRecipe}
               onCancel={() => setPlace(recipe ? "recipe" : "library")} onStop={() => api.stopRun("plan").catch((e) => setError(String(e)))} />
           )}
 

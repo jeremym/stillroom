@@ -146,10 +146,10 @@ export function ArchiveZone({ recipes, facts, onOpen, onError, onChanged }: Zone
 export function EmptyShelf({ onBrowse, onNew }: { onBrowse: () => void; onNew: () => void }) {
   return (
     <Empty word="Nothing on the shelf">
-      <p>Browse the catalog, or make a recipe.</p>
+      <p>Make a recipe, or browse the catalog.</p>
       <div className="row center">
-        <button className="primary" style={{ marginTop: 0 }} onClick={onBrowse}><Glyph name="search" /> Browse the catalog</button>
-        <button onClick={onNew}><Glyph name="plus" /> New recipe</button>
+        <button className="primary" style={{ marginTop: 0 }} onClick={onNew}><Glyph name="plus" /> New recipe</button>
+        <button onClick={onBrowse}><Glyph name="search" /> Browse the catalog</button>
       </div>
     </Empty>
   );

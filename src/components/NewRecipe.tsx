@@ -26,6 +26,8 @@ export interface NewRecipeRequest {
 
 interface Props {
   recipes: RecipeInfo[];
+  /** Ids a deleted recipe left behind in the run history; never handed out again. */
+  reserved?: string[];
   busy: boolean;
   error: string | null;
   /** What the planner is doing right now, while busy. */
@@ -39,7 +41,7 @@ interface Props {
 
 const VIA_WORD: Record<string, string> = { pinned: "your pick", default: "your default", recommended: "recommended", capability: "Auto" };
 
-export function NewRecipe({ recipes, busy, error, progress, problems, onCreate, onCancel, onStop }: Props) {
+export function NewRecipe({ recipes, reserved = [], busy, error, progress, problems, onCreate, onCancel, onStop }: Props) {
   const [mode, setMode] = useState<NewRecipeMode>("goal");
   const [sourceId, setSourceId] = useState(recipes[0]?.id ?? "");
   const [name, setName] = useState("");
@@ -50,7 +52,7 @@ export function NewRecipe({ recipes, busy, error, progress, problems, onCreate, 
   const [preview, setPreview] = useState<PlannerPreview | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
   const [promptError, setPromptError] = useState<string | null>(null);
-  const taken = useMemo(() => recipes.map((r) => r.id), [recipes]);
+  const taken = useMemo(() => [...recipes.map((r) => r.id), ...reserved], [recipes, reserved]);
   const id = uniqueId(slugify(name), taken);
   const ready = name.trim().length > 0 && (mode === "blank" || (mode === "copy" && Boolean(sourceId)) || (mode === "goal" && goal.trim().length > 0));
 

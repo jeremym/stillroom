@@ -244,7 +244,8 @@ export default function FlowView({ recipe, run, records, inProgress, models, pin
         if (Array.isArray(d.tags)) d.tags = (d.tags as string[]).filter((t) => t !== "built-in");
         if (edit.source === "builtin" && id !== edit.sourceId) delete d.author;
       });
-      const r = await api.saveRecipeDraft({ yaml: doc, files: edit.files });
+      // Saving under a new id makes a recipe; an id already on disk is refused, never written over.
+      const r = await api.saveRecipeDraft({ yaml: doc, files: edit.files }, id !== edit.sourceId);
       stopEditing();
       onSaved(r.recipe);
     } catch (e) {

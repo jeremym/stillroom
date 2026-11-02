@@ -694,6 +694,8 @@ fn open_settings(app: AppHandle) -> CmdResult<()> {
 struct RecipesResponse {
     recipes: Vec<RecipeInfo>,
     errors: Vec<RecipeLoadError>,
+    /// Ids with runs in the history but no recipe folder any more. A new recipe never takes one.
+    reserved: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -706,12 +708,14 @@ struct RecipeLoadError {
 #[tauri::command]
 fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
     let scan = state.library.scan();
-    let (placed, grants) = {
+    let (placed, grants, ran) = {
         let store = state.store.lock().map_err(err)?;
-        (store.shelf_all().map_err(err)?, store.grants_all().map_err(err)?)
+        (store.shelf_all().map_err(err)?, store.grants_all().map_err(err)?, store.run_recipe_ids().map_err(err)?)
     };
     let none = Vec::new();
+    let reserved = ran.into_iter().filter(|id| !scan.bundles.iter().any(|b| &b.recipe.id == id)).collect();
     Ok(RecipesResponse {
+        reserved,
         recipes: scan
             .bundles
             .iter()
@@ -1093,8 +1097,10 @@ struct SaveResponse {
 
 /// Write the draft into the user's recipes folder as `<id>/`. A user recipe with that id is
 /// replaced; a catalog recipe with that id stays on disk but the saved copy is the one listed.
+/// `expect_new` says the caller is making a recipe, not editing one: a folder that already
+/// exists is then refused instead of written over.
 #[tauri::command]
-fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<SaveResponse> {
+fn save_recipe_draft(state: State<'_, AppState>, draft: Draft, expect_new: Option<bool>) -> CmdResult<SaveResponse> {
     let id = draft.id().ok_or("the recipe needs an id")?.to_string();
     let (user_root, _) = state
         .library
@@ -1103,6 +1109,9 @@ fn save_recipe_draft(state: State<'_, AppState>, draft: Draft) -> CmdResult<Save
         .find(|(_, s)| *s == RecipeSource::User)
         .ok_or("no folder for your recipes")?;
     let dir = user_root.join(&id);
+    if expect_new.unwrap_or(false) && dir.exists() {
+        return Err(format!("A recipe with the id \u{201c}{id}\u{201d} already exists; pick another."));
+    }
     let shadows_builtin = state.library.find(&id).map(|b| !b.source.is_user()).unwrap_or(false);
     draft.write(&dir, &known_tools(&state)).map_err(err)?;
     let bundle = state.library.find(&id).ok_or("saved, but the recipe did not load back")?;
@@ -1159,6 +1168,8 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
         let store = state.store.lock().map_err(err)?;
         let _ = store.remove_shelf(&recipe_id).map_err(err)?;
         let _ = store.revoke_grants(&recipe_id).map_err(err)?;
+        // The runs stay (they hold results) but say the recipe is gone, and the id stays reserved.
+        let _ = store.mark_runs_deleted(&recipe_id).map_err(err)?;
     }
     let _ = app.emit("watch:changed", ());
     let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: None });

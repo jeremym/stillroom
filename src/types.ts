@@ -328,6 +328,8 @@ export interface ImportPreview {
 export interface RecipesResponse {
   recipes: RecipeInfo[];
   errors: { path: string; error: string }[];
+  /** Ids with runs in the history but no recipe folder any more; a new recipe never takes one. */
+  reserved?: string[];
 }
 
 export interface ModelUsage {

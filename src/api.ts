@@ -42,7 +42,8 @@ export const api = {
   checkRecipeDraft: (draft: Draft): Promise<Finding[]> => invoke<(string | Finding)[]>("check_recipe_draft", { draft }).then(toFindings),
   /** Apply the named fixes (the `fix` ids from findings) and get the rewritten draft back. Nothing is saved. */
   fixRecipeDraft: (draft: Draft, fixes: string[]) => invoke<Draft>("fix_recipe_draft", { draft, fixes }),
-  saveRecipeDraft: (draft: Draft) => invoke<SaveResponse>("save_recipe_draft", { draft }),
+  /** `expectNew` says this makes a recipe rather than editing one: an id already on disk is refused, never written over. */
+  saveRecipeDraft: (draft: Draft, expectNew = false) => invoke<SaveResponse>("save_recipe_draft", { draft, expectNew }),
   /** The engine's own prompts (the planner) with their revisions. */
   listSystemPrompts: () => invoke<PromptState[]>("list_system_prompts"),
   readSystemPrompt: (name: string) => invoke<PromptState>("read_system_prompt", { name }),

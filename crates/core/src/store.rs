@@ -222,13 +222,43 @@ impl Store {
     /// record: whoever has run a built-in keeps it in front of them, while a fresh database has
     /// no runs and ends up with the example alone. The store does not know which ids are
     /// built-in; a row for one of the user's own recipes says what its default already says.
+    /// Every recipe id that has at least one run, whether or not the recipe still exists. A new
+    /// recipe never takes one of these ids, so it cannot inherit a deleted recipe's history.
+    pub fn run_recipe_ids(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT DISTINCT recipe_id FROM runs")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// The recipe is gone; its runs stay (they hold results) but say so in their name, once.
+    pub fn mark_runs_deleted(&self, recipe_id: &str) -> Result<usize, StoreError> {
+        const MARK: &str = " (deleted)";
+        let mut stmt = self.conn.prepare("SELECT id, recipe_name, json FROM runs WHERE recipe_id = ?1")?;
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map(params![recipe_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut changed = 0;
+        for (id, name, json) in rows {
+            if name.ends_with(MARK) {
+                continue;
+            }
+            let name = format!("{name}{MARK}");
+            let json = match serde_json::from_str::<serde_json::Value>(&json) {
+                Ok(mut v) => {
+                    v["recipeName"] = serde_json::Value::String(name.clone());
+                    v.to_string()
+                }
+                Err(_) => json,
+            };
+            changed += self.conn.execute("UPDATE runs SET recipe_name = ?1, json = ?2 WHERE id = ?3", params![name, json, id])?;
+        }
+        Ok(changed)
+    }
+
     fn seed_shelf(&self) -> Result<(), StoreError> {
         let now = chrono::Utc::now().to_rfc3339();
         let mut ids = vec![EXAMPLE_RECIPE_ID.to_string()];
-        let mut stmt = self.conn.prepare("SELECT DISTINCT recipe_id FROM runs")?;
-        for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
-            ids.push(row?);
-        }
+        ids.extend(self.run_recipe_ids()?);
         for id in ids {
             self.conn.execute(
                 "INSERT INTO shelf (recipe_id, state, changed_at) VALUES (?1, 'shelf', ?2) ON CONFLICT(recipe_id) DO NOTHING",
@@ -584,6 +614,29 @@ mod tests {
         drop(store);
         assert_eq!(Store::open(&path).unwrap().schema_version().unwrap(), STORE_SCHEMA_VERSION, "opening again is a no-op");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_deleted_recipe_keeps_its_id_reserved_and_its_runs_say_so() {
+        let dir = std::env::temp_dir().join(format!("stillroom-deleted-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("s.db")).unwrap();
+        store.save_run(&bare_run("r1", "report")).unwrap();
+        store.save_run(&bare_run("r2", "report")).unwrap();
+        store.save_run(&bare_run("r3", "other")).unwrap();
+        let mut ids = store.run_recipe_ids().unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["other".to_string(), "report".to_string()], "every id with a run is reserved");
+
+        assert_eq!(store.mark_runs_deleted("report").unwrap(), 2);
+        assert_eq!(store.mark_runs_deleted("report").unwrap(), 0, "marked once, never twice");
+        let names: Vec<String> = store.list_runs(10).unwrap().into_iter().map(|r| r.recipe_name).collect();
+        assert!(names.iter().filter(|n| n.as_str() == "REPORT (deleted)").count() == 2, "{names:?}");
+        assert!(names.contains(&"OTHER".to_string()), "other recipes untouched: {names:?}");
+        let mut ids = store.run_recipe_ids().unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["other".to_string(), "report".to_string()], "the id stays reserved after the delete");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn bare_run(id: &str, recipe_id: &str) -> Run {

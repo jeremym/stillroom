@@ -67,13 +67,18 @@ export const api = {
   getRun: (id: string) => invoke<Run | null>("get_run", { id }),
   usage: () => invoke<ModelUsage[]>("usage"),
   estimate: (recipeId: string) => invoke<RunEstimate | null>("estimate", { recipeId }),
-  writeTextFile: (path: string, content: string) => invoke<void>("write_text_file", { path, content }),
-  copyFile: (src: string, dst: string) => invoke<void>("copy_file", { src, dst }),
-  writeBinaryFile: (path: string, bytes: Uint8Array) => {
+  /** Save text where the user chooses. The save dialog runs on the Rust side; the webview never names a path.
+   *  Resolves to the path written, or null when the user cancelled. */
+  saveTextAs: (name: string, ext: string, content: string) => invoke<string | null>("save_text_as", { name, ext, content }),
+  /** Save bytes where the user chooses (dialog in Rust). Null when cancelled. */
+  saveBinaryAs: (name: string, ext: string, bytes: Uint8Array) => {
     let bin = "";
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return invoke<void>("write_binary_file", { path, dataBase64: btoa(bin) });
+    return invoke<string | null>("save_binary_as", { name, ext, dataBase64: btoa(bin) });
   },
+  /** Copy a file a run produced (audio, say) to where the user chooses. Rust checks the file belongs to the run. Null when cancelled. */
+  saveArtifactAs: (runId: string, artifactPath: string, name: string, ext: string) =>
+    invoke<string | null>("save_artifact_as", { runId, artifactPath, name, ext }),
 };
 
 export function fmtMs(ms: number | null | undefined) {

@@ -1053,29 +1053,89 @@ fn fire_watch(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRun
     Ok(())
 }
 
-#[tauri::command]
-fn write_text_file(path: String, content: String) -> CmdResult<()> {
-    std::fs::write(&path, content).map_err(|e| format!("{path}: {e}"))
+/// A file extension as the webview may suggest it for a save: short, letters and digits only.
+fn checked_extension(ext: &str) -> CmdResult<&str> {
+    let ext = ext.trim().trim_start_matches('.');
+    if ext.is_empty() || ext.len() > 8 || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("{ext:?} is not a file extension Stillroom can save as"));
+    }
+    Ok(ext)
 }
 
-/// Write binary artifact data (base64-encoded over IPC) to a path the user chose in a save dialog.
+/// Ask the user where to save, from Rust, so the webview never names a path. The suggested name is
+/// only a suggestion: path separators are dropped and the extension is appended. `None` when the
+/// user cancelled.
+fn ask_where_to_save(app: &AppHandle, name: &str, ext: &str) -> CmdResult<Option<PathBuf>> {
+    use tauri_plugin_dialog::DialogExt;
+    let ext = checked_extension(ext)?;
+    let stem: String = name.chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '\0')).collect();
+    let stem = stem.trim().trim_start_matches('.');
+    let stem = if stem.is_empty() { "artifact" } else { stem };
+    let picked = app.dialog().file().set_file_name(format!("{stem}.{ext}")).add_filter(ext.to_uppercase(), &[ext]).blocking_save_file();
+    match picked {
+        None => Ok(None),
+        Some(p) => p.into_path().map(Some).map_err(err),
+    }
+}
+
+/// Save text where the user chooses (the dialog runs in Rust). Returns the path written, or `None`
+/// when the user cancelled.
 #[tauri::command]
-fn write_binary_file(path: String, data_base64: String) -> CmdResult<()> {
+async fn save_text_as(app: AppHandle, name: String, ext: String, content: String) -> CmdResult<Option<String>> {
+    let Some(dst) = ask_where_to_save(&app, &name, &ext)? else { return Ok(None) };
+    std::fs::write(&dst, content).map_err(|e| format!("{}: {e}", dst.display()))?;
+    Ok(Some(dst.to_string_lossy().into_owned()))
+}
+
+/// Save binary data (base64 over IPC) where the user chooses. Returns the path written, or `None`
+/// when the user cancelled.
+#[tauri::command]
+async fn save_binary_as(app: AppHandle, name: String, ext: String, data_base64: String) -> CmdResult<Option<String>> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64).map_err(err)?;
-    std::fs::write(&path, bytes).map_err(|e| format!("{path}: {e}"))
+    let Some(dst) = ask_where_to_save(&app, &name, &ext)? else { return Ok(None) };
+    std::fs::write(&dst, bytes).map_err(|e| format!("{}: {e}", dst.display()))?;
+    Ok(Some(dst.to_string_lossy().into_owned()))
+}
+
+/// Whether a run's record names `path` as a file it produced: an object with `"path": <path>`
+/// somewhere in its outputs or step outputs.
+fn run_names_file(run: &Run, path: &str) -> bool {
+    fn names(v: &Value, path: &str) -> bool {
+        match v {
+            Value::Object(m) => m.get("path").and_then(Value::as_str) == Some(path) || m.values().any(|v| names(v, path)),
+            Value::Array(a) => a.iter().any(|v| names(v, path)),
+            _ => false,
+        }
+    }
+    run.outputs.values().any(|v| names(v, path)) || run.steps.iter().filter_map(|s| s.output.as_ref()).any(|v| names(v, path))
+}
+
+/// Copy a file a run produced (audio, say) to where the user chooses. The source is not taken as a
+/// free path: it must be named by the run's record and lie inside Stillroom's results folder.
+#[tauri::command]
+async fn save_artifact_as(app: AppHandle, state: State<'_, AppState>, run_id: String, artifact_path: String, name: String, ext: String) -> CmdResult<Option<String>> {
+    let src = {
+        let run = state.store.lock().map_err(err)?.get_run(&run_id).map_err(err)?.ok_or("that run is gone from the history")?;
+        if !run_names_file(&run, &artifact_path) {
+            return Err("that file is not one of the run's results".into());
+        }
+        let src = PathBuf::from(&artifact_path).canonicalize().map_err(|e| format!("the result file is gone: {e}"))?;
+        let base = state.artifacts_dir.canonicalize().map_err(err)?;
+        if !src.starts_with(&base) || !src.is_file() {
+            return Err("that file is not in Stillroom's results folder".into());
+        }
+        src
+    };
+    let Some(dst) = ask_where_to_save(&app, &name, &ext)? else { return Ok(None) };
+    std::fs::copy(&src, &dst).map_err(|e| format!("{} -> {}: {e}", src.display(), dst.display()))?;
+    Ok(Some(dst.to_string_lossy().into_owned()))
 }
 
 /// Forget every cached step output, so the next run recomputes everything.
 #[tauri::command]
 fn clear_step_cache(state: State<'_, AppState>) -> CmdResult<usize> {
     state.store.lock().map_err(err)?.cache_clear().map_err(err)
-}
-
-/// Copy an artifact file (e.g. audio) to a path the user chose in a save dialog.
-#[tauri::command]
-fn copy_file(src: String, dst: String) -> CmdResult<()> {
-    std::fs::copy(&src, &dst).map(|_| ()).map_err(|e| format!("{src} -> {dst}: {e}"))
 }
 
 /// The native menu. Every item emits a `menu` event with its id; the webview decides what it means.
@@ -1240,9 +1300,9 @@ pub fn run() {
             permission_status,
             open_privacy_pane,
             fire_watch,
-            write_text_file,
-            write_binary_file,
-            copy_file,
+            save_text_as,
+            save_binary_as,
+            save_artifact_as,
             clear_step_cache
         ])
         .run(tauri::generate_context!())

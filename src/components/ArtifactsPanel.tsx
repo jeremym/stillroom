@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import { asDiagram } from "./DiagramView";
 import { isDeck, deckToHtml, deckToPptx } from "./SlidesView";
@@ -33,6 +32,7 @@ function dependentsOf(steps: StepInfo[], stepId: string): StepInfo[] {
 interface ExportOption { label: string; ext: string; build: () => Promise<string | Uint8Array | { copyFrom: string }>; }
 
 interface ArtifactProps {
+  runId: string;
   name: string;
   spec: OutputSpec | undefined;
   value: unknown;
@@ -47,7 +47,7 @@ function kindIsEditable(kind: string | undefined, value: unknown) {
   return typeof value === "string" || (typeof value === "object" && value !== null);
 }
 
-function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
+function Artifact({ runId, name, spec, value, steps, busy, onEdit }: ArtifactProps) {
   const label = spec?.label ?? name;
   const stepId = sourceStep(spec);
   const editable = Boolean(onEdit && stepId && kindIsEditable(spec?.type, value));
@@ -59,6 +59,8 @@ function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
   const audio = kind === "audio" && isAudio(value) ? value : null;
   const [svg, setSvg] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  /** What the last save did, in a line under the heading. */
+  const [saveNote, setSaveNote] = useState<string | null>(null);
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 
   const exports: ExportOption[] = deck
@@ -75,18 +77,20 @@ function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
         ? [{ label: "Save CSV…", ext: "csv", build: async () => toCsv(value as Record<string, unknown>[]) }, { label: "Save JSON…", ext: "json", build: async () => text }]
         : [{ label: "Save…", ext: kind === "markdown" ? "md" : kind === "json" ? "json" : "txt", build: async () => text }];
 
-  async function exportWith(opt: ExportOption) {
-    const path = await save({ defaultPath: `${name}.${opt.ext}`, filters: [{ name: opt.ext.toUpperCase(), extensions: [opt.ext] }] });
-    if (!path) return;
+  /** Build the file, then let Rust ask where to put it. The webview never names a path. */
+  function exportWith(opt: ExportOption) {
     setExporting(true);
-    try {
-      const body = await opt.build();
-      if (typeof body === "string") await api.writeTextFile(path, body);
-      else if (body instanceof Uint8Array) await api.writeBinaryFile(path, body);
-      else await api.copyFile(body.copyFrom, path);
-    } finally {
-      setExporting(false);
-    }
+    setSaveNote(null);
+    opt
+      .build()
+      .then((body) => {
+        if (typeof body === "string") return api.saveTextAs(name, opt.ext, body);
+        if (body instanceof Uint8Array) return api.saveBinaryAs(name, opt.ext, body);
+        return api.saveArtifactAs(runId, body.copyFrom, name, opt.ext);
+      })
+      .then((saved) => setSaveNote(saved ? `Saved to ${saved}` : null))
+      .catch((e) => setSaveNote(`Could not save: ${String(e)}`))
+      .finally(() => setExporting(false));
   }
 
   return (
@@ -101,6 +105,7 @@ function Artifact({ name, spec, value, steps, busy, onEdit }: ArtifactProps) {
         </span>
       </div>
       {spec?.description && <p className="muted">{spec.description}</p>}
+      {saveNote && <p className={saveNote.startsWith("Could not") ? "error" : "muted"}>{saveNote}</p>}
       {editing && stepId ? (
         <div className="paper"><ArtifactEditor
           kind={kind}
@@ -158,7 +163,7 @@ export function ArtifactsPanel({ run, outputs, steps, busy, onEdit, groups }: Pa
           ))}
         </nav>
       )}
-      <Artifact key={`${run.id}:${name}`} name={name} spec={outputs[name]} value={value} steps={steps} busy={busy} onEdit={onEdit} />
+      <Artifact key={`${run.id}:${name}`} runId={run.id} name={name} spec={outputs[name]} value={value} steps={steps} busy={busy} onEdit={onEdit} />
     </>
   );
 }

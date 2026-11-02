@@ -13,8 +13,8 @@ use stillroom_core::trace::RunSummary;
 use stillroom_core::keep::{keep_dir, JournalEntry, Keep, KeepRecord};
 use stillroom_core::planner::{planner_recipe, PLANNER_SLOT};
 use stillroom_core::{
-    edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner,
-    PromptState, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
+    consent, edits_for_rerun, pins_from_run, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, Grant, ModelDefaults, PlanEvent, PlanOutcome, PlanRequest,
+    Planner, PromptState, RecipeBundle, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, Run, RunTrigger, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
@@ -44,6 +44,8 @@ pub(crate) struct AppState {
     stage_library: Arc<stillroom_core::StageLibrary>,
     /// One run at a time: a watch firing while the user runs something waits its turn.
     run_gate: tokio::sync::Mutex<()>,
+    /// Where a recipe being got from a folder or zip waits, checked, for the user's yes.
+    quarantine_dir: PathBuf,
 }
 
 impl AppState {
@@ -147,6 +149,34 @@ impl AppState {
             .and_then(|m| serde_json::from_value(m).ok())
             .unwrap_or_default()
     }
+
+    /// Where a recipe stands with the user: its literal permission entries against the store's grants.
+    fn consent_of(&self, bundle: &RecipeBundle) -> CmdResult<consent::Consent> {
+        let granted = self.store.lock().map_err(err)?.grants(&bundle.recipe.id).map_err(err)?;
+        Ok(consent::consent_for(&bundle.recipe, bundle.source, &granted))
+    }
+
+    /// Refuse, in words, while the recipe still needs the user's yes for anything.
+    fn check_consent(&self, bundle: &RecipeBundle) -> CmdResult<()> {
+        match consent::refusal(&self.consent_of(bundle)?) {
+            Some(text) => Err(text),
+            None => Ok(()),
+        }
+    }
+
+    /// A recipe as the Library lists it: its placement, where a copy came from, and its consent.
+    fn info_of(&self, bundle: &RecipeBundle) -> CmdResult<RecipeInfo> {
+        let scan = self.library.scan();
+        let (placed, granted) = {
+            let store = self.store.lock().map_err(err)?;
+            (store.shelf_state(&bundle.recipe.id).map_err(err)?, store.grants(&bundle.recipe.id).map_err(err)?)
+        };
+        Ok(bundle
+            .info()
+            .with_shelf(placed)
+            .with_from(stillroom_core::catalog::provenance(bundle, &scan.bundles))
+            .with_consent(consent::consent_for(&bundle.recipe, bundle.source, &granted)))
+    }
 }
 
 const KEYCHAIN_SERVICE: &str = "com.jeremym.stillroom";
@@ -229,6 +259,9 @@ pub(crate) async fn execute(app: &AppHandle, state: &AppState, args: ExecArgs) -
         .library
         .find(&args.recipe_id)
         .ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    // Consent first: a recipe that is not built-in runs only once every literal permission entry
+    // has the user's yes. Watches come through here too, so they obey as well.
+    state.check_consent(&bundle)?;
     let router = state.router();
     let installed = router.list_all().await;
     let resolutions = resolve_slots_with(&bundle.recipe, &installed, &args.pins, &state.resolve_defaults()).map_err(err)?;
@@ -425,19 +458,141 @@ fn get_settings(state: State<'_, AppState>) -> CmdResult<Value> {
     Ok(Value::Object(state.settings()?))
 }
 
+/// The top-level settings Stillroom knows. Anything else in a patch is refused.
+const SETTING_KEYS: &[&str] = &["look", "ollama", "models", "pins", "firstRun", "codex", "openai", "planner"];
+
+/// A service address as a setting: a web address (http or https) with a host, kept without any
+/// user name or password that was typed into it, and without a trailing slash. Empty means unset.
+fn checked_service_url(what: &str, raw: &str) -> CmdResult<Option<String>> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let mut url = tauri::Url::parse(raw).map_err(|e| format!("{what}: {raw:?} is not a web address ({e})"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!("{what}: only http and https addresses work; {raw:?} is {}", url.scheme()));
+    }
+    if url.host_str().is_none() {
+        return Err(format!("{what}: {raw:?} names no host"));
+    }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_fragment(None);
+    Ok(Some(url.as_str().trim_end_matches('/').to_string()))
+}
+
+/// A program path as a setting: an existing file this user may run. Empty means "find it".
+fn checked_program(what: &str, raw: &str) -> CmdResult<Option<String>> {
+    use std::os::unix::fs::PermissionsExt;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let meta = std::fs::metadata(raw).map_err(|e| format!("{what}: {raw} cannot be used ({e})"))?;
+    if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+        return Err(format!("{what}: {raw} is not a program Stillroom can run"));
+    }
+    Ok(Some(raw.to_string()))
+}
+
+/// One setting as the webview sent it, checked and tidied, or refused in words. `Null` removes.
+fn checked_setting(key: &str, value: &Value) -> CmdResult<Value> {
+    if !SETTING_KEYS.contains(&key) {
+        return Err(format!("{key} is not a setting Stillroom knows"));
+    }
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    let want_object = |v: &Value| v.as_object().cloned().ok_or_else(|| format!("{key} must be an object"));
+    let tidy = |mut o: serde_json::Map<String, Value>, field: &str, check: &dyn Fn(&str) -> CmdResult<Option<String>>| -> CmdResult<Value> {
+        if let Some(v) = o.get(field) {
+            match v {
+                Value::Null => {
+                    o.remove(field);
+                }
+                Value::String(s) => match check(s)? {
+                    Some(fixed) => {
+                        o.insert(field.into(), Value::String(fixed));
+                    }
+                    None => {
+                        o.remove(field);
+                    }
+                },
+                _ => return Err(format!("{key}.{field} must be text")),
+            }
+        }
+        Ok(Value::Object(o))
+    };
+    match key {
+        "firstRun" => value.as_bool().map(Value::Bool).ok_or_else(|| "firstRun must be true or false".to_string()),
+        "codex" => tidy(want_object(value)?, "path", &|s| checked_program("codex.path", s)),
+        "ollama" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("ollama.baseUrl", s)),
+        "openai" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("openai.baseUrl", s)),
+        _ => want_object(value).map(Value::Object),
+    }
+}
+
 /// Merge a patch of top-level settings (a key set to null is removed), then tell every window.
+/// Every key is one Stillroom knows, `codex.path` is a program that exists, and the service
+/// addresses are web addresses with any user name or password dropped; otherwise nothing is
+/// written and the reason comes back in words.
 #[tauri::command]
 fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: Value) -> CmdResult<Value> {
     let patch = patch.as_object().ok_or("settings patch must be an object")?;
+    let mut checked = Vec::with_capacity(patch.len());
+    for (k, v) in patch {
+        checked.push((k.clone(), checked_setting(k, v)?));
+    }
     {
         let store = state.store.lock().map_err(err)?;
-        for (k, v) in patch {
+        for (k, v) in &checked {
             store.set_setting(k, v).map_err(err)?;
         }
     }
     let all = Value::Object(state.settings()?);
     let _ = app.emit("settings:changed", all.clone());
     Ok(all)
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_keys_and_wrong_shapes_are_refused() {
+        assert_eq!(checked_setting("secrets", &json!({})).unwrap_err(), "secrets is not a setting Stillroom knows");
+        assert_eq!(checked_setting("firstRun", &json!("yes")).unwrap_err(), "firstRun must be true or false");
+        assert_eq!(checked_setting("look", &json!("green")).unwrap_err(), "look must be an object");
+        assert_eq!(checked_setting("look", &json!({ "theme": "green" })).unwrap(), json!({ "theme": "green" }));
+        assert_eq!(checked_setting("codex", &Value::Null).unwrap(), Value::Null, "null removes");
+        assert_eq!(checked_setting("codex", &json!({ "path": 3 })).unwrap_err(), "codex.path must be text");
+    }
+
+    #[test]
+    fn codex_path_must_be_a_program_that_exists() {
+        assert_eq!(checked_setting("codex", &json!({ "enabled": true, "path": "/bin/ls" })).unwrap(), json!({ "enabled": true, "path": "/bin/ls" }));
+        assert_eq!(checked_setting("codex", &json!({ "path": "  " })).unwrap(), json!({}), "empty means find it");
+        assert_eq!(checked_setting("codex", &json!({ "path": null, "models": [] })).unwrap(), json!({ "models": [] }));
+        let err = checked_setting("codex", &json!({ "path": "/etc/hosts" })).unwrap_err();
+        assert_eq!(err, "codex.path: /etc/hosts is not a program Stillroom can run");
+        let err = checked_setting("codex", &json!({ "path": "/nowhere/codex" })).unwrap_err();
+        assert!(err.starts_with("codex.path: /nowhere/codex cannot be used"), "{err}");
+        let err = checked_setting("codex", &json!({ "path": "/bin" })).unwrap_err();
+        assert!(err.ends_with("is not a program Stillroom can run"), "{err}");
+    }
+
+    #[test]
+    fn service_addresses_are_web_addresses_without_credentials() {
+        assert_eq!(checked_setting("ollama", &json!({ "baseUrl": "http://localhost:11434" })).unwrap(), json!({ "baseUrl": "http://localhost:11434" }));
+        assert_eq!(checked_setting("ollama", &json!({ "baseUrl": "http://user:secret@ollama.local:11434/" })).unwrap(), json!({ "baseUrl": "http://ollama.local:11434" }), "a typed-in password never reaches the store");
+        assert_eq!(checked_setting("openai", &json!({ "enabled": true, "baseUrl": "https://api.example.com/v1/#x" })).unwrap(), json!({ "enabled": true, "baseUrl": "https://api.example.com/v1" }));
+        assert_eq!(checked_setting("ollama", &json!({ "baseUrl": "" })).unwrap(), json!({}), "empty means the default");
+        for bad in ["ftp://x", "localhost:11434", "file:///etc", "http://", "not a url"] {
+            let err = checked_setting("ollama", &json!({ "baseUrl": bad })).unwrap_err();
+            assert!(err.starts_with("ollama.baseUrl:"), "{bad}: {err}");
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -551,12 +706,21 @@ struct RecipeLoadError {
 #[tauri::command]
 fn list_recipes(state: State<'_, AppState>) -> CmdResult<RecipesResponse> {
     let scan = state.library.scan();
-    let placed = state.store.lock().map_err(err)?.shelf_all().map_err(err)?;
+    let (placed, grants) = {
+        let store = state.store.lock().map_err(err)?;
+        (store.shelf_all().map_err(err)?, store.grants_all().map_err(err)?)
+    };
+    let none = Vec::new();
     Ok(RecipesResponse {
         recipes: scan
             .bundles
             .iter()
-            .map(|b| b.info().with_shelf(placed.get(&b.recipe.id).copied()).with_from(stillroom_core::catalog::provenance(b, &scan.bundles)))
+            .map(|b| {
+                b.info()
+                    .with_shelf(placed.get(&b.recipe.id).copied())
+                    .with_from(stillroom_core::catalog::provenance(b, &scan.bundles))
+                    .with_consent(consent::consent_for(&b.recipe, b.source, grants.get(&b.recipe.id).unwrap_or(&none)))
+            })
             .collect(),
         errors: scan
             .errors
@@ -991,7 +1155,11 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
         Err(e) => return Err(format!("the recipe is deleted, but its run keeps could not be removed: {e}")),
     }
     // Its place on the shelf goes with it; a catalog recipe of the same id, now unshadowed, starts over in the catalog.
-    let _ = state.store.lock().map_err(err)?.remove_shelf(&recipe_id).map_err(err)?;
+    {
+        let store = state.store.lock().map_err(err)?;
+        let _ = store.remove_shelf(&recipe_id).map_err(err)?;
+        let _ = store.revoke_grants(&recipe_id).map_err(err)?;
+    }
     let _ = app.emit("watch:changed", ());
     let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: None });
     Ok(())
@@ -1016,6 +1184,141 @@ fn set_shelf(app: AppHandle, app_state: State<'_, AppState>, recipe_id: String, 
     app_state.store.lock().map_err(err)?.set_shelf(&recipe_id, state).map_err(err)?;
     let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: Some(state) });
     Ok(())
+}
+
+/// Record the user's yes to permission entries of a recipe (the consent step at Set up or on
+/// import). Only entries the recipe really lists as literal are recorded; the rest are ignored.
+/// Every window hears `recipes:changed`.
+#[tauri::command]
+fn grant_permissions(app: AppHandle, state: State<'_, AppState>, recipe_id: String, entries: Vec<Grant>) -> CmdResult<RecipeInfo> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    let literal = consent::literal_entries(&bundle.recipe);
+    let accepted: Vec<Grant> = literal.into_iter().filter(|l| entries.iter().any(|e| e.kind == l.kind && e.entry == l.entry)).collect();
+    state.store.lock().map_err(err)?.grant(&recipe_id, &accepted).map_err(err)?;
+    let _ = app.emit("recipes:changed", ());
+    state.info_of(&bundle)
+}
+
+/// What `import_recipe` hands back: the recipe as it would be listed (source `user`, every
+/// literal permission still needed), what the checker said, and its weight. Nothing is
+/// installed until `confirm_import`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportPreview {
+    token: String,
+    info: RecipeInfo,
+    findings: Vec<Finding>,
+    size_bytes: u64,
+}
+
+/// Get a recipe from a folder or a `.zip`: the dialog runs in Rust, the bundle is copied into
+/// quarantine with links, escaping paths, and hidden entries refused, brought up to the current
+/// format, and checked. `kind` is `"folder"` for a folder dialog; anything else asks for a zip
+/// (the two cannot share one dialog). `None` when the user cancelled. A recipe with Problems is
+/// refused here, in words, and nothing is kept.
+#[tauri::command]
+async fn import_recipe(app: AppHandle, state: State<'_, AppState>, kind: Option<String>) -> CmdResult<Option<ImportPreview>> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = if kind.as_deref() == Some("folder") {
+        app.dialog().file().set_title("Get a recipe from a folder").blocking_pick_folder()
+    } else {
+        app.dialog().file().set_title("Get a recipe from a zip").add_filter("Zip archive", &["zip"]).blocking_pick_file()
+    };
+    let Some(picked) = picked else { return Ok(None) };
+    let src = picked.into_path().map_err(err)?;
+    let got = stillroom_core::catalog::import(&src, &state.quarantine_dir).map_err(err)?;
+    let discard = |root: &PathBuf| {
+        let _ = std::fs::remove_dir_all(root);
+    };
+    let tools = known_tools(&state);
+    let draft = match Draft::read(&got.root) {
+        Ok(d) => d,
+        Err(e) => {
+            discard(&got.root);
+            return Err(format!("This recipe could not be read: {e}"));
+        }
+    };
+    let mut findings = draft.check_with(&tools, Some(&state.stage_library));
+    let problems: Vec<String> = findings.iter().filter(|f| f.is_problem()).map(|f| f.text.clone()).collect();
+    if !problems.is_empty() {
+        discard(&got.root);
+        return Err(format!("This recipe cannot be imported as it is:\n{}", problems.join("\n")));
+    }
+    // Keep the migrated form, so what the user confirms is what is installed.
+    if let Err(e) = draft.write(&got.root, &tools) {
+        discard(&got.root);
+        return Err(e.to_string());
+    }
+    let bundle = match RecipeBundle::load_for(&got.root, RecipeSource::User, state.library.app_version()) {
+        Ok(b) => b,
+        Err(e) => {
+            discard(&got.root);
+            return Err(e.to_string());
+        }
+    };
+    if state.library.find(&bundle.recipe.id).is_some() {
+        findings.push(Finding::problem(stillroom_core::CatalogError::Taken(bundle.recipe.id.clone()).to_string()));
+    }
+    Ok(Some(ImportPreview { token: got.token, info: bundle.info(), findings, size_bytes: got.size_bytes }))
+}
+
+/// Move a quarantined import into the user's recipes folder, record the grants the user ticked,
+/// and put it on the shelf. An id that exists already is refused in the catalog's words.
+#[tauri::command]
+fn confirm_import(app: AppHandle, state: State<'_, AppState>, token: String, grants: Vec<Grant>) -> CmdResult<RecipeInfo> {
+    let bundle = stillroom_core::catalog::install(&state.quarantine_dir, &token, &state.library).map_err(err)?;
+    let id = bundle.recipe.id.clone();
+    let literal = consent::literal_entries(&bundle.recipe);
+    let accepted: Vec<Grant> = literal.into_iter().filter(|l| grants.iter().any(|g| g.kind == l.kind && g.entry == l.entry)).collect();
+    {
+        let store = state.store.lock().map_err(err)?;
+        store.grant(&id, &accepted).map_err(err)?;
+        store.set_shelf(&id, ShelfState::Shelf).map_err(err)?;
+    }
+    let _ = app.emit("shelf:changed", ShelfChanged { recipe_id: id, state: Some(ShelfState::Shelf) });
+    let _ = app.emit("recipes:changed", ());
+    state.info_of(&bundle)
+}
+
+/// Share a recipe as `<id>.zip` where the user chooses (the dialog runs in Rust): recipe.yaml,
+/// prompts, schemas, skills, assets, and the example, under a folder named after the id. Keeps,
+/// runs, pins, and shelf state live outside the bundle and are never in it; `runs/`, `keeps/`,
+/// hidden files, links, and anything a `.stillroomignore` names are left out. `None` when the
+/// user cancelled.
+#[tauri::command]
+async fn export_recipe(app: AppHandle, state: State<'_, AppState>, recipe_id: String) -> CmdResult<Option<String>> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    let Some(dst) = ask_where_to_save(&app, &bundle.recipe.id, "zip")? else { return Ok(None) };
+    stillroom_core::catalog::export_zip(&bundle, &dst).map_err(err)?;
+    Ok(Some(dst.to_string_lossy().into_owned()))
+}
+
+/// Forget a quarantined import.
+#[tauri::command]
+fn discard_import(state: State<'_, AppState>, token: String) -> CmdResult<()> {
+    let dir = stillroom_core::catalog::quarantine_dir(&state.quarantine_dir, &token).map_err(err)?;
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The recipe's saved example run (`example/result.json` in the bundle), its file paths pointing
+/// into the bundle's `example/` folder, so the Recipe page can show a result without a model.
+#[tauri::command]
+fn example_result(state: State<'_, AppState>, recipe_id: String) -> CmdResult<Run> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    stillroom_core::catalog::example_result(&bundle).map_err(err)
+}
+
+/// Forget every grant for a recipe; it needs the consent step again before it runs.
+#[tauri::command]
+fn revoke_permissions(app: AppHandle, state: State<'_, AppState>, recipe_id: String) -> CmdResult<RecipeInfo> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    state.store.lock().map_err(err)?.revoke_grants(&recipe_id).map_err(err)?;
+    let _ = app.emit("recipes:changed", ());
+    state.info_of(&bundle)
 }
 
 #[derive(Serialize, Clone)]
@@ -1147,6 +1450,7 @@ struct AddWatchArgs {
 #[tauri::command]
 fn add_watch(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, args: AddWatchArgs) -> CmdResult<WatchView> {
     let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    state.check_consent(&bundle)?;
     let folder = args.inputs.get(&args.input).and_then(Value::as_str).ok_or_else(|| format!("choose a folder for {}", args.input))?;
     let mut watch = Watch::new(&bundle.recipe, &args.input, folder, args.inputs.clone(), args.pins).map_err(err)?;
     {
@@ -1307,6 +1611,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .build()?;
     let file = SubmenuBuilder::new(app, "File")
         .item(&item("new-recipe", "New Recipe…", Some("CmdOrCtrl+N"))?)
+        .item(&item("get-recipe", "Get a recipe…", None)?)
         .item(&item("reveal-recipes", "Show Recipes Folder", None)?)
         .separator()
         .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
@@ -1393,6 +1698,10 @@ pub fn run() {
             std::fs::create_dir_all(&artifacts_dir)?;
             let keep_base = data_dir.join("recipe-data");
             std::fs::create_dir_all(&keep_base)?;
+            let quarantine_dir = data_dir.join("quarantine");
+            std::fs::create_dir_all(&quarantine_dir)?;
+            // An import the user never confirmed is forgotten after a day.
+            stillroom_core::catalog::prune_quarantine(&quarantine_dir, std::time::Duration::from_secs(24 * 3600));
             let db_path = data_dir.join("stillroom.db");
             let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
             let mut roots = catalog_roots(app.handle());
@@ -1411,6 +1720,7 @@ pub fn run() {
                 keep_base,
                 stage_library: Arc::new(stillroom_core::StageLibrary::load(&builtin_stages_dir(app.handle())).unwrap_or_default()),
                 run_gate: tokio::sync::Mutex::new(()),
+                quarantine_dir,
             });
             app.manage(WatchRuntime::default());
             let rt = app.state::<WatchRuntime>();
@@ -1473,6 +1783,13 @@ pub fn run() {
             duplicate_recipe,
             delete_recipe,
             set_shelf,
+            grant_permissions,
+            revoke_permissions,
+            example_result,
+            import_recipe,
+            confirm_import,
+            discard_import,
+            export_recipe,
             reveal_recipes_folder,
             reveal_sample_folders,
             permission_status,

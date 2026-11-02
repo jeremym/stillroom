@@ -26,6 +26,8 @@ pub enum DraftError {
     Yaml(#[from] serde_yaml::Error),
     #[error("path {0} escapes the recipe directory")]
     Escape(String),
+    #[error("{0}: is a link, which a recipe does not follow")]
+    Symlink(PathBuf),
     #[error("{0}")]
     Migrate(#[from] crate::migrate::MigrateError),
     #[error("the draft has problems:\n{}", .0.join("\n"))]
@@ -34,19 +36,33 @@ pub enum DraftError {
 
 const FILE_DIRS: [&str; 2] = ["prompts", "schemas"];
 
+/// Join a bundle-relative path, refusing anything absolute, containing `..`, or passing through
+/// a link (checked component by component).
 fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, DraftError> {
     let p = Path::new(rel);
     if p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_))) {
         return Err(DraftError::Escape(rel.to_string()));
     }
-    Ok(root.join(p))
+    let mut cur = root.to_path_buf();
+    for c in p.components() {
+        cur.push(c);
+        if std::fs::symlink_metadata(&cur).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+            return Err(DraftError::Symlink(cur));
+        }
+    }
+    Ok(cur)
 }
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> DraftError + '_ {
     move |source| DraftError::Io { path: path.to_path_buf(), source }
 }
 
+/// Every text file under `dir`, by bundle-relative path. A link anywhere is refused: a draft
+/// never reads, and never later writes, through one.
 fn walk(dir: &Path, rel: &str, out: &mut BTreeMap<String, String>) -> Result<(), DraftError> {
+    if std::fs::symlink_metadata(dir).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        return Err(DraftError::Symlink(dir.to_path_buf()));
+    }
     let Ok(entries) = std::fs::read_dir(dir) else { return Ok(()) };
     let mut entries: Vec<_> = entries.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
@@ -57,7 +73,11 @@ fn walk(dir: &Path, rel: &str, out: &mut BTreeMap<String, String>) -> Result<(),
         }
         let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
         let path = e.path();
-        if path.is_dir() {
+        let meta = std::fs::symlink_metadata(&path).map_err(io(&path))?;
+        if meta.file_type().is_symlink() {
+            return Err(DraftError::Symlink(path));
+        }
+        if meta.is_dir() {
             walk(&path, &child_rel, out)?;
         } else if let Ok(text) = std::fs::read_to_string(&path) {
             out.insert(child_rel, text);
@@ -803,5 +823,23 @@ mod tests {
 
         d.yaml["outputs"] = serde_json::json!({});
         assert!(matches!(d.write(&tmp, &tools()), Err(DraftError::Invalid(_))));
+    }
+
+    #[test]
+    fn a_draft_with_a_linked_prompt_is_refused() {
+        let tmp = std::env::temp_dir().join(format!("stillroom-draft-link-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(tmp.join("prompts")).unwrap();
+        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../recipes/summarize-file/recipe.yaml"), tmp.join("recipe.yaml")).unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", tmp.join("prompts/summarize.md")).unwrap();
+        let err = Draft::read(&tmp).unwrap_err();
+        assert!(matches!(err, DraftError::Symlink(_)), "{err}");
+        // Writing through a link is refused too: the link is still there, and the write names its path.
+        std::fs::write(tmp.join("prompts/other.md"), "x").unwrap();
+        std::fs::remove_file(tmp.join("prompts/other.md")).unwrap();
+        let draft = Draft { yaml: serde_yaml::from_str(&std::fs::read_to_string(tmp.join("recipe.yaml")).unwrap()).unwrap(), files: BTreeMap::from([("prompts/summarize.md".to_string(), "mine".to_string())]) };
+        let err = draft.write(&tmp, &[]).unwrap_err();
+        assert!(matches!(err, DraftError::Symlink(_)), "{err}");
+        assert_eq!(std::fs::read_link(tmp.join("prompts/summarize.md")).unwrap(), Path::new("/etc/hosts"), "the link was not followed or replaced");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

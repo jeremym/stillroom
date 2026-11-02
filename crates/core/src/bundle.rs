@@ -1,5 +1,6 @@
 //! A recipe as it lives on disk: `recipe.yaml` plus its prompt and schema files.
 
+use crate::consent::Consent;
 use crate::recipe::{Recipe, RecipeError, Step};
 use crate::resolve::Resolution;
 use crate::store::ShelfState;
@@ -40,6 +41,8 @@ pub enum BundleError {
     Json { path: PathBuf, source: serde_json::Error },
     #[error("path {0} escapes the recipe directory")]
     Escape(String),
+    #[error("{0}: is a link, which a recipe does not follow")]
+    Symlink(PathBuf),
     #[error("This recipe needs Stillroom {needs} or newer; you have {have}.")]
     NeedsNewer { needs: String, have: String },
 }
@@ -87,6 +90,15 @@ pub struct RecipeInfo {
     /// copied. `info()` leaves it empty; the shell fills it through `with_from` from the scan.
     #[serde(default)]
     pub from: Option<crate::catalog::CatalogFrom>,
+    /// What the recipe still needs the user's yes for, and what it has (see `consent`). Both
+    /// empty for a built-in. `info()` lists every literal entry as needed; the shell applies the
+    /// store's grants through `with_consent`.
+    #[serde(default)]
+    pub consent: Consent,
+    /// True when the bundle ships `example/result.json`, a saved run to look at without a model
+    /// (`example_result`).
+    #[serde(default)]
+    pub example: bool,
 }
 
 impl RecipeInfo {
@@ -106,6 +118,12 @@ impl RecipeInfo {
     /// Record where a duplicated recipe came from (see `catalog::provenance`).
     pub fn with_from(mut self, from: Option<crate::catalog::CatalogFrom>) -> Self {
         self.from = from;
+        self
+    }
+
+    /// Apply the store's grants: what is still needed and what the user has said yes to.
+    pub fn with_consent(mut self, consent: Consent) -> Self {
+        self.consent = consent;
         self
     }
 }
@@ -182,13 +200,22 @@ fn step_info(s: &Step) -> StepInfo {
     }
 }
 
-/// Join a bundle-relative path, refusing anything absolute or containing `..`.
+/// Join a bundle-relative path, refusing anything absolute or containing `..`, and refusing a
+/// link at any step of the way (checked component by component with `symlink_metadata`, so a
+/// linked folder is caught as well as a linked file), since a link could point anywhere.
 fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, BundleError> {
     let p = Path::new(rel);
     if p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_))) {
         return Err(BundleError::Escape(rel.to_string()));
     }
-    Ok(root.join(p))
+    let mut cur = root.to_path_buf();
+    for c in p.components() {
+        cur.push(c);
+        if std::fs::symlink_metadata(&cur).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+            return Err(BundleError::Symlink(cur));
+        }
+    }
+    Ok(cur)
 }
 
 fn read(root: &Path, rel: &str) -> Result<String, BundleError> {
@@ -278,6 +305,8 @@ impl RecipeBundle {
             stages: self.recipe.stages_or_implied(),
             shelf: ShelfState::Catalog,
             from: None,
+            consent: crate::consent::consent_for(&self.recipe, self.source, &[]),
+            example: self.root.join(crate::catalog::EXAMPLE_RESULT).is_file(),
         }
         .with_shelf(None)
     }
@@ -403,9 +432,63 @@ mod tests {
     }
 
     #[test]
+    fn consent_lists_literal_entries_for_anything_but_a_built_in() {
+        let builtin = RecipeBundle::load(repo_recipes().join("summarize-file"), RecipeSource::Builtin).unwrap().info();
+        assert_eq!(builtin.consent, Consent::default());
+        // The sample reads and writes only the folders the user picks: nothing literal.
+        let sample = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::Sample).unwrap().info();
+        assert!(sample.consent.needed.is_empty(), "{:?}", sample.consent);
+        // A user recipe with a literal path needs a yes until the shell applies a grant.
+        let tmp = std::env::temp_dir().join(format!("stillroom-consent-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(tmp.join("prompts")).unwrap();
+        std::fs::write(tmp.join("prompts/summarize.md"), "Summarize.").unwrap();
+        let yaml = std::fs::read_to_string(repo_recipes().join("summarize-file/recipe.yaml")).unwrap().replace("read: [input]", "read: [input, \"~/Documents\"]");
+        std::fs::write(tmp.join("recipe.yaml"), &yaml).unwrap();
+        let yours = RecipeBundle::load(&tmp, RecipeSource::User).unwrap().info();
+        assert_eq!(yours.consent.needed.len(), 1);
+        assert_eq!(yours.consent.needed[0].text, "Read everything under ~/Documents");
+        let json = serde_json::to_value(&yours).unwrap();
+        assert_eq!(json["consent"]["needed"][0]["kind"], "read");
+        assert_eq!(json["consent"]["granted"], serde_json::json!([]));
+        let granted = yours.clone().with_consent(crate::consent::consent_for(&RecipeBundle::load(&tmp, RecipeSource::User).unwrap().recipe, RecipeSource::User, &[(crate::consent::GrantKind::Read, "~/Documents".into(), "2026-11-02T18:00:00+00:00".into())]));
+        assert!(granted.consent.needed.is_empty());
+        assert_eq!(granted.consent.granted.len(), 1);
+        // The same recipe shipped as a built-in needs nothing.
+        assert_eq!(RecipeBundle::load(&tmp, RecipeSource::Builtin).unwrap().info().consent, Consent::default());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn refuses_paths_that_escape() {
         assert!(safe_join(Path::new("/r"), "../x.md").is_err());
         assert!(safe_join(Path::new("/r"), "/etc/passwd").is_err());
         assert!(safe_join(Path::new("/r"), "prompts/a.md").is_ok());
+    }
+
+    #[test]
+    fn a_bundle_whose_prompt_is_a_link_is_refused() {
+        let tmp = std::env::temp_dir().join(format!("stillroom-linked-prompt-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(tmp.join("prompts")).unwrap();
+        std::fs::copy(repo_recipes().join("summarize-file/recipe.yaml"), tmp.join("recipe.yaml")).unwrap();
+        // A linked file.
+        std::os::unix::fs::symlink("/etc/hosts", tmp.join("prompts/summarize.md")).unwrap();
+        let err = RecipeBundle::load(&tmp, RecipeSource::User).unwrap_err();
+        assert!(matches!(err, BundleError::Symlink(_)), "{err}");
+        assert!(err.to_string().ends_with("prompts/summarize.md: is a link, which a recipe does not follow"), "{err}");
+        // A linked folder on the way.
+        std::fs::remove_dir_all(tmp.join("prompts")).unwrap();
+        let elsewhere = std::env::temp_dir().join(format!("stillroom-elsewhere-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("summarize.md"), "Summarize.").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, tmp.join("prompts")).unwrap();
+        let err = RecipeBundle::load(&tmp, RecipeSource::User).unwrap_err();
+        assert!(matches!(&err, BundleError::Symlink(p) if p.ends_with("prompts")), "{err}");
+        // The same files as real files load.
+        std::fs::remove_file(tmp.join("prompts")).unwrap();
+        std::fs::create_dir_all(tmp.join("prompts")).unwrap();
+        std::fs::write(tmp.join("prompts/summarize.md"), "Summarize.").unwrap();
+        assert!(RecipeBundle::load(&tmp, RecipeSource::User).is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 }

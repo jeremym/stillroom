@@ -2,8 +2,15 @@
 //!
 //! The call is billed to the ChatGPT plan the CLI is signed in with, not per token.
 //! Each call carries Codex's own instructions (about 13k input tokens), so this suits
-//! recipe steps, not chatter. The CLI's sandbox is read-only and the working folder is a
-//! scratch folder, so Codex can read nothing of the user's and write nothing.
+//! recipe steps, not chatter.
+//!
+//! What the sandbox does and does not do: `--sandbox read-only` applies to the commands Codex
+//! itself decides to run while answering, and keeps them from writing. It does not stop those
+//! commands from reading: Codex may run commands that read files on this Mac, and what they
+//! read can end up in the request to OpenAI. The working folder is a scratch folder, so nothing
+//! of the user's is in front of it by default, but a recipe step's prompt goes to a cloud
+//! service either way; that is why this provider is off until the user turns it on, and why
+//! Auto never picks it.
 //!
 //! What maps and what does not: messages become one prompt; `json_schema` becomes
 //! `--output-schema`; `think` becomes the reasoning effort; recipe tools cannot be
@@ -152,12 +159,14 @@ pub fn flatten_prompt(req: &ChatRequest) -> String {
     out
 }
 
-/// The reasoning effort for `think`: off is low, on is high, a string is passed as given.
+/// The reasoning effort for `think`: off is low, on is high, and a string is passed on only
+/// when it is one of the CLI's own levels (`low`, `medium`, `high`), so a recipe cannot smuggle
+/// anything else into the command line. Anything else leaves the CLI's default in place.
 pub fn reasoning_effort(think: &Option<serde_json::Value>) -> Option<String> {
     match think {
         Some(serde_json::Value::Bool(false)) => Some("low".into()),
         Some(serde_json::Value::Bool(true)) => Some("high".into()),
-        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(serde_json::Value::String(s)) if matches!(s.as_str(), "low" | "medium" | "high") => Some(s.clone()),
         _ => None,
     }
 }
@@ -354,7 +363,12 @@ mod tests {
         assert_eq!(reasoning_effort(&Some(serde_json::json!(false))).as_deref(), Some("low"));
         assert_eq!(reasoning_effort(&Some(serde_json::json!(true))).as_deref(), Some("high"));
         assert_eq!(reasoning_effort(&Some(serde_json::json!("medium"))).as_deref(), Some("medium"));
+        assert_eq!(reasoning_effort(&Some(serde_json::json!("low"))).as_deref(), Some("low"));
         assert_eq!(reasoning_effort(&None), None);
+        for not_a_level in ["", "max", "high; rm -rf ~", "xhigh", "Medium"] {
+            assert_eq!(reasoning_effort(&Some(serde_json::json!(not_a_level))), None, "{not_a_level:?} is not passed on");
+        }
+        assert_eq!(reasoning_effort(&Some(serde_json::json!(3))), None);
     }
 
     #[test]

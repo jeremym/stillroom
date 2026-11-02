@@ -19,6 +19,13 @@ import { Glyph, Logo, inputGlyph, isGlyphName } from "./brand";
 import { isLocalModel, rememberProviders, shortModel, whereWord } from "./models";
 import { Dial, Empty, Pill, Rail, Strip, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type DialPlace, type Look } from "@overtone-foundry/app-kit";
 import { outputsByStage, stripFor } from "./stages";
+import { problemTexts } from "./flow/findings";
+
+/** The last part of a path: the recipe's folder, for a message that need not show the whole path. */
+function folderName(path: string): string {
+  const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
 import "./App.css";
 
 // React Flow is heavy; load it in its own chunk so the rest of the app paints first.
@@ -213,7 +220,7 @@ function App() {
         e.kind === "choosing" ? "Choosing the stages…"
           : e.kind === "thinking" ? (e.attempt === 1 ? "Thinking about the steps…" : `Fixing the draft (try ${e.attempt} of ${e.of})…`)
           : e.kind === "checking" ? "Checking the draft…"
-          : `Found ${e.problems.length} problem${e.problems.length === 1 ? "" : "s"}; asking for a fix…`,
+          : `Found ${problemTexts(e.problems).length} problem${problemTexts(e.problems).length === 1 ? "" : "s"}; asking for a fix…`,
       );
     });
     // Settings change in the Settings window too; the model list changes when Ollama's address does.
@@ -347,8 +354,9 @@ function App() {
       if (req.mode === "goal" && req.goal) {
         setPlanProgress("Thinking about the steps…");
         const out = await api.planRecipe({ goal: req.goal, material: req.material ?? null, id: req.id, name: req.name, icon: req.icon, model: req.model ?? null });
-        if (out.problems.length > 0) {
-          setPlanProblems(out.problems);
+        const planProblemsLeft = problemTexts(out.problems);
+        if (planProblemsLeft.length > 0) {
+          setPlanProblems(planProblemsLeft);
           return;
         }
         draft = out.draft;
@@ -594,7 +602,9 @@ function App() {
                   })}
                 </div>
                 {recipes?.errors.map((e) => (
-                  <pre key={e.path} className="error">{e.path}: {e.error}</pre>
+                  <p key={e.path} className="load-error" title={e.path}>
+                    <strong>{folderName(e.path)}</strong> could not be opened. {e.error}
+                  </p>
                 ))}
               </Zone>
               <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={openRun} onError={(m) => setError(m)} />

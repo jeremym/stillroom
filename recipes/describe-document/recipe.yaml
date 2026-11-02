@@ -1,0 +1,62 @@
+schemaVersion: "0"
+id: describe-document
+name: Describe a document
+icon: notes
+version: 0.1.0
+description: Say what a file is and what is in it, in a few sentences. The example recipe; the catalog holds the rest.
+author:
+  name: Stillroom
+license: MIT
+tags: [built-in, example, text]
+
+inputs:
+  file:
+    type: file
+    label: A document
+    description: A plain-text, Markdown, PDF, or Word file.
+    accept: [".txt", ".md", ".markdown", ".pdf", ".docx"]
+
+modelSlots:
+  writer:
+    requires: [text]
+    preference: speed
+    description: Reads the document and describes it.
+
+permissions:
+  filesystem:
+    read: [input]
+
+steps:
+  - id: read
+    kind: tool
+    name: Read the document
+    tool: doc.text
+    inputs:
+      path: ${inputs.file}
+
+  - id: describe
+    kind: model
+    name: Describe it
+    slot: writer
+    prompt: prompts/describe.md
+    inputs:
+      text: ${steps.read.output.text}
+    params:
+      temperature: 0.2
+
+outputs:
+  description:
+    from: ${steps.describe.output}
+    type: markdown
+    label: What this document is
+
+stages:
+  - id: pick
+    name: Pick a document
+    why: One file is all this recipe reads; nothing else is touched.
+    inputs: [file]
+  - id: describe
+    name: Describe it
+    why: The file is read in full and an AI step says what it is, who it is for, and what it covers, in a few sentences.
+    steps: [read, describe]
+    outputs: [description]

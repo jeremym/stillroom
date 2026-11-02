@@ -41,6 +41,16 @@ pub trait Provider: Send + Sync {
     async fn list_models(&self) -> Result<Vec<InstalledModel>, ProviderError>;
     /// `model` is the bare model name as the provider knows it.
     async fn chat(&self, model: &str, req: ChatRequest) -> Result<ChatResponse, ProviderError>;
+    /// Like `chat`, but `on_delta` sees each piece of text as the model writes it. Providers that
+    /// cannot stream answer once, with the whole content. The returned response is the same as
+    /// `chat` would give.
+    async fn chat_stream(&self, model: &str, req: ChatRequest, on_delta: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<ChatResponse, ProviderError> {
+        let resp = self.chat(model, req).await?;
+        if !resp.content.is_empty() {
+            on_delta(&resp.content);
+        }
+        Ok(resp)
+    }
     /// One vector per text. Only providers with embedding models implement it.
     async fn embed(&self, model: &str, _texts: Vec<String>) -> Result<Vec<Vec<f32>>, ProviderError> {
         Err(ProviderError::Remote(format!("{model} cannot make embeddings here")))

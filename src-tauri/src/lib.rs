@@ -458,19 +458,141 @@ fn get_settings(state: State<'_, AppState>) -> CmdResult<Value> {
     Ok(Value::Object(state.settings()?))
 }
 
+/// The top-level settings Stillroom knows. Anything else in a patch is refused.
+const SETTING_KEYS: &[&str] = &["look", "ollama", "models", "pins", "firstRun", "codex", "openai", "planner"];
+
+/// A service address as a setting: a web address (http or https) with a host, kept without any
+/// user name or password that was typed into it, and without a trailing slash. Empty means unset.
+fn checked_service_url(what: &str, raw: &str) -> CmdResult<Option<String>> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let mut url = tauri::Url::parse(raw).map_err(|e| format!("{what}: {raw:?} is not a web address ({e})"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!("{what}: only http and https addresses work; {raw:?} is {}", url.scheme()));
+    }
+    if url.host_str().is_none() {
+        return Err(format!("{what}: {raw:?} names no host"));
+    }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_fragment(None);
+    Ok(Some(url.as_str().trim_end_matches('/').to_string()))
+}
+
+/// A program path as a setting: an existing file this user may run. Empty means "find it".
+fn checked_program(what: &str, raw: &str) -> CmdResult<Option<String>> {
+    use std::os::unix::fs::PermissionsExt;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let meta = std::fs::metadata(raw).map_err(|e| format!("{what}: {raw} cannot be used ({e})"))?;
+    if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+        return Err(format!("{what}: {raw} is not a program Stillroom can run"));
+    }
+    Ok(Some(raw.to_string()))
+}
+
+/// One setting as the webview sent it, checked and tidied, or refused in words. `Null` removes.
+fn checked_setting(key: &str, value: &Value) -> CmdResult<Value> {
+    if !SETTING_KEYS.contains(&key) {
+        return Err(format!("{key} is not a setting Stillroom knows"));
+    }
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    let want_object = |v: &Value| v.as_object().cloned().ok_or_else(|| format!("{key} must be an object"));
+    let tidy = |mut o: serde_json::Map<String, Value>, field: &str, check: &dyn Fn(&str) -> CmdResult<Option<String>>| -> CmdResult<Value> {
+        if let Some(v) = o.get(field) {
+            match v {
+                Value::Null => {
+                    o.remove(field);
+                }
+                Value::String(s) => match check(s)? {
+                    Some(fixed) => {
+                        o.insert(field.into(), Value::String(fixed));
+                    }
+                    None => {
+                        o.remove(field);
+                    }
+                },
+                _ => return Err(format!("{key}.{field} must be text")),
+            }
+        }
+        Ok(Value::Object(o))
+    };
+    match key {
+        "firstRun" => value.as_bool().map(Value::Bool).ok_or_else(|| "firstRun must be true or false".to_string()),
+        "codex" => tidy(want_object(value)?, "path", &|s| checked_program("codex.path", s)),
+        "ollama" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("ollama.baseUrl", s)),
+        "openai" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("openai.baseUrl", s)),
+        _ => want_object(value).map(Value::Object),
+    }
+}
+
 /// Merge a patch of top-level settings (a key set to null is removed), then tell every window.
+/// Every key is one Stillroom knows, `codex.path` is a program that exists, and the service
+/// addresses are web addresses with any user name or password dropped; otherwise nothing is
+/// written and the reason comes back in words.
 #[tauri::command]
 fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: Value) -> CmdResult<Value> {
     let patch = patch.as_object().ok_or("settings patch must be an object")?;
+    let mut checked = Vec::with_capacity(patch.len());
+    for (k, v) in patch {
+        checked.push((k.clone(), checked_setting(k, v)?));
+    }
     {
         let store = state.store.lock().map_err(err)?;
-        for (k, v) in patch {
+        for (k, v) in &checked {
             store.set_setting(k, v).map_err(err)?;
         }
     }
     let all = Value::Object(state.settings()?);
     let _ = app.emit("settings:changed", all.clone());
     Ok(all)
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_keys_and_wrong_shapes_are_refused() {
+        assert_eq!(checked_setting("secrets", &json!({})).unwrap_err(), "secrets is not a setting Stillroom knows");
+        assert_eq!(checked_setting("firstRun", &json!("yes")).unwrap_err(), "firstRun must be true or false");
+        assert_eq!(checked_setting("look", &json!("green")).unwrap_err(), "look must be an object");
+        assert_eq!(checked_setting("look", &json!({ "theme": "green" })).unwrap(), json!({ "theme": "green" }));
+        assert_eq!(checked_setting("codex", &Value::Null).unwrap(), Value::Null, "null removes");
+        assert_eq!(checked_setting("codex", &json!({ "path": 3 })).unwrap_err(), "codex.path must be text");
+    }
+
+    #[test]
+    fn codex_path_must_be_a_program_that_exists() {
+        assert_eq!(checked_setting("codex", &json!({ "enabled": true, "path": "/bin/ls" })).unwrap(), json!({ "enabled": true, "path": "/bin/ls" }));
+        assert_eq!(checked_setting("codex", &json!({ "path": "  " })).unwrap(), json!({}), "empty means find it");
+        assert_eq!(checked_setting("codex", &json!({ "path": null, "models": [] })).unwrap(), json!({ "models": [] }));
+        let err = checked_setting("codex", &json!({ "path": "/etc/hosts" })).unwrap_err();
+        assert_eq!(err, "codex.path: /etc/hosts is not a program Stillroom can run");
+        let err = checked_setting("codex", &json!({ "path": "/nowhere/codex" })).unwrap_err();
+        assert!(err.starts_with("codex.path: /nowhere/codex cannot be used"), "{err}");
+        let err = checked_setting("codex", &json!({ "path": "/bin" })).unwrap_err();
+        assert!(err.ends_with("is not a program Stillroom can run"), "{err}");
+    }
+
+    #[test]
+    fn service_addresses_are_web_addresses_without_credentials() {
+        assert_eq!(checked_setting("ollama", &json!({ "baseUrl": "http://localhost:11434" })).unwrap(), json!({ "baseUrl": "http://localhost:11434" }));
+        assert_eq!(checked_setting("ollama", &json!({ "baseUrl": "http://user:secret@ollama.local:11434/" })).unwrap(), json!({ "baseUrl": "http://ollama.local:11434" }), "a typed-in password never reaches the store");
+        assert_eq!(checked_setting("openai", &json!({ "enabled": true, "baseUrl": "https://api.example.com/v1/#x" })).unwrap(), json!({ "enabled": true, "baseUrl": "https://api.example.com/v1" }));
+        assert_eq!(checked_setting("ollama", &json!({ "baseUrl": "" })).unwrap(), json!({}), "empty means the default");
+        for bad in ["ftp://x", "localhost:11434", "file:///etc", "http://", "not a url"] {
+            let err = checked_setting("ollama", &json!({ "baseUrl": bad })).unwrap_err();
+            assert!(err.starts_with("ollama.baseUrl:"), "{bad}: {err}");
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]

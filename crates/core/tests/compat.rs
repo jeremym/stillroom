@@ -132,6 +132,9 @@ struct PlannerAnswerFixture {
     strip: Option<Value>,
     #[serde(default)]
     answer: Option<Value>,
+    /// What the merge is expected to report (a permission dropped, say). Empty when nothing.
+    #[serde(default)]
+    problems: Vec<String>,
 }
 
 #[test]
@@ -147,7 +150,7 @@ fn every_recorded_planner_answer_becomes_a_clean_draft() {
         let strip = fx.strip.as_ref().map(Value::to_string);
         let answer = fx.answer.as_ref().map(Value::to_string);
         let (draft, merge_problems) = draft_from_answers(&fx.request, strip.as_deref(), answer.as_deref(), Some(&lib)).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert!(merge_problems.is_empty(), "{name}: {merge_problems:?}");
+        assert_eq!(merge_problems, fx.problems, "{name}: what the merge reports");
         assert_eq!(draft.yaml["id"], fx.request.id, "{name}: the requested id wins");
         let findings = draft.check(&tools);
         assert!(findings.is_empty(), "{name}: a drafted recipe arrives with nothing to fix, got {findings:#?}");

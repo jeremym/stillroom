@@ -569,18 +569,80 @@ pub fn skeleton_from_strip(content: &str, req: &PlanRequest, lib: &crate::stagel
     Ok((draft, custom))
 }
 
+/// A permission the planner wrote is kept only when it is `input`, `output`, or
+/// `${inputs.<a declared input>}`: what the user hands the run. A literal path or host, cloud
+/// models, running programs, or a credential is dropped and reported in words, so the fix loop
+/// sees it and the user never has to notice. What a ready-made stage brought is not touched here:
+/// it was reviewed with the stage, and it lives in the skeleton, not in the model's answer.
+pub fn whitelist_permissions(yaml: &mut Value, declared_inputs: &[String]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(perms) = yaml.get_mut("permissions").and_then(Value::as_object_mut) else { return problems };
+    let allowed = |entry: &Value| -> bool {
+        match entry.as_str() {
+            Some("input") | Some("output") => true,
+            Some(s) => s.strip_prefix("${inputs.").and_then(|r| r.strip_suffix('}')).is_some_and(|name| declared_inputs.iter().any(|d| d == name)),
+            None => false,
+        }
+    };
+    let removed = |what: &str| format!("The draft asked to {what}, which a recipe may not do on its own. Removed.");
+    if let Some(fs) = perms.get_mut("filesystem").and_then(Value::as_object_mut) {
+        for (key, verb) in [("read", "read"), ("write", "write to")] {
+            if let Some(list) = fs.get_mut(key).and_then(Value::as_array_mut) {
+                list.retain(|e| {
+                    let ok = allowed(e);
+                    if !ok {
+                        problems.push(removed(&format!("{verb} {}", e.as_str().map(String::from).unwrap_or_else(|| e.to_string()))));
+                    }
+                    ok
+                });
+            }
+        }
+        fs.retain(|_, v| !v.as_array().is_some_and(Vec::is_empty));
+    }
+    if let Some(list) = perms.get_mut("network").and_then(Value::as_array_mut) {
+        list.retain(|e| {
+            let ok = allowed(e);
+            if !ok {
+                problems.push(removed(&format!("reach {}", e.as_str().map(String::from).unwrap_or_else(|| e.to_string()))));
+            }
+            ok
+        });
+    }
+    if perms.get("cloudModels").and_then(Value::as_bool) == Some(true) {
+        problems.push(removed("use cloud models"));
+    }
+    if perms.get("shell").and_then(Value::as_bool) == Some(true) {
+        problems.push(removed("run programs on this Mac (shell)"));
+    }
+    for c in perms.get("credentials").and_then(Value::as_array).into_iter().flatten() {
+        problems.push(removed(&format!("use the credential {}", c.as_str().map(String::from).unwrap_or_else(|| c.to_string()))));
+    }
+    perms.remove("cloudModels");
+    perms.remove("shell");
+    perms.remove("credentials");
+    perms.retain(|_, v| !(v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(serde_json::Map::is_empty)));
+    problems
+}
+
 /// The composing answer folded into the skeleton (when there is one) and every `use` expanded.
-/// Returns the draft and the problems the merge itself found (an unknown ready-made stage);
-/// the caller checks the draft. This is the planner with the model calls taken out, so recorded
-/// answers can be replayed in tests.
+/// Returns the draft and the problems the merge itself found (a permission the planner may not
+/// ask for, an unknown ready-made stage); the caller checks the draft. This is the planner with
+/// the model calls taken out, so recorded answers can be replayed in tests.
 pub fn compose(skeleton: Option<&Draft>, content: &str, req: &PlanRequest, lib: Option<&crate::stagelib::StageLibrary>) -> Result<(Draft, Vec<String>), String> {
     let mut draft = parse_answer(content, req)?;
+    let declared: Vec<String> = [draft.yaml.get("inputs"), skeleton.and_then(|s| s.yaml.get("inputs"))]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .flat_map(|o| o.keys().cloned())
+        .collect();
+    let mut problems = whitelist_permissions(&mut draft.yaml, &declared);
     if let (Some(sk), Some(lib)) = (skeleton, lib) {
         let mut merged = sk.clone();
         merge_partial(&mut merged, &draft, lib);
         draft = merged;
     }
-    let problems = lib.map(|l| l.expand_all(&mut draft)).unwrap_or_default();
+    problems.extend(lib.map(|l| l.expand_all(&mut draft)).unwrap_or_default());
     Ok((draft, problems))
 }
 
@@ -949,6 +1011,53 @@ mod tests {
         assert!(out.draft.yaml["outputs"].get("answer").is_some());
         let s = assemble_system_with("P", &ToolRegistry::builtin().catalog(), Some(&lib));
         assert!(s.contains("- `summarize_file`:") && s.contains("use after `index_folder`"));
+    }
+
+    #[tokio::test]
+    async fn a_permission_the_planner_may_not_ask_for_is_dropped_and_said_in_words() {
+        let mut v: Value = serde_json::from_str(&answer("file.read")).unwrap();
+        v["recipe"]["permissions"] = json!({
+            "filesystem": { "read": ["input", "~", "${inputs.file}", "${inputs.nope}"], "write": ["output", "/tmp/out"] },
+            "network": ["input", "example.com"],
+            "cloudModels": true,
+            "shell": true,
+            "credentials": ["github"]
+        });
+        let (p, _) = planner(vec![v.to_string(), v.to_string(), v.to_string()]);
+        let out = p.plan(&req(), None).await.unwrap();
+        assert_eq!(
+            out.problems,
+            vec![
+                "The draft asked to read ~, which a recipe may not do on its own. Removed.",
+                "The draft asked to read ${inputs.nope}, which a recipe may not do on its own. Removed.",
+                "The draft asked to write to /tmp/out, which a recipe may not do on its own. Removed.",
+                "The draft asked to reach example.com, which a recipe may not do on its own. Removed.",
+                "The draft asked to use cloud models, which a recipe may not do on its own. Removed.",
+                "The draft asked to run programs on this Mac (shell), which a recipe may not do on its own. Removed.",
+                "The draft asked to use the credential github, which a recipe may not do on its own. Removed.",
+            ]
+        );
+        assert_eq!(out.draft.yaml["permissions"], json!({ "filesystem": { "read": ["input", "${inputs.file}"], "write": ["output"] }, "network": ["input"] }));
+        let known: Vec<String> = ToolRegistry::builtin().catalog().into_iter().map(|t| t.id).collect();
+        assert!(out.draft.check(&known).is_empty(), "what is left is a recipe that saves: {:?}", out.draft.check(&known));
+
+        // A ready-made stage's own permissions are not the model's and stay.
+        let lib = Arc::new(crate::stagelib::StageLibrary::load(&crate::stagelib::repo_stages_dir()).unwrap());
+        let strip = json!({ "stages": [ { "use": "read_links" }, { "name": "Notes", "why": "w" } ] }).to_string();
+        let answer = json!({
+            "recipe": { "id": "x", "name": "X", "description": "d", "inputs": {}, "modelSlots": {},
+                "permissions": { "network": ["news.example"] },
+                "steps": [ { "id": "notes", "kind": "model", "slot": "reader", "prompt": "prompts/notes.md", "inputs": { "pages": "${steps.links_pages.output}" } } ],
+                "outputs": { "notes": { "from": "${steps.notes.output}", "type": "markdown" } },
+                "stages": [ { "id": "notes", "name": "Notes", "why": "w", "steps": ["notes"], "outputs": ["notes"] } ] },
+            "files": [ { "path": "prompts/notes.md", "text": "Notes." } ]
+        })
+        .to_string();
+        let (mut p, _) = planner(vec![strip, answer.clone(), answer.clone()]);
+        p.library = Some(lib);
+        let out = p.plan(&req(), None).await.unwrap();
+        assert_eq!(out.problems, vec!["The draft asked to reach news.example, which a recipe may not do on its own. Removed."]);
+        assert_eq!(out.draft.yaml["permissions"]["network"], json!(["input"]), "what read_links brought");
     }
 
     #[test]

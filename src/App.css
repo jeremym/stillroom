@@ -315,3 +315,12 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .consent-note { margin: 8px 0 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .example-note { color: var(--phos-dim); margin: 0 0 var(--gap); }
 .import-size { margin: 0 0 var(--gap); }
+
+/* The planner's window: what the model is writing, dim and read-only, under Draft it; the same block
+   holds the whole transcript behind "show what it wrote" on the card's note. */
+.plan-stream { margin-top: var(--gap); background: var(--ground); border: 1px solid var(--bezel); padding: 10px 14px; color: var(--phos-dim); font-family: var(--body); font-size: var(--size-small); }
+.plan-stream-head { color: var(--phos-dim); margin-bottom: 6px; }
+.plan-stream-text { margin: 0; max-height: 14.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; color: var(--phos-dim); font-family: inherit; font-size: inherit; }
+.plan-stream-text.tall { max-height: 60vh; }
+.plan-stream .cursor { background: var(--phos-dim); box-shadow: none; }
+.plan-note .hint-line button.quiet { margin-left: 6px; vertical-align: baseline; }

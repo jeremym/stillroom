@@ -71,17 +71,48 @@ pub struct PlanRequest {
     pub icon: Option<String>,
 }
 
+/// Which model call the planner is making.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlanPhase {
+    /// The short first call that only picks the stages.
+    Strip,
+    /// The composing call that writes the steps.
+    Steps,
+    /// A round that fixes the checker's problems.
+    Fix,
+}
+
+impl PlanPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            PlanPhase::Strip => "strip",
+            PlanPhase::Steps => "steps",
+            PlanPhase::Fix => "fix",
+        }
+    }
+}
+
+/// Progress while a plan is drafted. Every event carries `elapsed_ms` since the plan started and
+/// `tokens`, the completion tokens written so far across calls (counted as they stream, then
+/// settled from the provider's count when a call ends).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum PlanEvent {
     /// The first call: choosing the stages.
-    Choosing,
+    Choosing { elapsed_ms: u64, tokens: u64 },
     /// A model call is in flight.
-    Thinking { attempt: u32, of: u32 },
+    Thinking { attempt: u32, of: u32, elapsed_ms: u64, tokens: u64 },
     /// The answer is being checked.
-    Checking { attempt: u32 },
+    Checking { attempt: u32, elapsed_ms: u64, tokens: u64 },
     /// The checker found problems; the model is asked to fix them.
-    Fixing { attempt: u32, problems: Vec<String> },
+    Fixing { attempt: u32, problems: Vec<String>, elapsed_ms: u64, tokens: u64 },
+    /// A model call starts.
+    Phase { which: PlanPhase, attempt: u32, of: u32, elapsed_ms: u64, tokens: u64 },
+    /// A piece of what the model is writing. Chunks are coalesced: at most a few a second.
+    Delta { text: String, elapsed_ms: u64, tokens: u64 },
+    /// The last model call ended; only the final check remains.
+    Done { elapsed_ms: u64, tokens: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +128,119 @@ pub struct PlanOutcome {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub duration_ms: u64,
+    /// Everything the model wrote, every call, with a `── call N (strip|steps|fix) ──` line before each.
+    #[serde(default)]
+    pub transcript: String,
+}
+
+/// Collects what the model writes and tells the observer, throttled: a Delta goes out every
+/// 200 ms or 400 characters, whichever comes first, and what is left when a call ends.
+struct Progress {
+    started: std::time::Instant,
+    observer: Option<PlanObserver>,
+    inner: std::sync::Mutex<ProgressInner>,
+}
+
+struct ProgressInner {
+    /// Completion tokens of the calls that have ended.
+    tokens_done: u64,
+    /// Deltas seen in the call in flight: one per streamed line, about one token each.
+    tokens_now: u64,
+    pending: String,
+    last_flush: std::time::Instant,
+    transcript: String,
+    calls: u32,
+}
+
+const DELTA_EVERY: Duration = Duration::from_millis(200);
+const DELTA_CHARS: usize = 400;
+
+impl Progress {
+    fn new(observer: Option<PlanObserver>) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            observer,
+            inner: std::sync::Mutex::new(ProgressInner { tokens_done: 0, tokens_now: 0, pending: String::new(), last_flush: now, transcript: String::new(), calls: 0 }),
+        }
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ProgressInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Emit an event, filling in the elapsed time and the tokens so far.
+    fn emit(&self, make: impl FnOnce(u64, u64) -> PlanEvent) {
+        if let Some(o) = &self.observer {
+            let tokens = {
+                let g = self.lock();
+                g.tokens_done + g.tokens_now
+            };
+            o(make(self.elapsed_ms(), tokens));
+        }
+    }
+
+    /// A model call starts: a separator in the transcript, then the Phase event.
+    fn begin_call(&self, which: PlanPhase, attempt: u32, of: u32) {
+        {
+            let mut g = self.lock();
+            g.calls += 1;
+            if !g.transcript.is_empty() {
+                g.transcript.push_str("\n\n");
+            }
+            let header = format!("── call {} ({}) ──\n", g.calls, which.as_str());
+            g.transcript.push_str(&header);
+            g.tokens_now = 0;
+            g.pending.clear();
+            g.last_flush = std::time::Instant::now();
+        }
+        self.emit(|elapsed_ms, tokens| PlanEvent::Phase { which, attempt, of, elapsed_ms, tokens });
+    }
+
+    /// A piece of text from the model.
+    fn delta(&self, text: &str) {
+        let flush = {
+            let mut g = self.lock();
+            g.transcript.push_str(text);
+            g.pending.push_str(text);
+            g.tokens_now += 1;
+            g.pending.len() >= DELTA_CHARS || g.last_flush.elapsed() >= DELTA_EVERY
+        };
+        if flush {
+            self.flush();
+        }
+    }
+
+    fn flush(&self) {
+        let text = {
+            let mut g = self.lock();
+            g.last_flush = std::time::Instant::now();
+            std::mem::take(&mut g.pending)
+        };
+        if !text.is_empty() {
+            self.emit(|elapsed_ms, tokens| PlanEvent::Delta { text, elapsed_ms, tokens });
+        }
+    }
+
+    /// A model call ended: the rest of the text goes out and the provider's count replaces the estimate.
+    fn end_call(&self, resp: &crate::model::ChatResponse) {
+        self.flush();
+        let mut g = self.lock();
+        let counted = std::mem::take(&mut g.tokens_now);
+        g.tokens_done += resp.completion_tokens.unwrap_or(counted);
+    }
+
+    fn done(&self) {
+        self.emit(|elapsed_ms, tokens| PlanEvent::Done { elapsed_ms, tokens });
+    }
+
+    fn transcript(&self) -> String {
+        self.lock().transcript.clone()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -664,23 +808,29 @@ pub fn draft_from_answers(req: &PlanRequest, strip: Option<&str>, answer: Option
 }
 
 impl Planner {
-    async fn call(&self, req: ChatRequest) -> Result<crate::model::ChatResponse, PlanError> {
+    /// One model call, streamed into `progress`: a Phase event first, Deltas as the text arrives,
+    /// then the response. The timeout covers the whole call; Stop drops it mid-stream.
+    async fn call(&self, req: ChatRequest, progress: &Progress, which: PlanPhase, attempt: u32, of: u32) -> Result<crate::model::ChatResponse, PlanError> {
+        progress.begin_call(which, attempt, of);
+        let on_delta = |text: &str| progress.delta(text);
         let timed = async {
             match self.timeout {
-                Some(d) => match tokio::time::timeout(d, self.models.chat(&self.model_id, req)).await {
+                Some(d) => match tokio::time::timeout(d, self.models.chat_stream(&self.model_id, req, &on_delta)).await {
                     Ok(r) => r.map_err(|e| PlanError::Model(e.to_string())),
                     Err(_) => Err(PlanError::Timeout(d.as_secs())),
                 },
-                None => self.models.chat(&self.model_id, req).await.map_err(|e| PlanError::Model(e.to_string())),
+                None => self.models.chat_stream(&self.model_id, req, &on_delta).await.map_err(|e| PlanError::Model(e.to_string())),
             }
         };
-        match &self.cancel {
+        let resp = match &self.cancel {
             Some(c) => tokio::select! {
                 r = timed => r,
                 _ = c.cancelled() => Err(PlanError::Cancelled),
             },
             None => timed.await,
-        }
+        }?;
+        progress.end_call(&resp);
+        Ok(resp)
     }
 
     fn chat(&self, messages: Vec<ChatMessage>, schema: Value) -> ChatRequest {
@@ -697,21 +847,17 @@ impl Planner {
 
     /// The first call: pick the strip. Returns the skeleton draft (ready-made stages expanded,
     /// custom ones named with their why and no steps yet) and how many custom stages there are.
-    async fn pick_strip(&self, req: &PlanRequest, lib: &crate::stagelib::StageLibrary) -> Result<(Draft, usize, u64, u64), PlanError> {
+    async fn pick_strip(&self, req: &PlanRequest, lib: &crate::stagelib::StageLibrary, progress: &Progress) -> Result<(Draft, usize, u64, u64), PlanError> {
         let system = format!("{}\n\n## Ready-made stages\n{}", self.strip_prompt.trim_end(), lib.describe());
-        let resp = self.call(self.chat(vec![ChatMessage::new("system", system), ChatMessage::new("user", user_message(req))], strip_schema(lib))).await?;
+        let resp = self.call(self.chat(vec![ChatMessage::new("system", system), ChatMessage::new("user", user_message(req))], strip_schema(lib)), progress, PlanPhase::Strip, 1, 1).await?;
         let (draft, custom) = skeleton_from_strip(&resp.content, req, lib).map_err(PlanError::Unusable)?;
         Ok((draft, custom, resp.prompt_tokens.unwrap_or(0), resp.completion_tokens.unwrap_or(0)))
     }
 
     pub async fn plan(&self, req: &PlanRequest, observer: Option<PlanObserver>) -> Result<PlanOutcome, PlanError> {
-        let started = std::time::Instant::now();
+        let progress = Progress::new(observer);
+        let started = progress.started;
         let known_tools: Vec<String> = self.tools.iter().map(|t| t.id.clone()).collect();
-        let emit = |e: PlanEvent| {
-            if let Some(o) = &observer {
-                o(e);
-            }
-        };
         let (mut prompt_tokens, mut completion_tokens) = (0u64, 0u64);
         let lib = self.library.as_deref().filter(|l| !l.stages.is_empty());
 
@@ -719,12 +865,13 @@ impl Planner {
         // custom ones are named with their why. All ready-made: nothing left to compose.
         let mut skeleton: Option<Draft> = None;
         if let Some(lib) = lib {
-            emit(PlanEvent::Choosing);
-            match self.pick_strip(req, lib).await {
+            progress.emit(|elapsed_ms, tokens| PlanEvent::Choosing { elapsed_ms, tokens });
+            match self.pick_strip(req, lib, &progress).await {
                 Ok((draft, custom, pt, ct)) => {
                     prompt_tokens += pt;
                     completion_tokens += ct;
                     if custom == 0 && draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
+                        progress.done();
                         let problems = draft.problems(&known_tools);
                         return Ok(PlanOutcome {
                             draft,
@@ -735,6 +882,7 @@ impl Planner {
                             prompt_tokens,
                             completion_tokens,
                             duration_ms: started.elapsed().as_millis() as u64,
+                            transcript: progress.transcript(),
                         });
                     }
                     if draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
@@ -772,11 +920,15 @@ impl Planner {
         let mut attempts = 0;
         for attempt in 1..=max {
             attempts = attempt;
-            emit(PlanEvent::Thinking { attempt, of: max });
-            let resp = self.call(self.chat(messages.clone(), answer_schema())).await?;
+            progress.emit(|elapsed_ms, tokens| PlanEvent::Thinking { attempt, of: max, elapsed_ms, tokens });
+            let which = if attempt == 1 { PlanPhase::Steps } else { PlanPhase::Fix };
+            let resp = self.call(self.chat(messages.clone(), answer_schema()), &progress, which, attempt, max).await?;
             prompt_tokens += resp.prompt_tokens.unwrap_or(0);
             completion_tokens += resp.completion_tokens.unwrap_or(0);
-            emit(PlanEvent::Checking { attempt });
+            if attempt == max {
+                progress.done();
+            }
+            progress.emit(|elapsed_ms, tokens| PlanEvent::Checking { attempt, elapsed_ms, tokens });
             let problems = match compose(skeleton.as_ref(), &resp.content, req, lib) {
                 Ok((draft, mut problems)) => {
                     problems.extend(draft.problems(&known_tools));
@@ -792,10 +944,13 @@ impl Planner {
                 }
             };
             if problems.is_empty() {
+                if attempt < max {
+                    progress.done();
+                }
                 break;
             }
             if attempt < max {
-                emit(PlanEvent::Fixing { attempt, problems: problems.clone() });
+                progress.emit(|elapsed_ms, tokens| PlanEvent::Fixing { attempt, problems: problems.clone(), elapsed_ms, tokens });
                 messages.push(ChatMessage::new("assistant", resp.content));
                 let list = problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
                 messages.push(ChatMessage::new(
@@ -814,6 +969,7 @@ impl Planner {
             prompt_tokens,
             completion_tokens,
             duration_ms: started.elapsed().as_millis() as u64,
+            transcript: progress.transcript(),
         })
     }
 }

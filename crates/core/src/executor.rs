@@ -338,6 +338,7 @@ pub fn net_policy(recipe: &Recipe, inputs: &IndexMap<String, Value>) -> NetPolic
         .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
         .unwrap_or_default();
     let mut allow = Vec::new();
+    let mut literal = Vec::new();
     for e in entries {
         match e.as_str() {
             "input" => allow.extend(link_hosts()),
@@ -353,11 +354,17 @@ pub fn net_policy(recipe: &Recipe, inputs: &IndexMap<String, Value>) -> NetPolic
                     }
                 }
                 Some(_) => {}
-                None => allow.push(other.to_string()),
+                None => {
+                    // A host written out by name is the one kind of entry that may name a local service.
+                    if other != "*" && !other.starts_with("*.") {
+                        literal.push(other.to_ascii_lowercase());
+                    }
+                    allow.push(other.to_string());
+                }
             },
         }
     }
-    NetPolicy { allow }
+    NetPolicy { allow, literal }
 }
 
 fn value_paths(v: &Value) -> Vec<std::path::PathBuf> {

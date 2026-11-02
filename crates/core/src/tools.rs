@@ -576,6 +576,9 @@ impl Tool for KeepRemove {
 pub struct NetPolicy {
     /// Exact hosts, or `*.example.com` for a domain and everything under it.
     pub allow: Vec<String>,
+    /// The hosts the recipe wrote out by name (not `*`, not a `*.domain`, not through `input`
+    /// or `${inputs.x}`). Only a host named this way may be one on this Mac or the local network.
+    pub literal: Vec<String>,
 }
 
 impl NetPolicy {
@@ -584,7 +587,19 @@ impl NetPolicy {
     }
 
     pub fn open() -> Self {
-        Self { allow: vec!["*".into()] }
+        Self { allow: vec!["*".into()], literal: Vec::new() }
+    }
+
+    /// A policy of exact hosts the recipe named itself.
+    pub fn literal(hosts: &[&str]) -> Self {
+        let hosts: Vec<String> = hosts.iter().map(|h| h.to_ascii_lowercase()).collect();
+        Self { allow: hosts.clone(), literal: hosts }
+    }
+
+    /// Whether the recipe named this very host in its permissions.
+    pub fn names_literally(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        self.literal.iter().any(|h| h.eq_ignore_ascii_case(&host))
     }
 
     pub fn allows(&self, host: &str) -> bool {
@@ -599,6 +614,31 @@ impl NetPolicy {
                 None => host == p,
             }
         })
+    }
+}
+
+/// An address on this Mac or the local network: loopback, link-local, the private ranges, the
+/// unspecified and broadcast addresses, carrier-grade NAT, and their IPv6 counterparts (a mapped
+/// IPv4 address is judged as the IPv4 address it wraps).
+pub fn is_local_address(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(a) => {
+            let o = a.octets();
+            a.is_loopback()
+                || a.is_private()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || a.is_broadcast()
+                || o[0] == 0
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+        }
+        std::net::IpAddr::V6(a) => {
+            if let Some(v4) = a.to_ipv4_mapped() {
+                return is_local_address(&std::net::IpAddr::V4(v4));
+            }
+            let s = a.segments();
+            a.is_loopback() || a.is_unspecified() || (s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80
+        }
     }
 }
 
@@ -1553,6 +1593,33 @@ fn decode_entities(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// Refuse a fetch whose host is on this Mac or the local network (by its address, or by what its
+/// name resolves to) unless the recipe's network permission names that host literally: `*`, a
+/// `*.domain`, `input`, and `${inputs.x}` never open the way to a local service.
+async fn refuse_local(url: &url::Url, net: &NetPolicy) -> Result<(), ToolError> {
+    let host = url.host_str().ok_or_else(|| ToolError::InvalidInput(format!("{url}: no host")))?;
+    if net.names_literally(host) {
+        return Ok(());
+    }
+    let addrs: Vec<std::net::IpAddr> = match url.host() {
+        Some(url::Host::Ipv4(a)) => vec![a.into()],
+        Some(url::Host::Ipv6(a)) => vec![a.into()],
+        Some(url::Host::Domain(d)) => {
+            let port = url.port_or_known_default().unwrap_or(80);
+            match tokio::net::lookup_host((d, port)).await {
+                Ok(found) => found.map(|s| s.ip()).collect(),
+                // Unresolvable: let the request itself say so, in the soft error.
+                Err(_) => Vec::new(),
+            }
+        }
+        None => Vec::new(),
+    };
+    if addrs.iter().any(is_local_address) {
+        return Err(ToolError::Denied(format!("{host} is on this Mac or your local network; a recipe reaches it only when its network permission names {host} itself")));
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl Tool for HttpFetch {
     fn id(&self) -> &str {
@@ -1582,6 +1649,7 @@ impl Tool for HttpFetch {
         let raw = inputs.get("url").and_then(Value::as_str).ok_or(ToolError::InvalidInput("url is required".into()))?.trim().to_string();
         let max_chars = inputs.get("maxChars").and_then(Value::as_u64).unwrap_or(20_000) as usize;
         let mut url = ctx.check_url(&raw)?;
+        refuse_local(&url, &ctx.net).await?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(self.timeout)
@@ -1606,8 +1674,9 @@ impl Tool for HttpFetch {
                     return Ok(soft(&raw, url.as_str(), Some(resp.status().as_u16()), "redirect without a location".into()));
                 };
                 let next = url.join(loc).map_err(|e| ToolError::Failed(format!("bad redirect {loc}: {e}")))?;
-                // Every hop must be a host the recipe may reach.
+                // Every hop must be a host the recipe may reach, and never one on this Mac or the local network.
                 url = ctx.check_url(next.as_str())?;
+                refuse_local(&url, &ctx.net).await?;
                 continue;
             }
             break resp;
@@ -1619,12 +1688,21 @@ impl Tool for HttpFetch {
                 return Ok(soft(&raw, url.as_str(), Some(status), format!("page is too large ({len} bytes)")));
             }
         }
-        let body = match resp.bytes().await {
-            Ok(b) => b,
-            Err(e) => return Ok(soft(&raw, url.as_str(), Some(status), format!("could not read the page: {e}"))),
-        };
-        if body.len() as u64 > self.max_bytes {
-            return Ok(soft(&raw, url.as_str(), Some(status), format!("page is too large ({} bytes)", body.len())));
+        // Read the body a chunk at a time and stop at the cap, so a server that lies about (or
+        // leaves out) its length cannot make the app hold more than that.
+        let mut resp = resp;
+        let mut body: Vec<u8> = Vec::new();
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    if body.len() as u64 + chunk.len() as u64 > self.max_bytes {
+                        return Ok(soft(&raw, url.as_str(), Some(status), format!("page is too large (over {} bytes)", self.max_bytes)));
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => return Ok(soft(&raw, url.as_str(), Some(status), format!("could not read the page: {e}"))),
+            }
         }
         let raw_text = String::from_utf8_lossy(&body);
         let is_html = content_type.as_deref().map(|c| c.contains("html")).unwrap_or(false) || raw_text.trim_start().starts_with('<');
@@ -1736,7 +1814,7 @@ mod tests {
 
     #[test]
     fn net_policy_matches_hosts_and_domains() {
-        let p = NetPolicy { allow: vec!["example.com".into(), "*.wikipedia.org".into()] };
+        let p = NetPolicy { allow: vec!["example.com".into(), "*.wikipedia.org".into()], literal: vec!["example.com".into()] };
         assert!(p.allows("example.com"));
         assert!(!p.allows("www.example.com"));
         assert!(p.allows("en.wikipedia.org"));
@@ -1762,6 +1840,77 @@ mod tests {
     async fn http_fetch_refuses_hosts_outside_the_policy() {
         let err = HttpFetch::default().call(&ctx(), json!({ "url": "https://example.com/" })).await.unwrap_err();
         assert!(matches!(err, ToolError::Denied(_)), "{err}");
+    }
+
+    #[test]
+    fn local_addresses_are_told_apart() {
+        for local in ["127.0.0.1", "127.8.8.8", "10.0.0.5", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "0.0.0.0", "100.64.0.1", "255.255.255.255", "::1", "::", "fe80::1", "fd00::1", "fc00::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1"] {
+            assert!(is_local_address(&local.parse().unwrap()), "{local}");
+        }
+        for public in ["8.8.8.8", "93.184.216.34", "172.32.0.1", "100.128.0.1", "2606:2800:220:1:248:1893:25c8:1946", "::ffff:8.8.8.8"] {
+            assert!(!is_local_address(&public.parse().unwrap()), "{public}");
+        }
+    }
+
+    /// A one-shot HTTP server on 127.0.0.1 that answers every connection with `response`.
+    async fn local_server(response: Vec<u8>) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let response = response.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock.write_all(&response).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn http_fetch_reaches_a_local_service_only_when_the_recipe_names_it() {
+        let port = local_server(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".to_vec()).await;
+        let url = format!("http://127.0.0.1:{port}/x");
+        // `*` opens the internet, not this Mac.
+        let open = ToolContext { net: NetPolicy::open(), ..ctx() };
+        let err = HttpFetch::default().call(&open, json!({ "url": &url })).await.unwrap_err();
+        assert!(matches!(err, ToolError::Denied(ref m) if m.contains("on this Mac or your local network")), "{err}");
+        // `localhost` resolves to loopback: the same answer.
+        let err = HttpFetch::default().call(&open, json!({ "url": format!("http://localhost:{port}/x") })).await.unwrap_err();
+        assert!(matches!(err, ToolError::Denied(_)), "{err}");
+        // A host that is in `allow` only through an input (not literal) is refused as well.
+        let via_input = ToolContext { net: NetPolicy { allow: vec!["127.0.0.1".into()], literal: vec![] }, ..ctx() };
+        let err = HttpFetch::default().call(&via_input, json!({ "url": &url })).await.unwrap_err();
+        assert!(matches!(err, ToolError::Denied(_)), "{err}");
+        // Named literally: reached, and the body read.
+        let named = ToolContext { net: NetPolicy::literal(&["127.0.0.1"]), ..ctx() };
+        let out = HttpFetch::default().call(&named, json!({ "url": &url })).await.unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["text"], "hello");
+        assert_eq!(out["status"], 200);
+    }
+
+    #[tokio::test]
+    async fn http_fetch_stops_reading_at_the_cap() {
+        // No Content-Length: the body is as long as the connection stays open, so only reading
+        // through it can tell its size.
+        let mut response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n".to_vec();
+        response.extend(std::iter::repeat_n(b'a', 2000));
+        let port = local_server(response).await;
+        let named = ToolContext { net: NetPolicy::literal(&["127.0.0.1"]), ..ctx() };
+        let small = HttpFetch { max_bytes: 100, ..HttpFetch::default() };
+        let out = small.call(&named, json!({ "url": format!("http://127.0.0.1:{port}/big") })).await.unwrap();
+        assert_eq!(out["ok"], false, "{out}");
+        assert_eq!(out["error"], "page is too large (over 100 bytes)");
+        assert_eq!(out["text"], "");
+        let roomy = HttpFetch { max_bytes: 4000, ..HttpFetch::default() };
+        let out = roomy.call(&named, json!({ "url": format!("http://127.0.0.1:{port}/big") })).await.unwrap();
+        assert_eq!(out["chars"], 2000, "{out}");
     }
 
     const SAMPLE_EML: &str = "From: Ana Ruiz <ana@example.com>

@@ -29,6 +29,9 @@ pub(crate) struct AppState {
     secrets: Mutex<BTreeMap<String, Option<String>>>,
     /// The stop handle of the run in flight, if any. One run at a time.
     current_cancel: Mutex<Option<Cancel>>,
+    /// The stop handle of the planner drafting a recipe, if any. Its own slot: stopping a plan
+    /// must not take the run's handle with it, nor leave the run unstoppable.
+    plan_cancel: Mutex<Option<Cancel>>,
     tools: Arc<ToolRegistry>,
     library: RecipeLibrary,
     /// The engine's own prompts (the planner), with the user's revisions on disk.
@@ -360,17 +363,24 @@ async fn preview_resolution(state: State<'_, AppState>, args: PreviewArgs) -> Cm
     Ok(out)
 }
 
-/// Stop the run in flight. Returns whether there was one.
+/// Stop what is in flight: `which` is `"run"` (a recipe running), `"plan"` (the planner drafting a
+/// recipe), or absent, which stops both. Returns whether anything was running.
 #[tauri::command]
-fn stop_run(state: State<'_, AppState>) -> CmdResult<bool> {
-    let guard = state.current_cancel.lock().map_err(err)?;
-    match guard.as_ref() {
-        Some(c) => {
+fn stop_run(state: State<'_, AppState>, which: Option<String>) -> CmdResult<bool> {
+    let slots: &[&Mutex<Option<Cancel>>] = match which.as_deref() {
+        Some("run") => &[&state.current_cancel],
+        Some("plan") => &[&state.plan_cancel],
+        None => &[&state.current_cancel, &state.plan_cancel],
+        Some(other) => return Err(format!("nothing called {other} can be stopped; say run or plan")),
+    };
+    let mut stopped = false;
+    for slot in slots {
+        if let Some(c) = slot.lock().map_err(err)?.as_ref() {
             c.cancel();
-            Ok(true)
+            stopped = true;
         }
-        None => Ok(false),
     }
+    Ok(stopped)
 }
 
 /// Every setting as one JSON object. Keys: look, ollama, models, pins, firstRun.
@@ -688,7 +698,7 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
     let resolutions = resolve_slots_with(&planner_recipe(), &installed, &pins, &state.resolve_defaults()).map_err(err)?;
     let model_id = resolutions.get(PLANNER_SLOT).map(|r| r.model_id.clone()).ok_or("no model for the planner")?;
     let cancel = Cancel::new();
-    *state.current_cancel.lock().map_err(err)? = Some(cancel.clone());
+    *state.plan_cancel.lock().map_err(err)? = Some(cancel.clone());
     let planner = Planner {
         library: Some(state.stage_library.clone()),
         models: router,
@@ -708,7 +718,7 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
         })
     };
     let out = planner.plan(&args.request, Some(observer)).await;
-    *state.current_cancel.lock().map_err(err)? = None;
+    *state.plan_cancel.lock().map_err(err)? = None;
     out.map_err(err)
 }
 
@@ -1172,6 +1182,7 @@ pub fn run() {
                 store: Arc::new(Mutex::new(store)),
                 secrets: Mutex::new(BTreeMap::new()),
                 current_cancel: Mutex::new(None),
+                plan_cancel: Mutex::new(None),
                 tools: Arc::new(ToolRegistry::builtin()),
                 library,
                 prompts: SystemPrompts::new(data_dir.join("prompts")),

@@ -16,8 +16,8 @@ export const api = {
   openSettings: () => invoke<void>("open_settings"),
   /** What each slot would get if the recipe ran now. Nothing runs. */
   previewResolution: (recipeId: string, pins: Record<string, string>) => invoke<ResolutionPreview>("preview_resolution", { args: { recipeId, pins } }),
-  /** Stop the run in flight. True if there was one. */
-  stopRun: () => invoke<boolean>("stop_run"),
+  /** Stop a run in flight, the planner drafting a recipe, or both when `which` is left out. True if there was one. */
+  stopRun: (which?: "run" | "plan") => invoke<boolean>("stop_run", { which: which ?? null }),
   /** Secrets live in the OS keychain. An empty value clears. The value never comes back. */
   setSecret: (name: string, value: string) => invoke<void>("set_secret", { name, value }),
   hasSecret: (name: string) => invoke<boolean>("has_secret", { name }),

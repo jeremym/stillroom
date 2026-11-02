@@ -605,7 +605,7 @@ function App() {
 
           {place === "new" && recipes && (
             <NewRecipe recipes={recipes.recipes} busy={creating} error={createError} progress={planProgress} problems={planProblems} onCreate={createRecipe}
-              onCancel={() => setPlace(recipe ? "recipe" : "library")} onStop={() => api.stopRun().catch((e) => setError(String(e)))} />
+              onCancel={() => setPlace(recipe ? "recipe" : "library")} onStop={() => api.stopRun("plan").catch((e) => setError(String(e)))} />
           )}
 
           {place === "recipe" && planNote && freshId === recipe?.id && (
@@ -634,7 +634,7 @@ function App() {
                 {runningHere && (
                   <div className="row stop-row">
                     {confirmStop
-                      ? <><button className="danger" disabled={stopping} onClick={() => { setStopping(true); api.stopRun().catch((e) => setError(String(e))).finally(() => { setStopping(false); setConfirmStop(false); }); }}>{stopping ? "Stopping…" : "Really stop"}</button><button onClick={() => setConfirmStop(false)}>Keep running</button></>
+                      ? <><button className="danger" disabled={stopping} onClick={() => { setStopping(true); api.stopRun("run").catch((e) => setError(String(e))).finally(() => { setStopping(false); setConfirmStop(false); }); }}>{stopping ? "Stopping…" : "Really stop"}</button><button onClick={() => setConfirmStop(false)}>Keep running</button></>
                       : <button className="stop" onClick={() => setConfirmStop(true)}><Glyph name="stop" /> Stop</button>}
                     <span className="muted">Stop ends the run now: the step in progress is abandoned, and nothing already written is undone.</span>
                   </div>

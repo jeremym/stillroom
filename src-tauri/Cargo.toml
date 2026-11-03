@@ -1,6 +1,6 @@
 [package]
 name = "stillroom"
-version = "0.3.2"
+version = "0.3.3"
 description = "Stillroom desktop shell"
 authors = ["Jeremy Mooer"]
 edition = "2024"

@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
-import type { Grant, ImportPreview, KeepState, ModelsResponse, ModelUsage, PlanEvent, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
+import type { Grant, ImportPreview, KeepState, ModelsResponse, ModelUsage, PlanEvent, RecipeInfo, RecipesResponse, Run, RunSummary, RuntimeStatus, Schedule, ScheduleRunEvent, Settings, StepRecord, WatchRunEvent, WatchView } from "./types";
 import { RecipePanel } from "./components/RecipePanel";
 import { TracePanel } from "./components/TracePanel";
 import { Teletype } from "./components/Teletype";
@@ -9,6 +9,7 @@ import { ArtifactsPanel } from "./components/ArtifactsPanel";
 import { ReviewPanel } from "./components/ReviewPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { WatchPanel } from "./components/WatchPanel";
+import { SchedulePanel } from "./components/SchedulePanel";
 import { UsagePanel } from "./components/UsagePanel";
 import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
@@ -76,6 +77,7 @@ function App() {
   const [recipeId, setRecipeId] = useState<string>("");
   const [settings, setSettingsState] = useState<Settings>({});
   const [watches, setWatches] = useState<WatchView[]>([]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [place, setPlace] = useState<Place>("library");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -101,7 +103,7 @@ function App() {
   // once (firstRun absent means never shown). The hint then follows the first run to Results.
   const [firstRunHint, setFirstRunHint] = useState(false);
   const [stopping, setStopping] = useState(false);
-  // A watch that ran while another run was on screen: it stays out of the way, this line says it happened.
+  // A watch or a schedule that ran while another run was on screen: it stays out of the way, this line says it happened.
   const [backgroundNote, setBackgroundNote] = useState<{ text: string; runId: string | null } | null>(null);
   // A quiet line for something that went right and left no other trace (Saved to …).
   const [note, setNote] = useState<string | null>(null);
@@ -112,8 +114,8 @@ function App() {
   const recipesRef = useRef<RecipesResponse | null>(null);
   // The run whose steps the screen follows. Steps and watch events from any other run are ignored.
   const liveRunRef = useRef<string | null>(null);
-  // Watches whose run started in the background, by watch id, so their finish is read the same way;
-  // and those runs' ids, so their steps never take the screen.
+  // Watches and schedules whose run started in the background, by "watch:<id>" or "schedule:<id>", so
+  // their finish is read the same way; and those runs' ids, so their steps never take the screen.
   const backgroundWatches = useRef(new Set<string>());
   const backgroundRuns = useRef(new Set<string>());
   const placeRef = useRef<Place>("library");
@@ -182,6 +184,10 @@ function App() {
   }, []);
   const refreshWatches = useCallback(() => {
     api.listWatches().then(setWatches).catch(() => {});
+  }, []);
+  // An engine without schedules refuses the call; then there are none to show.
+  const refreshSchedules = useCallback(() => {
+    api.listSchedules().then(setSchedules).catch(() => setSchedules([]));
   }, []);
 
   const openRecipe = useCallback((id: string, where: RecipePlace = "recipe") => {
@@ -267,6 +273,7 @@ function App() {
       .then((latest) => latest[0] && openRun(latest[0].id, false))
       .catch((e) => setError(String(e)));
     refreshWatches();
+    refreshSchedules();
     const unlisten = listen<StepRecord>("run:step", (ev) => {
       // The first step of a fresh run names the run; a step from any other run is not ours to show.
       if (ev.payload.runId && backgroundRuns.current.has(ev.payload.runId)) return;
@@ -278,21 +285,20 @@ function App() {
         return next.sort((a, b) => a.position - b.position);
       });
     });
-    // A watch's run shows the same way a run from the Run button does, unless another run is on
-    // screen: then it runs in the background and a quiet line says so.
-    const unlistenWatchRun = listen<WatchRunEvent>("watch:run", (ev) => {
-      const w = ev.payload;
+    // A watch's or a schedule's run shows the same way a run from the Run button does, unless another
+    // run is on screen: then it runs in the background and a quiet line says so.
+    const onTriggeredRun = (key: string, byWord: string, refresh: () => void, w: { recipeId: string; phase: "started" | "finished" | "failed"; runId: string | null; status: string | null; error: string | null }) => {
       const recipeName = recipesRef.current?.recipes.find((r) => r.id === w.recipeId)?.name ?? w.recipeId;
       if (w.phase === "started") {
         const showing = runningRef.current || (liveRunRef.current && (placeRef.current === "running" || placeRef.current === "results"));
         if (showing) {
-          backgroundWatches.current.add(w.watchId);
+          backgroundWatches.current.add(key);
           if (w.runId) backgroundRuns.current.add(w.runId);
           refreshRuns();
-          refreshWatches();
+          refresh();
           return;
         }
-        backgroundWatches.current.delete(w.watchId);
+        backgroundWatches.current.delete(key);
         liveRunRef.current = w.runId ?? null;
         setRunning(true);
         setError(null);
@@ -301,10 +307,10 @@ function App() {
         setRunRecipe(recipesRef.current?.recipes.find((r) => r.id === w.recipeId) ?? null);
         setRecipeId(w.recipeId);
         setPlace("running");
-      } else if (backgroundWatches.current.has(w.watchId) || (w.runId && liveRunRef.current && w.runId !== liveRunRef.current)) {
-        backgroundWatches.current.delete(w.watchId);
+      } else if (backgroundWatches.current.has(key) || (w.runId && liveRunRef.current && w.runId !== liveRunRef.current)) {
+        backgroundWatches.current.delete(key);
         if (w.runId) backgroundRuns.current.delete(w.runId);
-        setBackgroundNote({ text: `A watch ran ${recipeName} in the background${w.status ? ` · ${STATUS_WORD[w.status] ?? w.status}` : w.error ? " · failed" : ""}.`, runId: w.runId });
+        setBackgroundNote({ text: `${byWord} ran ${recipeName} in the background${w.status ? ` · ${STATUS_WORD[w.status] ?? w.status}` : w.error ? " · failed" : ""}.`, runId: w.runId });
         refreshRuns();
       } else {
         setRunning(false);
@@ -312,13 +318,16 @@ function App() {
         if (w.runId) openRun(w.runId).catch((e) => setError(String(e)));
         refreshRuns();
       }
-      refreshWatches();
-    });
+      refresh();
+    };
+    const unlistenWatchRun = listen<WatchRunEvent>("watch:run", (ev) => onTriggeredRun(`watch:${ev.payload.watchId}`, "A watch", refreshWatches, ev.payload));
+    const unlistenScheduleRun = listen<ScheduleRunEvent>("schedule:run", (ev) => onTriggeredRun(`schedule:${ev.payload.scheduleId}`, "A schedule", refreshSchedules, ev.payload));
     // The shelf changes in this window or another (Restore, Archive, Add to shelf).
     const unlistenShelf = listen("shelf:changed", () => { refreshRecipes().catch((e) => setError(String(e))); });
     // A recipe changed on the engine's side (the consent step wrote an answer, an import landed).
     const unlistenRecipes = listen("recipes:changed", () => { refreshRecipes().catch((e) => setError(String(e))); });
     const unlistenWatches = listen("watch:changed", () => refreshWatches());
+    const unlistenSchedules = listen("schedule:changed", () => refreshSchedules());
     const unlistenPlan = listen<PlanEvent>("plan:progress", (ev) => {
       const e = ev.payload;
       setPlanStream((s) => reducePlan(s, e));
@@ -339,13 +348,15 @@ function App() {
     return () => {
       unlisten.then((f) => f());
       unlistenWatchRun.then((f) => f());
+      unlistenScheduleRun.then((f) => f());
       unlistenShelf.then((f) => f());
       unlistenRecipes.then((f) => f());
       unlistenWatches.then((f) => f());
+      unlistenSchedules.then((f) => f());
       unlistenPlan.then((f) => f());
       unlistenSettings.then((f) => f());
     };
-  }, [refreshModels, refreshRuns, refreshWatches, refreshRecipes, openRun]);
+  }, [refreshModels, refreshRuns, refreshWatches, refreshSchedules, refreshRecipes, openRun]);
 
   // The native menu: every item sends its id here. Keyboard shortcuts live on the menu items.
   const onMenu = useCallback((id: string) => {
@@ -437,6 +448,20 @@ function App() {
       setPlace("recipe");
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  /** Run every day at…: a schedule with Set up's inputs and pins. True once the engine has it. */
+  async function scheduleRun(recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, time: string, days: string[]): Promise<boolean> {
+    setError(null);
+    try {
+      await ensureShelved(recipe);
+      await api.addSchedule(recipe.id, inputs, pins, time, days);
+      refreshSchedules();
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
     }
   }
 
@@ -547,6 +572,7 @@ function App() {
       await api.deleteRecipe(r.id);
       await refreshRecipes();
       refreshWatches();
+      refreshSchedules();
       setRecipeId("");
       setPlace("library");
     } catch (e) {
@@ -702,7 +728,7 @@ function App() {
           {helpOpen && (
             <Zone title="Help" sub="how Stillroom is laid out" aside={<button className="quiet" onClick={() => setHelpOpen(false)}>Close</button>}>
               <div className="facts">
-                <span className="label">Library</span><span>Every recipe, every run, your watches. The logo at the top left always brings you back.</span>
+                <span className="label">Library</span><span>Every recipe, every run, your watches and schedules. The logo at the top left always brings you back.</span>
                 <span className="label">Recipe</span><span>Pick one and the Dial appears: <b>Recipe</b> (what it does, its runs) · <b>Set up</b> (inputs, models, Run) · <b>Running</b> (each step as it happens) · <b>Results</b> (what it made) · <b>Recipe card</b> (the recipe written out as a map you can edit).</span>
                 <span className="label">Colours</span><span>Green is the machine. Paper is what it made for you. Amber means it needs you, or something would leave this Mac. Red is a failure.</span>
                 <span className="label">Keys</span><span className="mono">⌘0 Library · ⌘B Catalog · ⌘1…⌘5 the Dial · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ this help</span>
@@ -719,7 +745,7 @@ function App() {
 
           {backgroundNote && (
             <p className="quiet-line" role="status">
-              <Glyph name="watch" /> {backgroundNote.text}
+              <Glyph name={backgroundNote.text.startsWith("A schedule") ? "calendar" : "watch"} /> {backgroundNote.text}
               {backgroundNote.runId && <button className="link" onClick={() => { const id = backgroundNote.runId!; setBackgroundNote(null); openRun(id).catch((e) => setError(String(e))); }}>See it</button>}
               <button className="quiet" onClick={() => setBackgroundNote(null)}>Dismiss</button>
             </p>
@@ -764,6 +790,7 @@ function App() {
               </Zone>
               <ArchiveZone recipes={shelf.archive} facts={cardFacts} onOpen={(id) => openRecipe(id)} onError={setError} onChanged={refreshRecipes} />
               <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={openRun} onError={(m) => setError(m)} />
+              <SchedulePanel schedules={schedules} watchCount={watches.length} onChanged={refreshSchedules} onOpenRun={openRun} onError={(m) => setError(m)} />
               <HistoryPanel history={history} onOpen={openRun} />
               <UsagePanel usage={usage} />
             </>
@@ -799,7 +826,7 @@ function App() {
           )}
           {place === "setup" && recipes && recipe && (
             <RecipePanel recipes={shelf.shelf.some((r) => r.id === recipe.id) ? shelf.shelf : [recipe, ...shelf.shelf]} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}
-              models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} onInputsChange={setSetupInputs}
+              models={models?.models ?? []} running={running} onRun={startRun} onWatch={watchFolder} onSchedule={scheduleRun} onSeeSchedules={() => setPlace("library")} onInputsChange={setSetupInputs}
               keeps={keeps} onRebuild={(stage) => api.rebuildKeep(recipe.id, stage).then(() => keepsFor(recipe.id, setupInputs, pins)).catch((e) => setError(String(e)))}
               onConsentChanged={() => refreshRecipes().catch((e) => setError(String(e)))} />
           )}
@@ -869,7 +896,8 @@ function App() {
                       <span className="label">Note</span>
                       <span className="muted">
                         {editedNames.length > 0 && <>Includes your {run.steps.some((s) => s.edited && s.kind === "review") ? "decision on" : "edit to"} <strong>{editedNames.join(", ")}</strong>. </>}
-                        {run.trigger && <>Started by the folder watch{run.trigger.changed.length > 0 ? <> after <strong>{run.trigger.changed.slice(0, 3).join(", ")}{run.trigger.changed.length > 3 ? ` and ${run.trigger.changed.length - 3} more` : ""}</strong> landed</> : " (Run now)"}.</>}
+                        {run.trigger?.kind === "schedule" && <>Started by the schedule set for <strong>{run.trigger.time}</strong>.</>}
+                        {run.trigger && run.trigger.kind !== "schedule" && <>Started by the folder watch{(run.trigger.changed ?? []).length > 0 ? <> after <strong>{run.trigger.changed.slice(0, 3).join(", ")}{run.trigger.changed.length > 3 ? ` and ${run.trigger.changed.length - 3} more` : ""}</strong> landed</> : " (Run now)"}.</>}
                       </span>
                     </>}
                   </div>

@@ -9,7 +9,8 @@ import { measuredTag } from "../planWith";
 import { PullModel } from "../components/PullModel";
 import { PromptEditor } from "../components/PromptEditor";
 import { fmtSpeed, speedOf, thisMacLine } from "../hardware";
-import type { CodexStatus, Hardware, InstalledModel, ModelsResponse, PermissionEntry, PlanMeasurement, RecipesResponse, RuntimeStatus, Settings, TryPlanningResult, TryResult, WatchView } from "../types";
+import type { CodexStatus, Hardware, InstalledModel, ModelsResponse, PermissionEntry, PlanMeasurement, RecipesResponse, RuntimeStatus, Schedule, Settings, TryPlanningResult, TryResult, WatchView } from "../types";
+import { whenWord } from "../schedules";
 
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
@@ -20,7 +21,7 @@ const SECTIONS: { id: Section; label: string; glyph: GlyphName }[] = [
   { id: "models", label: "Models", glyph: "models" },
   { id: "prompts", label: "Prompts", glyph: "chat" },
   { id: "folders", label: "Folders", glyph: "folder" },
-  { id: "watches", label: "Watches", glyph: "watch" },
+  { id: "watches", label: "Watches and schedules", glyph: "watch" },
   { id: "permissions", label: "Permissions", glyph: "checklist" },
   { id: "privacy", label: "Privacy", glyph: "shield" },
   { id: "about", label: "About", glyph: "help" },
@@ -52,6 +53,7 @@ export default function SettingsApp() {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [recipes, setRecipes] = useState<RecipesResponse | null>(null);
   const [watches, setWatches] = useState<WatchView[]>([]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [checking, setChecking] = useState(false);
@@ -115,6 +117,8 @@ export default function SettingsApp() {
     api.listModels().then((m) => { rememberProviders(m.providers); setModels(m); }).catch((e) => setError(String(e))).finally(() => setChecking(false));
   }, []);
   const refreshWatches = useCallback(() => { api.listWatches().then(setWatches).catch(() => {}); }, []);
+  // An engine without schedules refuses the call; then there are none to show.
+  const refreshSchedules = useCallback(() => { api.listSchedules().then(setSchedules).catch(() => setSchedules([])); }, []);
 
   useEffect(() => {
     api.getSettings().then((s) => { setSettings(s); const u = s.ollama?.baseUrl ?? "http://localhost:11434"; setUrl(u); urlRef.current = u; }).catch((e) => setError(String(e)));
@@ -122,11 +126,13 @@ export default function SettingsApp() {
     api.listRecipes().then(setRecipes).catch(() => {});
     refreshModels();
     refreshWatches();
+    refreshSchedules();
     refreshKey();
     const a = listen<Settings>("settings:changed", (ev) => setSettings(ev.payload));
     const c = listen("watch:changed", () => refreshWatches());
-    return () => { a.then((f) => f()); c.then((f) => f()); };
-  }, [refreshModels, refreshWatches, refreshKey]);
+    const d = listen("schedule:changed", () => refreshSchedules());
+    return () => { a.then((f) => f()); c.then((f) => f()); d.then((f) => f()); };
+  }, [refreshModels, refreshWatches, refreshSchedules, refreshKey]);
 
   async function saveKey(value: string) {
     setKeyBusy(true);
@@ -511,6 +517,24 @@ export default function SettingsApp() {
                 <WatchPanel watches={watches} onChanged={refreshWatches} onOpenRun={() => {}} onError={(m) => setError(m)} />
               </>
             )}
+            <Zone title="Schedules" sub="recipes that run at a time of day, while Stillroom is open">
+              {schedules.length === 0 ? (
+                <p className="muted">No schedules. In a recipe's Set up, press Run every day at… to run it at the same time each day. Turn one on or off, run it now, or delete it from the Library.</p>
+              ) : (
+                <>
+                  <ul className="watches schedules">
+                    {schedules.map((s) => (
+                      <li key={s.id}>
+                        <strong>{s.recipeName}</strong>
+                        <span className="muted"> {whenWord(s.time, s.days)}</span>
+                        <Tag tone={s.enabled ? "live" : undefined}>{s.enabled ? "on" : "off"}</Tag>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="muted">Turn a schedule on or off, run it now, or delete it from the Library.</p>
+                </>
+              )}
+            </Zone>
           </>
         )}
 

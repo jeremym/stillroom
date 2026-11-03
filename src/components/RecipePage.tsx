@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, fmtTokens } from "../api";
+import { triggerWord } from "../schedules";
 import { describePermissions } from "../permissions";
 import { Glyph, inputGlyph, isGlyphName, outputGlyph, stepGlyph } from "../brand";
 import { Empty, Zone } from "@overtone-foundry/app-kit";
@@ -184,7 +185,7 @@ export function RecipePage({ recipe, models, history, watches, map, onSetup, onD
                 <button className="link" onClick={() => onOpenRun(h.id)}>
                   {new Date(h.startedAt).toLocaleString()}
                   <span className={`tag ${h.status === "needs_review" ? "amber" : h.status === "failed" ? "bad" : ""}`}>{RUN_WORD[h.status] ?? h.status}</span>
-                  {h.trigger && <span className="tag">by a watch</span>}
+                  {h.trigger && <span className="tag">{triggerWord(h.trigger)}</span>}
                   <span className="muted"> · {fmtTokens(h.promptTokens + h.completionTokens)} tokens</span>
                 </button>
               </li>

@@ -1,4 +1,5 @@
 import { fmtTokens } from "../api";
+import { triggerWord } from "../schedules";
 import type { RunSummary } from "../types";
 
 export function HistoryPanel({ history, onOpen }: { history: RunSummary[]; onOpen: (id: string) => void }) {
@@ -10,7 +11,7 @@ export function HistoryPanel({ history, onOpen }: { history: RunSummary[]; onOpe
         {history.map((h) => (
           <li key={h.id}>
             <button className="link" onClick={() => onOpen(h.id)}>
-              {new Date(h.startedAt).toLocaleString()} · {h.recipeName} · {h.status === "needs_review" ? "needs your review" : h.status}{h.trigger ? " · by a watch" : ""} · {fmtTokens(h.promptTokens + h.completionTokens)} tokens
+              {new Date(h.startedAt).toLocaleString()} · {h.recipeName} · {h.status === "needs_review" ? "needs your review" : h.status}{h.trigger ? ` · ${triggerWord(h.trigger)}` : ""} · {fmtTokens(h.promptTokens + h.completionTokens)} tokens
             </button>
           </li>
         ))}

@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { api, fmtTokens } from "../api";
 import { describePermissions } from "../permissions";
 import { defaultInputs } from "../recipes/defaults";
+import { ALL_DAYS, DAY_LABEL, DEFAULT_TIME, daysToSend, whenWord } from "../schedules";
 import { aboutMs, estimateWord, inputsKnownUpTo, keepHeldWord, keepWord } from "../stages";
 import type { InputSpec, InstalledModel, KeepState, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
 import { Glyph } from "../brand";
@@ -37,6 +38,11 @@ interface Props {
   onRun: (recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, reuse: boolean) => void;
   /** Watch one of the recipe's folder inputs: the recipe runs by itself when something lands there. */
   onWatch: (recipe: RecipeInfo, input: string, inputs: Record<string, unknown>, pins: Record<string, string>) => void;
+  /** Run at a time of day (a schedule) with these inputs and pins; `days` are "mon".."sun", empty for every
+   *  day. Resolves true once the engine has it, false when it refused (the caller has shown the error). */
+  onSchedule?: (recipe: RecipeInfo, inputs: Record<string, unknown>, pins: Record<string, string>, time: string, days: string[]) => Promise<boolean>;
+  /** The quiet line after adding a schedule links to where the schedules are listed. */
+  onSeeSchedules?: () => void;
   /** The strip above wants to know which stage still needs you. */
   onInputsChange?: (inputs: Record<string, unknown>) => void;
   /** Kept stages' state for the inputs typed so far, by stage id. */
@@ -91,7 +97,7 @@ export function InputField({
   );
 }
 
-export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch, onInputsChange, keeps, onRebuild, onConsentChanged }: Props) {
+export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, running, onRun, onWatch, onSchedule, onSeeSchedules, onInputsChange, keeps, onRebuild, onConsentChanged }: Props) {
   const [confirmRebuild, setConfirmRebuild] = useState<string | null>(null);
   // The consent step: which needed lines are ticked; every one ticked is the answer, written at once.
   const [ticked, setTicked] = useState<Set<string>>(new Set());
@@ -105,6 +111,12 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
   const [reuse, setReuse] = useState(true);
   const folderInputs = Object.entries(recipe.inputs).filter(([, spec]) => spec.type === "directory").map(([k]) => k);
   const [watchInput, setWatchInput] = useState<string>("");
+  // Run every day at…: the small form, and the line that stays once a schedule is added.
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleTime, setScheduleTime] = useState(DEFAULT_TIME);
+  const [scheduleDays, setScheduleDays] = useState<Set<string>>(new Set(ALL_DAYS));
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduled, setScheduled] = useState<string | null>(null);
 
   useEffect(() => { onInputsChange?.(inputs); }, [inputs, onInputsChange]);
 
@@ -113,6 +125,8 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
     setTicked(new Set());
     setConsentError(null);
     setWatchInput(folderInputs[0] ?? "");
+    setScheduleOpen(false);
+    setScheduled(null);
     api.estimate(recipe.id).then(setEstimate).catch(() => setEstimate(null));
   }, [recipe.id]);
 
@@ -139,6 +153,23 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
   const unfillable = Object.entries(recipe.modelSlots).filter(([, s]) => slotCandidates(s.requires).length === 0);
   const blocked = running || missing.length > 0 || unfillable.length > 0 || permissionNeeded;
   runRef.current = () => { if (!blocked) onRun(recipe, inputs, pins, reuse); };
+
+  function toggleDay(day: string) {
+    setScheduleDays((d) => { const next = new Set(d); if (next.has(day)) next.delete(day); else next.add(day); return next; });
+  }
+  async function addSchedule() {
+    if (!onSchedule || blocked || scheduleDays.size === 0 || !scheduleTime) return;
+    setScheduleBusy(true);
+    try {
+      const days = daysToSend(scheduleDays);
+      if (await onSchedule(recipe, inputs, pins, scheduleTime, days)) {
+        setScheduled(whenWord(scheduleTime, days));
+        setScheduleOpen(false);
+      }
+    } finally {
+      setScheduleBusy(false);
+    }
+  }
 
   function tick(key: string, on: boolean) {
     const next = new Set(ticked);
@@ -307,8 +338,40 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
           )}
         </>
       )}
+      {onSchedule && (
+        <>
+          {" "}
+          <button disabled={blocked} aria-expanded={scheduleOpen} onClick={() => setScheduleOpen((o) => !o)}>Run every day at…</button>
+        </>
+      )}
       {unfillable.length > 0 && (
         <p className="muted">No installed model has what {unfillable.map(([s]) => s).join(", ")} needs. Pull one in Ollama, then refresh Models in the Library.</p>
+      )}
+      {onSchedule && scheduleOpen && !blocked && (
+        <div className="schedule-form" role="group" aria-label="Run every day at">
+          <label className="row" style={{ margin: 0 }}>
+            <span>At</span>
+            <input type="time" aria-label="Time of day" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} />
+          </label>
+          <span className="muted">on</span>
+          <div className="days" role="group" aria-label="Days">
+            {ALL_DAYS.map((d) => (
+              <button key={d} type="button" aria-pressed={scheduleDays.has(d)} onClick={() => toggleDay(d)}>{DAY_LABEL[d]}</button>
+            ))}
+          </div>
+          <button className="primary" disabled={scheduleBusy || scheduleDays.size === 0 || !scheduleTime} onClick={addSchedule}>
+            {scheduleBusy ? "Adding…" : "Add the schedule"}
+          </button>
+          <span className="muted">
+            Runs {whenWord(scheduleTime || "…", [...scheduleDays])} with these inputs, while Stillroom is open (a schedule). Nothing runs while the app is closed; a missed time runs once on the next launch.
+          </span>
+        </div>
+      )}
+      {scheduled && (
+        <p className="quiet-line" role="status">
+          <Glyph name="calendar" /> Runs {scheduled} while Stillroom is open
+          {onSeeSchedules && <> · <button className="link" onClick={onSeeSchedules}>see schedules</button></>}
+        </p>
       )}
       {folderInputs.length > 0 && missing.length === 0 && (
         <p className="muted">

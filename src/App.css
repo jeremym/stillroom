@@ -57,12 +57,19 @@ footer { margin-top: 24px; color: var(--phos-faint); font-size: var(--size-label
 .needs { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 
 
-/* History and watches */
+/* History, watches, and schedules */
 .history, .watches, .providers { list-style: none; padding: 0; margin: 0; }
 .history li, .watches li { padding: 10px 12px; border-top: 1px solid var(--bezel); }
 .history li:first-child, .watches li:first-child { border-top: 0; }
 .history li:nth-child(even), .watches li:nth-child(even) { background: color-mix(in srgb, var(--phos) 4%, transparent); }
 .watches .row { margin: 6px 0 0; }
+.schedules .row.space { align-items: center; }
+.schedules .tag { margin-left: 8px; }
+.schedule-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.schedule-form input[type="time"] { width: auto; margin: 0; }
+.schedule-form .days { display: flex; gap: 4px; }
+.schedule-form .days button { padding: 2px 8px; }
+.schedule-form .days button[aria-pressed="true"] { background: color-mix(in srgb, var(--phos) 18%, transparent); border-color: var(--phos); }
 .history .link { text-decoration: none; color: var(--phos); }
 .history .link::before { content: "▸ "; color: var(--phos-dim); }
 .history .link:hover { text-shadow: 0 0 0 currentColor, 0 0 10px var(--halo); }

@@ -56,7 +56,9 @@ pub struct StepRecord {
     /// For steps inside a map: the map step's id.
     #[serde(default)]
     pub parent: Option<String>,
-    /// Why a skipped step was skipped: a `when` that was not set, or a pending review.
+    /// Why a skipped step was skipped: a `when` that was not set, a pending review, an empty
+    /// loop (`nothing to loop over`), or an optional input left empty that the step cannot do
+    /// without (`nothing given for <input>`, carried on to every step that reads its output).
     #[serde(default)]
     pub skip_reason: Option<String>,
     /// For agent steps: every tool call the model made, in order.

@@ -5,7 +5,13 @@
 //!   can be compared with the built-in recipe).
 //! - `STILLROOM_MATERIAL`: notes or links to hand the planner.
 //! - `STILLROOM_PLANNER_MODEL`: pin the planning model (`ollama:name`); otherwise Auto.
+//! - `STILLROOM_PLAN_ID`, `STILLROOM_PLAN_NAME`, `STILLROOM_PLAN_ICON`: what the recipe is called
+//!   (default `planned`, "Planned recipe", `notes`).
 //! - `STILLROOM_PLAN_OUT`: a directory to write the drafted recipe bundle into.
+//! - `STILLROOM_PLAN_ANSWERS_OUT`: a directory to write the raw model answers into, as a
+//!   planner-answer fixture `<id>.json` in the shape `crates/core/tests/compat/planner-answers/`
+//!   uses (request, strip, the last composing answer, the merge's problems) plus the full
+//!   transcript `<id>.transcript.md`. Copy the fixture into that folder to pin the goal.
 //! - `STILLROOM_PLAN_RUN=1`: if the draft is clean, run it with `file` = the OAuth sample and any
 //!   `STILLROOM_INPUT_<name>` values, and print the outputs.
 
@@ -19,6 +25,58 @@ use stillroom_models::ollama::Ollama;
 use stillroom_models::{ModelRouter, Provider};
 
 const SAMPLE: &str = include_str!("sample_oauth.md");
+
+/// The raw answers of a plan, split out of its transcript: one `(phase, text)` per model call, in
+/// order. The transcript heads each call with `── call N (strip|steps|fix) ──`; a thinking model's
+/// text is shown first under `(thinking)`, the answer proper after `(answer)`.
+fn raw_answers(transcript: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in transcript.split("── call ").skip(1) {
+        let (head, body) = part.split_once('\n').unwrap_or((part, ""));
+        let phase = head.split('(').nth(1).and_then(|p| p.split(')').next()).unwrap_or("?").to_string();
+        let answer = body.rsplit("(answer)\n").next().unwrap_or(body);
+        out.push((phase, answer.to_string()));
+    }
+    out
+}
+
+/// The JSON object in a model's answer, as `extract_json` in the planner finds it.
+fn json_in(text: &str) -> Option<serde_json::Value> {
+    let t = text.trim();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+        return Some(v);
+    }
+    let (start, end) = (t.find('{')?, t.rfind('}')?);
+    serde_json::from_str(&t[start..=end]).ok()
+}
+
+/// A planner-answer fixture in the compat tests' shape: `about`, `request`, `strip` (the first
+/// call's answer, when there was a strip call), `answer` (the last composing or fixing answer,
+/// null when every stage was ready-made), and `problems` (what the merge of those two reports,
+/// computed by replaying them through `draft_from_answers`).
+fn answers_fixture(req: &PlanRequest, out: &stillroom_core::PlanOutcome, lib: &stillroom_core::StageLibrary) -> serde_json::Value {
+    let calls = raw_answers(&out.transcript);
+    let strip = calls.iter().find(|(p, _)| p == "strip").and_then(|(_, t)| json_in(t));
+    let answer = calls.iter().rev().find(|(p, _)| p == "steps" || p == "fix").and_then(|(_, t)| json_in(t));
+    let problems = stillroom_core::planner::draft_from_answers(req, strip.as_ref().map(|v| v.to_string()).as_deref(), answer.as_ref().map(|v| v.to_string()).as_deref(), Some(lib))
+        .map(|(_, problems)| problems)
+        .unwrap_or_else(|e| vec![format!("the recorded answers do not merge: {e}")]);
+    let fixes = calls.iter().filter(|(p, _)| p == "fix").count();
+    serde_json::json!({
+        "about": format!(
+            "Recorded live from {} in {} s, {} model call(s){}: the goal \"{}\".",
+            out.model_id,
+            out.duration_ms / 1000,
+            calls.len(),
+            if fixes > 0 { format!(" ({fixes} fix round(s); the last answer is the one kept)") } else { String::new() },
+            req.goal
+        ),
+        "request": req,
+        "strip": strip,
+        "answer": answer,
+        "problems": problems,
+    })
+}
 
 #[tokio::test]
 #[ignore]
@@ -46,9 +104,9 @@ async fn plan_a_recipe_against_local_ollama() {
     let req = PlanRequest {
         goal,
         material: std::env::var("STILLROOM_MATERIAL").ok(),
-        id: "planned".into(),
-        name: "Planned recipe".into(),
-        icon: Some("notes".into()),
+        id: std::env::var("STILLROOM_PLAN_ID").unwrap_or_else(|_| "planned".into()),
+        name: std::env::var("STILLROOM_PLAN_NAME").unwrap_or_else(|_| "Planned recipe".into()),
+        icon: Some(std::env::var("STILLROOM_PLAN_ICON").unwrap_or_else(|_| "notes".into())),
     };
     let tools = ToolRegistry::builtin();
     let planner = Planner {
@@ -86,6 +144,17 @@ async fn plan_a_recipe_against_local_ollama() {
     eprintln!("--- recipe.yaml ---\n{}", serde_json::to_string_pretty(&out.draft.yaml).unwrap());
     for (path, text) in &out.draft.files {
         eprintln!("--- {path} ---\n{text}\n");
+    }
+
+    if let Ok(d) = std::env::var("STILLROOM_PLAN_ANSWERS_OUT") {
+        let dir = std::path::PathBuf::from(d);
+        std::fs::create_dir_all(&dir).expect("the answers folder");
+        let lib = planner.library.as_deref().expect("stage library");
+        let fixture = answers_fixture(&req, &out, lib);
+        let path = dir.join(format!("{}.json", req.id));
+        std::fs::write(&path, serde_json::to_string_pretty(&fixture).unwrap() + "\n").unwrap();
+        std::fs::write(dir.join(format!("{}.transcript.md", req.id)), &out.transcript).unwrap();
+        eprintln!("wrote the planner-answer fixture to {}", path.display());
     }
 
     let dir = match std::env::var("STILLROOM_PLAN_OUT") {

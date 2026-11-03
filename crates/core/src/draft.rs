@@ -783,20 +783,18 @@ mod tests {
 
     #[test]
     fn builtin_recipes_read_clean() {
-        for name in ["summarize-file", "learning-kit", "research-brief", "daily-news-log", "ask-your-documents", "batch-briefing"] {
+        for name in ["summarize-file", "learning-kit", "research-brief", "daily-news-log", "ask-your-documents", "batch-briefing", "inbox-triage"] {
             let d = Draft::read(&repo_recipes().join(name)).unwrap();
             assert_eq!(d.problems(&tools()), Vec::<String>::new(), "{name}");
         }
-        // Inbox Triage is a sample now, not a built-in, but it still has to read clean.
-        let d = Draft::read(&repo_recipes().join("../samples/inbox-triage")).unwrap();
-        assert_eq!(d.problems(&tools()), Vec::<String>::new(), "inbox-triage");
+        let d = Draft::read(&repo_recipes().join("inbox-triage")).unwrap();
         assert!(d.files.contains_key("prompts/classify.md"));
         assert!(d.files.contains_key("schemas/draft.json"));
     }
 
     #[test]
     fn reports_problems_in_words() {
-        let mut d = Draft::read(&repo_recipes().join("../samples/inbox-triage")).unwrap();
+        let mut d = Draft::read(&repo_recipes().join("inbox-triage")).unwrap();
         let steps = d.yaml["steps"].as_array_mut().unwrap();
         // table reads from a step that is not there; classify (inside the loop) uses the wrong item name.
         steps[2]["inputs"]["items"] = Value::String("${steps.nope.output}".into());

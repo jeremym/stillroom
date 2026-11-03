@@ -19,7 +19,7 @@ Goal-first, local-first AI workflow studio. Tauri 2 + React + TypeScript shell o
 - Source of truth for validity is the Rust side: `schemas/recipe.schema.json` plus `core::draft::Draft::check`. Do not add a second validator in TypeScript.
 - Tools declare `cacheable` (output follows from inputs) and `has_side_effects` (acts on the world). A continued run re-observes but never repeats an action; keep that true when adding tools.
 - Before committing: `cargo test --workspace`, `pnpm test`, `pnpm exec tsc --noEmit`, `pnpm build`. A milestone also needs a live run against Ollama and a screenshot of the app. Grep for `TEMP` to catch leftover hooks.
-- Inbox Triage is a sample (`samples/inbox-triage`), not a built-in. Run it against a copy of `samples/`, never the repo folder.
+- Inbox Triage is a built-in (`recipes/inbox-triage`) that works on emails saved to a folder (`docs/mail-rule.md`). Its fixture folders are `samples/` (inbox, archive, outbox); run it against a copy of them, never the repo folder.
 
 ## Durable memory
 

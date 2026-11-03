@@ -1,0 +1,26 @@
+{
+  "about": "Recorded live from ollama:qwen3.8:27b-mlx in 7 s, 1 model call(s): the goal \"Read the links I give it about a question and write a cited brief.\".",
+  "request": {
+    "goal": "Read the links I give it about a question and write a cited brief.",
+    "material": null,
+    "id": "cited-brief",
+    "name": "Cited brief",
+    "icon": "globe"
+  },
+  "strip": {
+    "stages": [
+      {
+        "use": "read_links",
+        "name": "Read the links",
+        "why": "Fetch each link you give and pull out what the page says about your question, keeping exact quotes and noting any page that fails to load."
+      },
+      {
+        "use": "write_brief",
+        "name": "Write the brief",
+        "why": "Turn what the pages said into one brief that answers your question and cites every point by link and page, so you can check each claim back to its source."
+      }
+    ]
+  },
+  "answer": null,
+  "problems": []
+}

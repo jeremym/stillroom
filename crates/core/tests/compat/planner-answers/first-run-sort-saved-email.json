@@ -1,0 +1,306 @@
+{
+  "about": "Recorded live from ollama:qwen3.8:27b-mlx in 254 s, 2 model call(s): the goal \"When a saved email lands in a folder, sort it, file it, and draft a reply for me to send.\".",
+  "request": {
+    "goal": "When a saved email lands in a folder, sort it, file it, and draft a reply for me to send.",
+    "material": null,
+    "id": "sort-saved-email",
+    "name": "Sort saved email",
+    "icon": "inbox"
+  },
+  "strip": {
+    "stages": [
+      {
+        "name": "Read emails",
+        "why": "Read every .eml file in the folder you point to, pulling out sender, subject, date, and body so later stages can work with the content."
+      },
+      {
+        "name": "Sort and file",
+        "why": "Sort the emails by priority and category, then decide which subfolder each belongs in, so nothing important sits unsorted."
+      },
+      {
+        "name": "Draft replies",
+        "why": "For each email that calls for a response, write a draft reply as a file you can open and send yourself; nothing is ever sent automatically."
+      },
+      {
+        "name": "Deliver results",
+        "why": "Write the sorted list, filing decisions, and every draft reply into a folder you choose, so you can review and act at your own pace."
+      }
+    ]
+  },
+  "answer": {
+    "recipe": {
+      "id": "sort-saved-email",
+      "name": "Sort saved email",
+      "description": "Reads saved .eml files from a folder, sorts them by priority and category, files each into a suggested subfolder, and drafts replies for emails that need one. Everything is written to a folder you choose for review.",
+      "inputs": {
+        "email_folder": {
+          "type": "directory",
+          "label": "Folder with saved emails",
+          "description": "The folder that holds the .eml files to sort and reply to.",
+          "required": true
+        },
+        "output_folder": {
+          "type": "directory",
+          "label": "Where to write results",
+          "description": "Folder for the sorted list, filing decisions, and draft reply files.",
+          "required": true
+        }
+      },
+      "modelSlots": {
+        "sorter": {
+          "requires": [
+            "text",
+            "structured_output"
+          ],
+          "preference": "accuracy",
+          "description": "Ranks emails by priority, assigns a category and subfolder, and decides whether a reply is needed."
+        },
+        "writer": {
+          "requires": [
+            "text"
+          ],
+          "preference": "accuracy",
+          "description": "Drafts a reply for each email that needs one and writes the final summary."
+        }
+      },
+      "permissions": {
+        "filesystem": {
+          "read": [
+            "input"
+          ],
+          "write": [
+            "${inputs.output_folder}"
+          ]
+        }
+      },
+      "steps": [
+        {
+          "id": "list_emails",
+          "kind": "tool",
+          "name": "List .eml files",
+          "tool": "fs.list",
+          "inputs": {
+            "path": "${inputs.email_folder}",
+            "extensions": [
+              "eml"
+            ]
+          }
+        },
+        {
+          "id": "parse_emails",
+          "kind": "map",
+          "name": "Parse each email",
+          "over": "${steps.list_emails.output.entries}",
+          "concurrency": 5,
+          "steps": [
+            {
+              "id": "parse_one",
+              "kind": "tool",
+              "name": "Parse .eml",
+              "tool": "email.parse",
+              "inputs": {
+                "path": "${item.path}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "sort_emails",
+          "kind": "model",
+          "name": "Sort and categorize",
+          "slot": "sorter",
+          "prompt": "prompts/sort.md",
+          "inputs": {
+            "emails": "${steps.parse_emails.output}"
+          },
+          "outputSchema": "schemas/sort.json",
+          "params": {
+            "temperature": 0.2
+          }
+        },
+        {
+          "id": "make_table",
+          "kind": "tool",
+          "name": "Build the sorted table",
+          "tool": "list.table",
+          "inputs": {
+            "items": "${steps.sort_emails.output.emails}",
+            "columns": {
+              "From": "from",
+              "Subject": "subject",
+              "Date": "date",
+              "Priority": "priority",
+              "Category": "category",
+              "Subfolder": "subfolder",
+              "Needs reply": "needs_reply",
+              "Reason": "reason"
+            }
+          }
+        },
+        {
+          "id": "filter_replies",
+          "kind": "tool",
+          "name": "Keep emails that need a reply",
+          "tool": "list.filter",
+          "inputs": {
+            "items": "${steps.sort_emails.output.emails}",
+            "path": "needs_reply"
+          }
+        },
+        {
+          "id": "write_drafts",
+          "kind": "map",
+          "name": "Draft and save replies",
+          "over": "${steps.filter_replies.output.items}",
+          "concurrency": 3,
+          "steps": [
+            {
+              "id": "draft_reply",
+              "kind": "model",
+              "name": "Write the reply",
+              "slot": "writer",
+              "prompt": "prompts/draft_reply.md",
+              "inputs": {
+                "email": "${item}"
+              },
+              "outputSchema": "schemas/reply.json",
+              "params": {
+                "temperature": 0.3
+              }
+            },
+            {
+              "id": "save_draft",
+              "kind": "tool",
+              "name": "Save as .eml draft",
+              "tool": "email.write_draft",
+              "inputs": {
+                "dir": "${inputs.output_folder}",
+                "to": "${item.from}",
+                "subject": "${steps.draft_reply.output.subject}",
+                "body": "${steps.draft_reply.output.body}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "compose_summary",
+          "kind": "model",
+          "name": "Write the summary",
+          "slot": "writer",
+          "prompt": "prompts/summary.md",
+          "inputs": {
+            "sorted_emails": "${steps.sort_emails.output}",
+            "drafts": "${steps.write_drafts.output}"
+          },
+          "params": {
+            "temperature": 0.2
+          }
+        },
+        {
+          "id": "save_summary",
+          "kind": "tool",
+          "name": "Save summary to folder",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.output_folder}",
+            "name": "inbox-summary.md",
+            "text": "${steps.compose_summary.output}"
+          }
+        }
+      ],
+      "outputs": {
+        "sorted_list": {
+          "from": "${steps.make_table.output.rows}",
+          "type": "table",
+          "label": "Sorted inbox",
+          "description": "Every email ranked by priority with its category, suggested subfolder, and whether a reply was drafted."
+        },
+        "drafts": {
+          "from": "${steps.write_drafts.output}",
+          "type": "files",
+          "label": "Draft replies",
+          "description": "One .eml draft file per email that needed a response, ready to open in your mail app."
+        },
+        "summary": {
+          "from": "${steps.save_summary.output}",
+          "type": "file",
+          "label": "Inbox summary",
+          "description": "A one-page Markdown overview of the sorted inbox, filing decisions, and which drafts were written."
+        }
+      },
+      "stages": [
+        {
+          "id": "read_emails",
+          "name": "Read emails",
+          "why": "Every .eml file in the folder you point to is read and parsed into sender, subject, date, and body, so later stages work from clean structured data.",
+          "inputs": [
+            "email_folder"
+          ],
+          "steps": [
+            "list_emails",
+            "parse_emails"
+          ]
+        },
+        {
+          "id": "sort_and_file",
+          "name": "Sort and file",
+          "why": "Each email is ranked by priority, given a category and a suggested subfolder, and marked whether it needs a reply, so nothing important sits unsorted.",
+          "steps": [
+            "sort_emails",
+            "make_table"
+          ],
+          "outputs": [
+            "sorted_list"
+          ]
+        },
+        {
+          "id": "draft_replies",
+          "name": "Draft replies",
+          "why": "For every email flagged as needing a response, a draft reply is written and saved as a .eml file you can open in your mail app; nothing is ever sent automatically.",
+          "steps": [
+            "filter_replies",
+            "write_drafts"
+          ],
+          "outputs": [
+            "drafts"
+          ]
+        },
+        {
+          "id": "deliver_results",
+          "name": "Deliver results",
+          "why": "A one-page Markdown summary of the sorted inbox and all filing decisions is written into the folder you choose, alongside the draft replies, so you can review and act at your own pace.",
+          "steps": [
+            "compose_summary",
+            "save_summary"
+          ],
+          "outputs": [
+            "summary"
+          ]
+        }
+      ]
+    },
+    "files": [
+      {
+        "path": "prompts/sort.md",
+        "text": "You are an email sorting assistant. You receive a list of parsed emails. Each entry in the list has a `parse_one` object containing the email's `from`, `to`, `subject`, `date`, and `text` (the body).\n\nFor every email, decide:\n\n1. **Priority** – `high`, `medium`, or `low`. High means time-sensitive, from a known contact, or about a pending commitment. Low means newsletters, notifications, or FYI-only messages.\n2. **Category** – a short label such as `work`, `personal`, `finance`, `health`, `news`, `social`, `admin`, or another fitting label.\n3. **Subfolder** – a concrete subfolder name (e.g. `Work/Projects`, `Finance/Bills`, `Personal/Travel`) where this email should be filed.\n4. **Needs reply** – `true` if the email asks a question, requests action, or expects a response; `false` otherwise.\n5. **Reason** – one plain sentence explaining the sort decision.\n\nProduce a JSON object matching the schema exactly. Include every email in the input; do not skip any. Copy the `from`, `subject`, `date`, and `body` (from `parse_one.text`) fields verbatim into each output entry. Give each entry a short `id` like `email-1`, `email-2`, etc. Do not add commentary outside the JSON."
+      },
+      {
+        "path": "prompts/draft_reply.md",
+        "text": "You are a helpful assistant that drafts email replies. You receive one email as a JSON object with fields `from`, `subject`, `date`, `body`, `priority`, `category`, and `reason`.\n\nWrite a concise, professional reply that:\n\n- Addresses the sender by name if it appears in the `from` field.\n- Responds directly to the question or request in the body.\n- Matches the tone of the original email (formal or casual).\n- Is no longer than it needs to be; skip filler.\n- Does not invent facts, dates, or commitments that are not in the original email. If you need information you do not have, say so and ask for it.\n\nProduce a JSON object with exactly two fields:\n\n- `subject`: the reply subject line, starting with `Re: ` followed by the original subject.\n- `body`: the full reply text, plain text, no Markdown.\n\nDo not add anything outside the JSON."
+      },
+      {
+        "path": "prompts/summary.md",
+        "text": "You are writing a one-page inbox summary in Markdown. You receive two inputs:\n\n- `sorted_emails`: a JSON object with an `emails` array. Each entry has `from`, `subject`, `date`, `priority`, `category`, `subfolder`, `needs_reply`, and `reason`.\n- `drafts`: a list of draft results (one per email that needed a reply). Each entry has a `save_draft` object with a `path` to the saved .eml file.\n\nWrite a Markdown document with these sections:\n\n1. **Overview** – one or two sentences: how many emails, how many high-priority, how many need a reply.\n2. **High priority** – a bullet list of high-priority emails with sender, subject, and the reason.\n3. **Filing decisions** – a Markdown table with columns: From, Subject, Priority, Category, Subfolder, Needs reply.\n4. **Drafts written** – a bullet list of the draft .eml file paths, or \"No drafts needed\" if the list is empty.\n\nKeep the whole document under 600 words. Do not add a preamble or closing remark outside the sections."
+      },
+      {
+        "path": "schemas/sort.json",
+        "text": "{\n  \"type\": \"object\",\n  \"required\": [\"emails\"],\n  \"properties\": {\n    \"emails\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"required\": [\"id\", \"from\", \"subject\", \"date\", \"body\", \"priority\", \"category\", \"subfolder\", \"needs_reply\", \"reason\"],\n        \"properties\": {\n          \"id\": { \"type\": \"string\", \"description\": \"Short unique id like email-1\" },\n          \"from\": { \"type\": \"string\", \"description\": \"Sender name and address\" },\n          \"subject\": { \"type\": \"string\", \"description\": \"Email subject line\" },\n          \"date\": { \"type\": \"string\", \"description\": \"Date the email was sent\" },\n          \"body\": { \"type\": \"string\", \"description\": \"Plain-text body of the email\" },\n          \"priority\": { \"type\": \"string\", \"enum\": [\"high\", \"medium\", \"low\"], \"description\": \"Urgency level\" },\n          \"category\": { \"type\": \"string\", \"description\": \"Short category label\" },\n          \"subfolder\": { \"type\": \"string\", \"description\": \"Suggested subfolder path\" },\n          \"needs_reply\": { \"type\": \"boolean\", \"description\": \"Whether the email calls for a response\" },\n          \"reason\": { \"type\": \"string\", \"description\": \"One sentence explaining the sort decision\" }\n        },\n        \"additionalProperties\": false\n      }\n    }\n  },\n  \"additionalProperties\": false\n}"
+      },
+      {
+        "path": "schemas/reply.json",
+        "text": "{\n  \"type\": \"object\",\n  \"required\": [\"subject\", \"body\"],\n  \"properties\": {\n    \"subject\": { \"type\": \"string\", \"description\": \"Reply subject line starting with Re: \" },\n    \"body\": { \"type\": \"string\", \"description\": \"Full reply text in plain text\" }\n  },\n  \"additionalProperties\": false\n}"
+      }
+    ]
+  },
+  "problems": []
+}

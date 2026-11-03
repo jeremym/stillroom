@@ -274,13 +274,28 @@ pub fn answer_schema() -> Value {
             step_props.entry(k.clone()).or_insert_with(|| if keep_as_is { v.clone() } else { json!({}) });
         }
     };
-    add(defs["stepBase"].get("properties"));
+    // Property order matters: a constrained decoder (Ollama's) makes the model write an object's
+    // properties in the order the schema lists them, so once `tool` is written, every property
+    // listed before it is out of reach. The keys that say what a step is come first (id, kind,
+    // name, description, then tool, slot, prompt, over, items, …), `inputs` and the rest of the
+    // common keys after them, and `params` last, since a model step writes it after its inputs.
+    let base = defs["stepBase"].get("properties").cloned().unwrap_or(Value::Null);
+    for k in ["id", "kind", "name", "description"] {
+        add(Some(&json!({ k: base[k] })));
+    }
     for kind in ["toolStep", "modelStep", "agentStep", "recipeStep", "branchStep", "mapStep", "reviewStep"] {
         for part in defs[kind]["allOf"].as_array().into_iter().flatten() {
-            add(part.get("properties"));
+            if let Some(props) = part.get("properties").and_then(Value::as_object) {
+                let without_params: serde_json::Map<String, Value> = props.iter().filter(|(k, _)| k.as_str() != "params").map(|(k, v)| (k.clone(), v.clone())).collect();
+                add(Some(&Value::Object(without_params)));
+            }
         }
     }
+    add(defs["stepBase"].get("properties"));
+    add(Some(&json!({ "params": {} })));
+    // The same for a stage: `use` first, so `{ "use": "<id>", "name": …, "why": … }` can be written.
     let mut stage_props = serde_json::Map::new();
+    stage_props.insert("use".into(), json!({ "type": "string", "description": "The id of a ready-made stage to use instead of steps" }));
     for (k, v) in defs["stage"]["properties"].as_object().into_iter().flatten() {
         let v = match k.as_str() {
             "keep" => json!({ "type": "object", "properties": { "refresh": v["properties"]["refresh"].clone() } }),
@@ -290,7 +305,6 @@ pub fn answer_schema() -> Value {
         };
         stage_props.insert(k.clone(), v);
     }
-    stage_props.insert("use".into(), json!({ "type": "string", "description": "The id of a ready-made stage to use instead of steps" }));
     json!({
         "type": "object",
         "required": ["recipe", "files"],
@@ -639,9 +653,22 @@ fn merge_partial(skeleton: &mut Draft, partial: &Draft, lib: &crate::stagelib::S
         }
     }
     // The model sometimes names a ready-made stage where it means the step that stage returns.
+    // Only for stages that are in this strip, and never when the answer has a step of that id:
+    // a custom step may be called `write_brief` in a recipe that has no write_brief stage.
+    let in_strip: Vec<String> = base
+        .get("stages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|st| st.get("use").or_else(|| st.get("id")).and_then(Value::as_str))
+        .filter(|id| lib.get(id).is_some())
+        .map(String::from)
+        .collect();
+    let defined: Vec<String> = base.get("steps").and_then(Value::as_array).into_iter().flatten().filter_map(|s| s.get("id").and_then(Value::as_str)).map(String::from).collect();
     let aliases: Vec<(String, String)> = lib
         .stages
         .iter()
+        .filter(|def| in_strip.contains(&def.id) && !defined.contains(&def.id))
         .filter_map(|def| {
             let first = def.returns.iter().find_map(|r| r.split("${steps.").nth(1).and_then(|s| s.split(['.', '}']).next()).map(String::from))?;
             Some((format!("${{steps.{}.", def.id), format!("${{steps.{first}.")))
@@ -1314,6 +1341,27 @@ mod tests {
         let out = p.plan(&req(), None).await.unwrap();
         assert_eq!(out.problems, vec!["The draft asked to reach news.example, which a recipe may not do on its own. Removed."]);
         assert_eq!(out.draft.yaml["permissions"]["network"], json!(["input"]), "what read_links brought");
+    }
+
+    /// A constrained decoder writes an object's properties in the schema's order, so a property
+    /// listed before `tool` cannot be written after it. Live, this made every tool step come out
+    /// as `{ id, kind, tool, params }` with no `inputs` and no `name`.
+    #[test]
+    fn the_answer_schema_puts_what_a_step_is_before_its_inputs() {
+        let s = answer_schema();
+        let keys: Vec<String> = s["properties"]["recipe"]["properties"]["steps"]["items"]["properties"].as_object().unwrap().keys().cloned().collect();
+        let pos = |k: &str| keys.iter().position(|x| x == k).unwrap_or_else(|| panic!("{k} missing from {keys:?}"));
+        assert_eq!(keys[..4], ["id", "kind", "name", "description"]);
+        for k in ["tool", "slot", "prompt", "over", "concurrency", "steps", "items", "title", "show", "allowedTools"] {
+            assert!(pos(k) < pos("inputs"), "{k} must come before inputs: {keys:?}");
+        }
+        assert_eq!(keys.last().map(String::as_str), Some("params"), "params is written after a model step's inputs");
+        assert_eq!(keys.iter().filter(|k| *k == "params").count(), 1);
+        let stage_keys: Vec<String> = s["properties"]["recipe"]["properties"]["stages"]["items"]["properties"].as_object().unwrap().keys().cloned().collect();
+        assert_eq!(stage_keys[0], "use");
+        let lib = crate::stagelib::StageLibrary::load(&crate::stagelib::repo_stages_dir()).unwrap();
+        let strip_keys: Vec<String> = strip_schema(&lib)["properties"]["stages"]["items"]["properties"].as_object().unwrap().keys().cloned().collect();
+        assert_eq!(strip_keys[0], "use");
     }
 
     #[test]

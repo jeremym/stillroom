@@ -1,0 +1,26 @@
+{
+  "about": "Recorded live from ollama:qwen3.8:27b-mlx in 20 s, 1 model call(s): the goal \"Turn a document into short notes, study cards, and a quiz.\".",
+  "request": {
+    "goal": "Turn a document into short notes, study cards, and a quiz.",
+    "material": null,
+    "id": "document-to-notes",
+    "name": "Notes, cards, and a quiz",
+    "icon": "learn"
+  },
+  "strip": {
+    "stages": [
+      {
+        "use": "summarize_file",
+        "name": "Short notes",
+        "why": "Reads the document and writes a one-sentence overview followed by the main points in the file's own order (short notes)."
+      },
+      {
+        "use": "study_cards",
+        "name": "Cards and quiz",
+        "why": "Turns the notes or the document text into flashcards and a short quiz with answers, so the material can be studied and tested."
+      }
+    ]
+  },
+  "answer": null,
+  "problems": []
+}

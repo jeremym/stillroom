@@ -3,11 +3,11 @@ id: inbox-triage
 name: Inbox Triage
 icon: inbox
 version: 0.1.0
-description: Reads every saved email (.eml) in a folder, sorts each one, drafts replies to the ones that need an answer, files each email into your archive, and holds the replies for your approval before any draft is written out.
+description: Works on emails saved to a folder as files (.eml; a Mail rule can save them for you, see docs/mail-rule.md). Sorts each one, drafts replies to the ones that need an answer, files each email into your archive, and holds the replies for your approval before any draft is written out. Nothing is sent.
 author:
   name: Stillroom
 license: MIT
-tags: [sample, email, agent]
+tags: [built-in, email, agent]
 
 inputs:
   inbox:

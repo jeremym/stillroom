@@ -203,8 +203,9 @@ pub struct Deprecation {
 }
 
 /// The table, in the order one `repair_all` pass needs: bare step references first (so the
-/// placement below sees `${steps.x.output}` and knows what a step reads), then a step in no
-/// stage finds one, then a stage that writes a keep declares it.
+/// placement below sees `${steps.x.output}` and knows what a step reads), then a tool step's
+/// parameters move under `inputs` (so placement sees what it reads), then a step in no stage
+/// finds one, then a stage that writes a keep declares it.
 pub const DEPRECATIONS: &[Deprecation] = &[
     Deprecation {
         id: "step_ref",
@@ -214,6 +215,15 @@ pub const DEPRECATIONS: &[Deprecation] = &[
         fix_label: "Point at the step's result",
         detect: detect_bare_step_refs,
         rewrite: rewrite_bare_step_refs,
+    },
+    Deprecation {
+        id: "tool_inputs",
+        path: "/steps/*/params",
+        since: "0.3.2",
+        replaced_by: "a tool step's parameters are its `inputs`; `params` is a model step's temperature and thinking",
+        fix_label: "Move them under inputs",
+        detect: detect_tool_params,
+        rewrite: tool_params_to_inputs,
     },
     Deprecation {
         id: "place_step",
@@ -512,6 +522,66 @@ fn place_steps(yaml: &mut Value, target: Option<&str>) -> bool {
 }
 
 // ---------------------------------------------------------------------------------------------
+// tool_inputs: a tool step's parameters live under `inputs`, not `params`
+
+/// Whether a tool step put its parameters under `params` (and has no inputs of its own). A tool
+/// step like that checks clean and then runs the tool with nothing. Models write it because the
+/// tool list calls them parameters; the fix is a rename.
+fn tool_params_misplaced(step: &Value) -> bool {
+    step.get("kind").and_then(Value::as_str) == Some("tool")
+        && step.get("params").is_some_and(|p| p.as_object().is_some_and(|o| !o.is_empty()))
+        && !step.get("inputs").is_some_and(|i| i.as_object().is_some_and(|o| !o.is_empty()))
+}
+
+/// Every tool step with misplaced parameters: (target, Note). Inner steps are `<map>/<inner>`.
+fn detect_tool_params(yaml: &Value) -> Vec<Detection> {
+    let mut out = Vec::new();
+    for step in yaml.get("steps").and_then(Value::as_array).into_iter().flatten() {
+        if tool_params_misplaced(step) {
+            out.push((Some(step_id(step).to_string()), format!("“{}” puts its parameters under params; a tool step takes them under inputs.", step_label(step))));
+        }
+        for inner in step.get("steps").and_then(Value::as_array).into_iter().flatten() {
+            if tool_params_misplaced(inner) {
+                out.push((Some(format!("{}/{}", step_id(step), step_id(inner))), format!("“{}” puts its parameters under params; a tool step takes them under inputs.", step_label(inner))));
+            }
+        }
+    }
+    out
+}
+
+/// Rename `params` to `inputs` on the tool step named (or on every one that needs it).
+fn tool_params_to_inputs(yaml: &mut Value, target: Option<&str>) -> bool {
+    fn rename(step: &mut Value) -> bool {
+        if !tool_params_misplaced(step) {
+            return false;
+        }
+        let Some(o) = step.as_object_mut() else { return false };
+        if let Some(p) = o.remove("params") {
+            o.insert("inputs".into(), p);
+            return true;
+        }
+        false
+    }
+    let mut changed = false;
+    let Some(steps) = yaml.get_mut("steps").and_then(Value::as_array_mut) else { return false };
+    for step in steps.iter_mut() {
+        let outer = step_id(step).to_string();
+        if target.is_none_or(|t| t == outer) {
+            changed |= rename(step);
+        }
+        if let Some(inner_steps) = step.get_mut("steps").and_then(Value::as_array_mut) {
+            for inner in inner_steps.iter_mut() {
+                let path = format!("{outer}/{}", step_id(inner));
+                if target.is_none_or(|t| t == path) {
+                    changed |= rename(inner);
+                }
+            }
+        }
+    }
+    changed
+}
+
+// ---------------------------------------------------------------------------------------------
 // declare_keep: a stage whose steps write a keep says so
 
 /// Tools that change a keep (a read of an earlier stage's keep is not a write).
@@ -584,6 +654,40 @@ fn declare_keeps(yaml: &mut Value, target: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tool_step_with_params_is_a_note_whose_fix_moves_them_under_inputs() {
+        let mut y = json!({
+            "schemaVersion": "0", "id": "x", "name": "X",
+            "steps": [
+                { "id": "list", "kind": "tool", "name": "Find the files", "tool": "fs.list", "params": { "path": "${inputs.folder}" } },
+                { "id": "each", "kind": "map", "over": "${steps.list.output.entries}", "steps": [
+                    { "id": "read", "kind": "tool", "tool": "file.read", "params": { "path": "${item.path}" } },
+                    { "id": "write", "kind": "model", "slot": "writer", "prompt": "prompts/w.md", "inputs": { "text": "${steps.read.output}" }, "params": { "temperature": 0.2 } }
+                ] },
+                { "id": "fine", "kind": "tool", "tool": "fs.write", "inputs": { "dir": "${inputs.out}", "name": "a.md", "text": "t" } }
+            ],
+            "outputs": {}
+        });
+        let notes = notes_for(&y);
+        let shape: Vec<(&str, &str)> = notes.iter().map(|n| (n.text.as_str(), n.fix.as_deref().unwrap_or(""))).collect();
+        assert_eq!(
+            shape,
+            [
+                ("“Find the files” puts its parameters under params; a tool step takes them under inputs.", "tool_inputs:list"),
+                ("“read” puts its parameters under params; a tool step takes them under inputs.", "tool_inputs:each/read"),
+            ]
+        );
+        assert_eq!(notes[0].fix_label.as_deref(), Some("Move them under inputs"));
+        assert!(apply_fix(&mut y, "tool_inputs:each/read").unwrap());
+        assert_eq!(y["steps"][1]["steps"][0]["inputs"], json!({ "path": "${item.path}" }));
+        assert!(y["steps"][1]["steps"][0].get("params").is_none());
+        assert_eq!(y["steps"][1]["steps"][1]["params"], json!({ "temperature": 0.2 }), "a model step keeps its params");
+        assert!(repair_all(&mut y));
+        assert_eq!(y["steps"][0]["inputs"], json!({ "path": "${inputs.folder}" }));
+        assert!(notes_for(&y).is_empty(), "{:?}", notes_for(&y));
+        assert!(!repair_all(&mut y), "nothing left to repair");
+    }
 
     #[test]
     fn a_current_recipe_passes_through_unchanged_and_idempotently() {
@@ -695,7 +799,7 @@ mod tests {
     #[test]
     fn the_table_runs_step_ref_then_place_step_then_declare_keep() {
         let ids: Vec<&str> = DEPRECATIONS.iter().map(|d| d.id).collect();
-        assert_eq!(ids, ["step_ref", "place_step", "declare_keep"], "one repair_all pass must see rewritten references before it places, and placed steps before it declares");
+        assert_eq!(ids, ["step_ref", "tool_inputs", "place_step", "declare_keep"], "one repair_all pass must see rewritten references and moved parameters before it places, and placed steps before it declares");
         assert!(DEPRECATIONS.iter().all(|d| !d.since.is_empty() && !d.fix_label.is_empty() && !d.replaced_by.is_empty()));
     }
 

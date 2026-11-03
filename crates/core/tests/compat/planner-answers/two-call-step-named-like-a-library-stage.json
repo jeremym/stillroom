@@ -1,0 +1,84 @@
+{
+  "about": "A custom step named write_brief, the id of a ready-made stage that is not in this strip: the alias rewrite (a stage id where the model meant the step it returns) must leave it alone, so the output's reference still points at the step that exists.",
+  "request": {
+    "goal": "Tell me what is new on the pages I follow and save the brief in my notes",
+    "id": "news-notes",
+    "name": "News to notes",
+    "icon": "globe"
+  },
+  "strip": {
+    "stages": [
+      {
+        "use": "watch_pages"
+      },
+      {
+        "use": "remember_seen"
+      },
+      {
+        "use": "brief_new"
+      },
+      {
+        "name": "Save to notes",
+        "why": "The brief is written into the folder you choose."
+      }
+    ]
+  },
+  "answer": {
+    "recipe": {
+      "id": "x",
+      "name": "X",
+      "description": "d",
+      "inputs": {
+        "notes_folder": {
+          "type": "directory",
+          "label": "Notes folder"
+        }
+      },
+      "modelSlots": {},
+      "permissions": {
+        "filesystem": {
+          "write": [
+            "${inputs.notes_folder}"
+          ]
+        }
+      },
+      "steps": [
+        {
+          "id": "write_brief",
+          "kind": "tool",
+          "name": "Save the brief",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.notes_folder}",
+            "name": "brief.md",
+            "text": "${steps.new_brief.output}"
+          }
+        }
+      ],
+      "outputs": {
+        "saved": {
+          "from": "${steps.write_brief.output}",
+          "type": "file",
+          "label": "Saved brief"
+        }
+      },
+      "stages": [
+        {
+          "id": "save_to_notes",
+          "name": "Save to notes",
+          "why": "The brief is written into the folder you choose.",
+          "inputs": [
+            "notes_folder"
+          ],
+          "steps": [
+            "write_brief"
+          ],
+          "outputs": [
+            "saved"
+          ]
+        }
+      ]
+    },
+    "files": []
+  }
+}

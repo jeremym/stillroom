@@ -1,0 +1,96 @@
+{
+  "about": "Recorded live from ollama:qwen3.8:27b-mlx in 51 s, 2 model call(s): the goal \"Every morning, gather news about <topic> and post a report to Notion.\".",
+  "request": {
+    "goal": "Every morning, gather news about <topic> and post a report to Notion.",
+    "material": null,
+    "id": "news-to-notion",
+    "name": "News to Notion",
+    "icon": "globe"
+  },
+  "strip": {
+    "stages": [
+      {
+        "use": "watch_pages",
+        "name": "Watch the News Pages",
+        "why": "Fetch each page you follow about your topic and list today's items — title, link, a line, and a date — as one tidy list."
+      },
+      {
+        "use": "remember_seen",
+        "name": "Remember What Was Seen",
+        "why": "Keep one record per item from earlier runs so the next stage can tell what is genuinely new this morning."
+      },
+      {
+        "use": "brief_new",
+        "name": "Write the Morning Brief",
+        "why": "Compare today's items with what earlier runs saw and write a short brief of only the new ones, plus a table of everything seen."
+      },
+      {
+        "name": "Save for Notion",
+        "why": "Notion has no door here, so the brief is saved as a Markdown file in the folder you choose, which Notion can import; the recipe runs when you start it, not on a clock."
+      }
+    ]
+  },
+  "answer": {
+    "recipe": {
+      "id": "news-to-notion",
+      "name": "News to Notion",
+      "description": "Gathers news about a topic from pages you follow, writes a brief of what is new, and saves it as a Markdown file in a folder you choose, which Notion can import.",
+      "inputs": {
+        "output_folder": {
+          "type": "directory",
+          "label": "Output folder",
+          "description": "Where the Markdown brief is saved so you can import it into Notion.",
+          "required": true
+        }
+      },
+      "modelSlots": {},
+      "permissions": {
+        "filesystem": {
+          "write": [
+            "${inputs.output_folder}"
+          ]
+        }
+      },
+      "steps": [
+        {
+          "id": "save_brief",
+          "kind": "tool",
+          "name": "Save the brief as Markdown",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.output_folder}",
+            "name": "news-brief.md",
+            "text": "${steps.new_brief.output}",
+            "overwrite": true
+          }
+        }
+      ],
+      "outputs": {
+        "saved_brief": {
+          "from": "${steps.save_brief.output}",
+          "type": "file",
+          "label": "Saved brief",
+          "description": "The Markdown file written to your chosen folder, ready to import into Notion."
+        }
+      },
+      "stages": [
+        {
+          "id": "save_for_notion",
+          "name": "Save for Notion",
+          "why": "Notion has no door here, so the brief is saved as a Markdown file in the folder you choose, which Notion can import; the recipe runs when you start it, not on a clock.",
+          "inputs": [
+            "output_folder"
+          ],
+          "steps": [
+            "save_brief"
+          ],
+          "outputs": [
+            "saved_brief"
+          ]
+        }
+      ]
+    },
+    "files": []
+  },
+  "problems": []
+}

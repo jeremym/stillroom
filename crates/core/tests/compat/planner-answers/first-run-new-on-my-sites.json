@@ -1,0 +1,96 @@
+{
+  "about": "Recorded live from ollama:qwen3.8:27b-mlx in 57 s, 2 model call(s): the goal \"Read the sites I follow about a topic, keep only what is new, and write me a short brief into my notes folder.\".",
+  "request": {
+    "goal": "Read the sites I follow about a topic, keep only what is new, and write me a short brief into my notes folder.",
+    "material": null,
+    "id": "new-on-my-sites",
+    "name": "What is new on my sites",
+    "icon": "globe"
+  },
+  "strip": {
+    "stages": [
+      {
+        "use": "watch_pages",
+        "name": "Watch my sites",
+        "why": "Fetches each page you follow about your topic and lists the items on it (title, link, one line, date) as one tidy list."
+      },
+      {
+        "use": "remember_seen",
+        "name": "Remember what I've seen",
+        "why": "Keeps a record of every item earlier runs found, so the next stage can tell what is new from what you already read."
+      },
+      {
+        "use": "brief_new",
+        "name": "What's new",
+        "why": "Compares today's items with what earlier runs saw and writes a short brief of only the new ones, plus a table of everything seen."
+      },
+      {
+        "name": "Save to my notes",
+        "why": "Writes the brief as a Markdown file into the notes folder you choose, so it lands where you keep your notes."
+      }
+    ]
+  },
+  "answer": {
+    "recipe": {
+      "id": "new-on-my-sites",
+      "name": "What is new on my sites",
+      "description": "Reads the sites you follow about a topic, keeps only what is new since the last run, and writes a short brief into your notes folder.",
+      "inputs": {
+        "notes_folder": {
+          "type": "directory",
+          "label": "Notes folder",
+          "description": "The folder where the brief is saved as a Markdown file.",
+          "required": true
+        }
+      },
+      "modelSlots": {},
+      "permissions": {
+        "filesystem": {
+          "write": [
+            "${inputs.notes_folder}"
+          ]
+        }
+      },
+      "steps": [
+        {
+          "id": "save_brief",
+          "kind": "tool",
+          "name": "Save the brief",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.notes_folder}",
+            "name": "brief.md",
+            "text": "${steps.new_brief.output}",
+            "overwrite": true
+          }
+        }
+      ],
+      "outputs": {
+        "saved_brief": {
+          "from": "${steps.save_brief.output.path}",
+          "type": "text",
+          "label": "Saved file",
+          "description": "The path of the brief written into your notes folder."
+        }
+      },
+      "stages": [
+        {
+          "id": "save_to_my_notes",
+          "name": "Save to my notes",
+          "why": "The brief is written as a Markdown file into the notes folder you choose, so it lands where you keep your notes.",
+          "inputs": [
+            "notes_folder"
+          ],
+          "steps": [
+            "save_brief"
+          ],
+          "outputs": [
+            "saved_brief"
+          ]
+        }
+      ]
+    },
+    "files": []
+  },
+  "problems": []
+}

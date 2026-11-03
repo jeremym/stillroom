@@ -1,4 +1,5 @@
-//! SQLite persistence for runs, folder watches, the shelf, and permission grants. One file, no server.
+//! SQLite persistence for runs, folder watches, schedules, the shelf, and permission grants. One
+//! file, no server.
 //!
 //! Runs are stored as a JSON document plus a few indexed columns for listing.
 //! Proper per-step and per-artifact tables arrive with Flow Studio.
@@ -6,6 +7,7 @@
 use crate::cache::{CachedStep, StepCache};
 use crate::consent::{Grant, GrantKind, Granted};
 use crate::recipe::{Refresh, Stage};
+use crate::schedule::Schedule;
 use crate::trace::{Run, RunStatus, RunSummary};
 use crate::watch::Watch;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -42,7 +44,7 @@ pub struct PlannerMeasurement {
 
 /// The store's on-disk layout version, kept in SQLite's `PRAGMA user_version`. Each step of the
 /// ladder in `init` brings a file up one version: one `CREATE`, `ALTER`, or backfill per step.
-pub const STORE_SCHEMA_VERSION: i64 = 3;
+pub const STORE_SCHEMA_VERSION: i64 = 4;
 
 /// The one recipe a fresh shelf starts with (the example, *Describe a document*).
 pub const EXAMPLE_RECIPE_ID: &str = "describe-document";
@@ -157,6 +159,8 @@ impl Store {
                 }
                 // Version 3: permission grants, one row per literal entry the user said yes to.
                 2 => self.create_v3()?,
+                // Version 4: schedules (a recipe at a time of day), shaped like watches.
+                3 => self.create_v4()?,
                 _ => break,
             }
             v += 1;
@@ -228,6 +232,20 @@ impl Store {
                 entry      TEXT NOT NULL,
                 granted_at TEXT NOT NULL,
                 PRIMARY KEY (recipe_id, kind, entry)
+            );
+            "#,
+        )?;
+        Ok(())
+    }
+
+    fn create_v4(&self) -> Result<(), StoreError> {
+        self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS schedules (
+                id         TEXT PRIMARY KEY,
+                recipe_id  TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                json       TEXT NOT NULL
             );
             "#,
         )?;
@@ -625,6 +643,31 @@ impl Store {
         Ok(n)
     }
 
+    pub fn list_schedules(&self) -> Result<Vec<Schedule>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT json FROM schedules ORDER BY created_at ASC")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    }
+
+    pub fn get_schedule(&self, id: &str) -> Result<Option<Schedule>, StoreError> {
+        let json: Option<String> =
+            self.conn.query_row("SELECT json FROM schedules WHERE id = ?1", params![id], |r| r.get(0)).optional()?;
+        Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
+    }
+
+    pub fn save_schedule(&self, s: &Schedule) -> Result<(), StoreError> {
+        self.conn.execute(
+            r#"INSERT INTO schedules (id, recipe_id, created_at, json) VALUES (?1, ?2, ?3, ?4)
+               ON CONFLICT(id) DO UPDATE SET json = excluded.json"#,
+            params![s.id, s.recipe_id, s.created_at.to_rfc3339(), serde_json::to_string(s)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_schedule(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(self.conn.execute("DELETE FROM schedules WHERE id = ?1", params![id])? > 0)
+    }
+
     pub fn count_by_status(&self, status: RunStatus) -> Result<i64, StoreError> {
         let s = serde_json::to_value(status)?.as_str().unwrap_or("").to_string();
         Ok(self.conn.query_row("SELECT COUNT(*) FROM runs WHERE status = ?1", params![s], |r| r.get(0))?)
@@ -923,5 +966,71 @@ mod tests {
         assert!(!store.get_watch("w1").unwrap().unwrap().enabled);
         assert!(store.delete_watch("w1").unwrap());
         assert!(store.list_watches().unwrap().is_empty());
+    }
+
+    fn bare_schedule(id: &str) -> Schedule {
+        Schedule {
+            id: id.into(),
+            recipe_id: "daily-news-log".into(),
+            recipe_name: "Daily News Log".into(),
+            inputs: IndexMap::from([("topic".to_string(), serde_json::Value::String("local rust".into()))]),
+            pins: Default::default(),
+            time: "07:30".into(),
+            days: vec!["mon".into(), "fri".into()],
+            enabled: true,
+            created_at: Utc::now(),
+            last_fired_at: None,
+            last_run_id: None,
+        }
+    }
+
+    #[test]
+    fn round_trips_schedules() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = bare_schedule("s1");
+        store.save_schedule(&s).unwrap();
+        assert_eq!(store.list_schedules().unwrap(), vec![s.clone()]);
+        s.enabled = false;
+        s.last_run_id = Some("r9".into());
+        s.last_fired_at = Some(Utc::now());
+        store.save_schedule(&s).unwrap();
+        let back = store.get_schedule("s1").unwrap().unwrap();
+        assert!(!back.enabled);
+        assert_eq!(back.last_run_id.as_deref(), Some("r9"));
+        assert_eq!(store.get_schedule("nope").unwrap(), None);
+        assert!(store.delete_schedule("s1").unwrap());
+        assert!(!store.delete_schedule("s1").unwrap());
+        assert!(store.list_schedules().unwrap().is_empty());
+    }
+
+    #[test]
+    fn climbing_from_version_three_keeps_watches_and_grants_and_adds_schedules() {
+        let path = std::env::temp_dir().join(format!("stillroom-store-v3-{}.db", uuid::Uuid::now_v7()));
+        {
+            let conn = Connection::open(&path).unwrap();
+            let v3 = Store { conn };
+            v3.create_v1().unwrap();
+            v3.create_v2().unwrap();
+            v3.create_v3().unwrap();
+            v3.conn.execute_batch("PRAGMA user_version = 3;").unwrap();
+            v3.save_watch(&Watch { id: "w".into(), recipe_id: "r".into(), recipe_name: "R".into(), input: "x".into(), folder: "/f".into(), inputs: IndexMap::new(), pins: Default::default(), enabled: true, settle_ms: 2000, created_at: Utc::now(), last_fired_at: None, last_run_id: None }).unwrap();
+            v3.grant("r", &[Grant::new(GrantKind::Read, "~/Documents")]).unwrap();
+            v3.set_shelf("r", ShelfState::Shelf).unwrap();
+            assert_eq!(v3.schema_version().unwrap(), 3);
+            assert!(v3.list_schedules().is_err(), "no schedules table yet");
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), STORE_SCHEMA_VERSION);
+        assert_eq!(store.list_watches().unwrap().len(), 1, "the watch is kept");
+        assert_eq!(store.grants("r").unwrap().len(), 1, "the grant is kept");
+        assert_eq!(store.shelf_state("r").unwrap(), Some(ShelfState::Shelf), "the shelf is kept");
+        assert!(store.list_schedules().unwrap().is_empty());
+        store.save_schedule(&bare_schedule("s")).unwrap();
+        assert_eq!(store.list_schedules().unwrap().len(), 1);
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), STORE_SCHEMA_VERSION, "opening again is a no-op");
+        assert_eq!(store.list_schedules().unwrap().len(), 1);
+        let _ = std::fs::remove_file(&path);
     }
 }

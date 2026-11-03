@@ -268,6 +268,14 @@ struct RunState<'a> {
     /// Top-level steps blocked behind a review that is still pending.
     held: BTreeSet<String>,
     needs_review: bool,
+    /// Optional inputs the user left empty this run (null, an empty string, an empty list).
+    nothing_given: BTreeSet<String>,
+    /// Steps skipped because an input they cannot do without was left empty, by step id, with
+    /// the input's name. Their output is null; a step that reads it is skipped the same way.
+    skipped: HashMap<String, String>,
+    /// Every top-level step skipped for that reason, loops included (a loop's output is `[]`,
+    /// so it does not carry the skip, but its stage still counts as given nothing).
+    nothing_given_steps: BTreeSet<String>,
 }
 
 /// Where a step runs: map-item bindings and the outputs of sibling steps in the same list.
@@ -375,6 +383,21 @@ fn value_paths(v: &Value) -> Vec<std::path::PathBuf> {
     }
 }
 
+/// Nothing given: null, an empty string, or an empty list.
+fn empty(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether an output's `from` reads a step skipped because an input was left empty.
+fn from_skipped_step(from: &str, skipped: &HashMap<String, String>) -> bool {
+    matches!(refs::parse_ref(from), Some(Ok(refs::Ref::Step { step, .. })) if skipped.contains_key(&step))
+}
+
 fn truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,
@@ -436,6 +459,55 @@ impl Executor {
             // tool it may call is itself cacheable.
             Step::Agent(a) => a.allowed_tools.iter().all(|t| self.tools.get(t).is_some_and(|tool| tool.cacheable())),
             _ => false,
+        }
+    }
+
+    /// The optional input a step has nothing from this run, when it cannot do without it: a
+    /// loop's `over`, a review's `items`, a tool parameter its description marks required, or
+    /// every input of a model or agent step (one empty section among others is dropped and the
+    /// step runs, as before). A reference to a step skipped for this reason carries it on
+    /// whatever the position, so a chain reading an empty folder is skipped as one.
+    fn nothing_given(&self, step: &Step, state: &RunState) -> Option<String> {
+        let inputs = Value::Object(step.inputs().clone().into_iter().collect());
+        let mut read = BTreeSet::new();
+        refs::step_refs(&inputs, &mut read);
+        match step {
+            Step::Map(m) => refs::step_refs(&Value::String(m.over.clone()), &mut read),
+            Step::Review(r) => refs::step_refs(&Value::String(r.items.clone()), &mut read),
+            _ => {}
+        }
+        if let Some(input) = read.iter().find_map(|s| state.skipped.get(s)) {
+            return Some(input.clone());
+        }
+        let empty_input = |v: &Value| -> Option<String> {
+            match v.as_str().and_then(refs::parse_ref) {
+                Some(Ok(refs::Ref::Input { name, .. })) if state.nothing_given.contains(&name) => Some(name),
+                _ => None,
+            }
+        };
+        match step {
+            Step::Map(m) => empty_input(&Value::String(m.over.clone())),
+            Step::Review(r) => empty_input(&Value::String(r.items.clone())),
+            Step::Tool(t) => {
+                let required: Option<Vec<String>> = self.tools.get(&t.tool).and_then(|x| x.describe()).map(|d| {
+                    d.parameters.get("required").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default()
+                });
+                t.inputs.iter().filter(|(k, _)| required.as_ref().is_none_or(|r| r.contains(*k))).find_map(|(_, v)| empty_input(v))
+            }
+            Step::Model(_) | Step::Agent(_) => {
+                let mut found = None;
+                for v in step.inputs().values() {
+                    if v.is_null() {
+                        continue;
+                    }
+                    match empty_input(v) {
+                        Some(name) => found.get_or_insert(name),
+                        None => return None,
+                    };
+                }
+                found
+            }
+            _ => None,
         }
     }
 
@@ -532,6 +604,15 @@ impl Executor {
             observe,
             held: BTreeSet::new(),
             needs_review: false,
+            nothing_given: req
+                .recipe
+                .optional_inputs()
+                .into_iter()
+                .filter(|(name, _)| req.inputs.get(name).is_none_or(empty))
+                .map(|(name, _)| name)
+                .collect(),
+            skipped: HashMap::new(),
+            nothing_given_steps: BTreeSet::new(),
         };
 
         // Run keeps: open each stage's keep, empty the ones being rebuilt, and decide which
@@ -611,7 +692,10 @@ impl Executor {
                     plan.reason = "edited".into();
                 }
             }
-            if let Some((out, inputs)) = kept.get(&sid) {
+            let scope = Scope { vars: &empty_vars, local: &empty_local, parent: None };
+            // A kept step given nothing this run is skipped like any other, not served from the
+            // keep: what the keep holds is from a run that had something.
+            if let Some((out, inputs)) = kept.get(&sid).filter(|_| self.nothing_given(step, &state).is_none()) {
                 // The stage is fresh: its output comes from the keep, nothing runs.
                 let now = Utc::now();
                 let rec = StepRecord {
@@ -645,7 +729,6 @@ impl Executor {
                 state.outputs.insert(sid, out.clone());
                 continue;
             }
-            let scope = Scope { vars: &empty_vars, local: &empty_local, parent: None };
             match self.run_one(step, sid.clone(), &scope, &mut state).await {
                 Ok(out) => {
                     state.outputs.insert(sid.clone(), out);
@@ -659,6 +742,11 @@ impl Executor {
                             // remember: a held step's null is not a result, and the next run
                             // would be served it. The stage builds once the review is decided.
                             if state.needs_review || st.steps.iter().any(|s| state.held.contains(s)) {
+                                continue;
+                            }
+                            // A stage given nothing this run was not built: the keep stays as it
+                            // was, neither rewritten nor journaled, for a run that has something.
+                            if st.steps.iter().all(|s| state.nothing_given_steps.contains(s)) {
                                 continue;
                             }
                             let outputs = st.steps.iter().filter_map(|s| state.outputs.get(s).map(|v| (s.clone(), v.clone()))).collect();
@@ -706,7 +794,7 @@ impl Executor {
                 Ok(v) => {
                     run.outputs.insert(name.clone(), v);
                 }
-                Err(_) if state.needs_review => {
+                Err(_) if state.needs_review || from_skipped_step(&spec.from, &state.skipped) => {
                     run.outputs.insert(name.clone(), Value::Null);
                 }
                 Err(source) => return finish(run, Err(ExecError::Output { name: name.clone(), source })),
@@ -781,6 +869,20 @@ impl Executor {
                         rec.skip_reason = Some(format!("{cond} was not set"));
                         return Ok(Value::Null);
                     }
+                }
+                // Nothing to work with: an optional input left empty, or a step skipped for one.
+                // A loop runs zero times and gives an empty list; anything else gives null and
+                // passes the reason on to whatever reads it.
+                if let Some(input) = self.nothing_given(step, state) {
+                    rec.skip_reason = Some(format!("nothing given for {input}"));
+                    if scope.parent.is_none() {
+                        state.nothing_given_steps.insert(step.id().to_string());
+                    }
+                    if matches!(step, Step::Map(_)) {
+                        return Ok(Value::Array(Vec::new()));
+                    }
+                    state.skipped.insert(step.id().to_string(), input);
+                    return Ok(Value::Null);
                 }
                 let raw = Value::Object(step.inputs().clone().into_iter().collect());
                 let inputs = refs::resolve_value(&raw, &ctx).map_err(|source| ExecError::Ref { step: record_id.clone(), source })?;
@@ -955,11 +1057,17 @@ impl Executor {
     ) -> Result<Value, ExecError> {
         let over = refs::resolve_value(&Value::String(m.over.clone()), ctx)
             .map_err(|source| ExecError::Ref { step: record_id.to_string(), source })?;
-        let items = over
-            .as_array()
-            .ok_or_else(|| ExecError::NotAnArray { step: record_id.to_string(), got: kind_of(&over) })?
-            .clone();
+        // Nothing (null, an empty string, an empty list) is a loop that runs zero times.
+        let items = match &over {
+            Value::Array(a) => a.clone(),
+            v if empty(v) => Vec::new(),
+            other => return Err(ExecError::NotAnArray { step: record_id.to_string(), got: kind_of(other) }),
+        };
         rec.inputs = serde_json::json!({ "over": over });
+        if items.is_empty() {
+            rec.skip_reason = Some("nothing to loop over".into());
+            return Ok(Value::Array(Vec::new()));
+        }
         let order = Self::order_steps(&m.steps, |_| BTreeSet::new())?;
         let mut results = Vec::with_capacity(items.len());
         for (i, item) in items.iter().enumerate() {
@@ -1648,6 +1756,257 @@ stages:
         let r = exec.run(plain, None).await;
         assert_eq!(r.status, RunStatus::Failed, "keep.put without a keep base has nowhere to write");
         std::fs::remove_dir_all(base).ok();
+    }
+
+    fn plain_request(yaml: &str, inputs: IndexMap<String, Value>) -> RunRequest {
+        RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
+            recipe: Recipe::from_yaml(yaml).unwrap(),
+            prompts: HashMap::from([("prompts/brief.md".to_string(), "Write the brief.".to_string())]),
+            inputs,
+            resolutions: BTreeMap::from([(
+                "writer".to_string(),
+                Resolution { slot: "writer".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability },
+            )]),
+            artifact_base: None,
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
+        }
+    }
+
+    fn record<'r>(run: &'r Run, id: &str) -> &'r StepRecord {
+        run.steps.iter().find(|s| s.step_id == id).unwrap_or_else(|| panic!("no record for {id}: {:?}", run.steps.iter().map(|s| &s.step_id).collect::<Vec<_>>()))
+    }
+
+    /// An empty list (or nothing at all) is a loop that runs zero times, not an error: the loop
+    /// gives `[]`, says why, runs nothing inside, and what reads it carries on with the empty list.
+    /// A value that is not a list at all still fails.
+    #[tokio::test]
+    async fn an_empty_loop_runs_zero_times() {
+        let yaml = r#"
+schemaVersion: "0"
+id: empty-loop
+name: Empty loop
+inputs:
+  items: { type: json }
+steps:
+  - id: each
+    kind: map
+    over: ${inputs.items}
+    as: it
+    steps:
+      - id: again
+        kind: tool
+        tool: list.filter
+        inputs: { items: ["${it}"], path: ok }
+  - id: table
+    kind: tool
+    tool: list.table
+    inputs: { items: "${steps.each.output}", columns: { Ok: it.ok } }
+outputs:
+  rows: { from: "${steps.table.output.rows}", type: table }
+"#;
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(NoModels));
+        let make = |items: Value| plain_request(yaml, IndexMap::from([("items".to_string(), items)]));
+        for nothing in [json!([]), json!(""), Value::Null] {
+            let run = exec.run(make(nothing.clone()), None).await;
+            assert_eq!(run.status, RunStatus::Succeeded, "{nothing}: {:?}", run.error);
+            let each = record(&run, "each");
+            assert_eq!(each.status, StepStatus::Skipped);
+            assert_eq!(each.skip_reason.as_deref(), Some("nothing to loop over"));
+            assert_eq!(each.output, Some(json!([])));
+            assert!(!run.steps.iter().any(|s| s.step_id.starts_with("each[")), "nothing inside the loop ran");
+            assert_eq!(record(&run, "table").status, StepStatus::Succeeded, "what reads the loop gets an empty list");
+            assert_eq!(run.outputs["rows"], json!([]));
+        }
+        let run = exec.run(make(json!([{ "ok": true }])), None).await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        assert_eq!(record(&run, "each").status, StepStatus::Succeeded);
+        assert_eq!(record(&run, "each[0].again").status, StepStatus::Succeeded);
+        let run = exec.run(make(json!(7)), None).await;
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(run.error.as_deref().unwrap_or_default().contains("is not a list (got number)"), "{:?}", run.error);
+    }
+
+    /// "Links or a folder, whichever you give": with the folder left empty, the step that lists it
+    /// is skipped with the input's name as the reason, the loop over the listing gives `[]` for the
+    /// same reason, a model step whose only material is the folder is skipped, a tool step reading
+    /// the listing carries the skip, the brief still runs with what there is, and an output taken
+    /// from a skipped step is null.
+    #[tokio::test]
+    async fn a_step_given_nothing_is_skipped_and_the_skip_carries_to_what_reads_it() {
+        let yaml = r#"
+schemaVersion: "0"
+id: either-or
+name: Either or
+inputs:
+  folder: { type: directory, required: false }
+  urls: { type: urls, required: false }
+  focus: { type: text }
+modelSlots:
+  writer: { requires: [text] }
+steps:
+  - id: list
+    kind: tool
+    tool: fs.list
+    inputs: { path: "${inputs.folder}", extensions: [md] }
+  - id: files
+    kind: map
+    over: ${steps.list.output.entries}
+    as: file
+    steps:
+      - id: read
+        kind: tool
+        tool: file.read
+        inputs: { path: "${file.path}" }
+  - id: pages
+    kind: map
+    over: ${inputs.urls}
+    as: url
+    steps:
+      - id: fetch
+        kind: tool
+        tool: http.fetch
+        inputs: { url: "${url}" }
+  - id: brief
+    kind: model
+    slot: writer
+    prompt: prompts/brief.md
+    inputs: { focus: "${inputs.focus}", files: "${steps.files.output}", pages: "${steps.pages.output}" }
+  - id: about_folder
+    kind: model
+    slot: writer
+    prompt: prompts/brief.md
+    inputs: { folder: "${inputs.folder}" }
+  - id: count
+    kind: tool
+    tool: list.filter
+    inputs: { items: "${steps.list.output.entries}", path: name }
+outputs:
+  brief: { from: "${steps.brief.output}", type: markdown }
+  entries: { from: "${steps.list.output.entries}", type: json }
+  folder_note: { from: "${steps.about_folder.output}", type: text }
+stages:
+  - { id: folder, name: Your folder, inputs: [folder], steps: [list, files] }
+  - { id: links, name: Your links, inputs: [urls], steps: [pages] }
+  - { id: brief, name: The brief, inputs: [focus], steps: [brief, about_folder, count], outputs: [brief, entries, folder_note] }
+"#;
+        let dir = std::env::temp_dir().join(format!("stillroom-either-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.md"), "alpha").unwrap();
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+
+        // Only the folder: the links loop is skipped for the links, everything else runs.
+        let run = exec
+            .run(
+                plain_request(yaml, IndexMap::from([("folder".to_string(), json!(dir.to_string_lossy())), ("focus".to_string(), json!("what matters"))])),
+                None,
+            )
+            .await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        assert_eq!(record(&run, "list").status, StepStatus::Succeeded);
+        assert_eq!(record(&run, "files[0].read").output.as_ref().unwrap()["text"], json!("alpha"));
+        let pages = record(&run, "pages");
+        assert_eq!((pages.status, pages.skip_reason.as_deref(), pages.output.clone()), (StepStatus::Skipped, Some("nothing given for urls"), Some(json!([]))));
+        assert_eq!(record(&run, "brief").status, StepStatus::Succeeded);
+        assert_eq!(record(&run, "about_folder").status, StepStatus::Succeeded);
+        assert_eq!(record(&run, "count").status, StepStatus::Succeeded);
+
+        // Nothing but the focus: the folder chain is skipped as one, the brief still runs.
+        let run = exec.run(plain_request(yaml, IndexMap::from([("focus".to_string(), json!("what matters"))])), None).await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        for (id, out) in [("list", Value::Null), ("files", json!([])), ("about_folder", Value::Null), ("count", Value::Null)] {
+            let r = record(&run, id);
+            assert_eq!(r.status, StepStatus::Skipped, "{id}");
+            assert_eq!(r.skip_reason.as_deref(), Some("nothing given for folder"), "{id}");
+            assert_eq!(r.output, Some(out), "{id}");
+        }
+        assert!(!run.steps.iter().any(|s| s.parent.is_some()), "nothing inside either loop ran");
+        assert_eq!(record(&run, "pages").skip_reason.as_deref(), Some("nothing given for urls"));
+        let brief = record(&run, "brief");
+        assert_eq!(brief.status, StepStatus::Succeeded, "the brief has the focus and two empty lists to work with");
+        assert!(brief.output.as_ref().unwrap().as_str().unwrap().contains("what matters"));
+        assert_eq!(run.outputs["entries"], Value::Null, "an output from a skipped step is null");
+        assert_eq!(run.outputs["folder_note"], Value::Null);
+        assert!(run.outputs["brief"].is_string());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A kept stage given nothing this run is skipped with the same word: not served from its
+    /// keep, not rebuilt, its manifest and journal untouched; a later stage reading the keep sees
+    /// what it held. With `manual` the keep would otherwise have been judged fresh; with
+    /// `when_sources_change` it builds again once something is given.
+    #[tokio::test]
+    async fn a_kept_stage_given_nothing_is_skipped_and_its_keep_left_alone() {
+        let yaml = r#"
+schemaVersion: "0"
+id: kept-empty
+name: Kept empty
+inputs:
+  text: { type: text, required: false }
+steps:
+  - id: remember
+    kind: tool
+    tool: keep.put
+    inputs: { id: latest, data: "${inputs.text}" }
+  - id: echo
+    kind: tool
+    tool: keep.get
+    inputs: { id: latest, stage: memory }
+outputs:
+  saw: { from: "${steps.echo.output.record.data}", type: text }
+stages:
+  - { id: ask, name: Ask, inputs: [text] }
+  - { id: memory, name: Remember, steps: [remember], keep: { refresh: REFRESH } }
+  - { id: out, name: Answer, steps: [echo], outputs: [saw] }
+"#;
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        for refresh in ["manual", "when_sources_change"] {
+            let yaml = yaml.replace("REFRESH", refresh);
+            let base = std::env::temp_dir().join(format!("stillroom-kept-empty-{}", uuid::Uuid::now_v7()));
+            let make = |text: Option<&str>| {
+                let mut req = keep_request(&yaml, &base, text.unwrap_or_default());
+                if text.is_none() {
+                    req.inputs.clear();
+                }
+                req
+            };
+            let first = exec.run(make(Some("one")), None).await;
+            assert_eq!(first.status, RunStatus::Succeeded, "{refresh}: {:?}", first.error);
+            let keep = Keep::open(keep_dir(&base, "kept-empty", "memory")).unwrap();
+            let built = keep.manifest().unwrap();
+            assert_eq!(built.run_id.as_deref(), Some(first.id.as_str()));
+
+            let second = exec.run(make(None), None).await;
+            assert_eq!(second.status, RunStatus::Succeeded, "{refresh}: {:?}", second.error);
+            let r = record(&second, "remember");
+            assert_eq!((r.status, r.skip_reason.as_deref(), r.reused_from.as_deref()), (StepStatus::Skipped, Some("nothing given for text"), None), "{refresh}");
+            assert_eq!(second.outputs["saw"], json!("one"), "{refresh}: the later stage reads what the keep holds");
+            let after = keep.manifest().unwrap();
+            assert_eq!(after.run_id, built.run_id, "{refresh}: the manifest is untouched");
+            assert_eq!(after.built_at, built.built_at, "{refresh}");
+            assert_eq!(keep.journal(5).unwrap().len(), 1, "{refresh}: nothing journaled");
+            assert_eq!(keep.count().unwrap(), 1, "{refresh}");
+
+            let third = exec.run(make(Some("two")), None).await;
+            assert_eq!(third.status, RunStatus::Succeeded, "{refresh}: {:?}", third.error);
+            let r = record(&third, "remember");
+            if refresh == "manual" {
+                assert_eq!(r.reused_from.as_deref(), Some("keep:memory"), "manual: only Rebuild changes it");
+                assert_eq!(third.outputs["saw"], json!("one"));
+            } else {
+                assert_eq!(r.status, StepStatus::Succeeded, "sources changed: built again");
+                assert_eq!(third.outputs["saw"], json!("two"));
+                assert_eq!(keep.journal(5).unwrap()[0].reason, "sources changed");
+            }
+            std::fs::remove_dir_all(base).ok();
+        }
     }
 
     fn keep_request(yaml: &str, base: &std::path::Path, text: &str) -> RunRequest {

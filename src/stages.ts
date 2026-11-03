@@ -93,7 +93,10 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
 
   // A run in progress or finished speaks first. A stage with only inputs was answered when the run started.
   if (records && records.size > 0 && stepIds.length === 0 && (stage.inputs ?? []).length > 0) {
-    const missing = (stage.inputs ?? []).filter((name) => recipe.inputs[name]?.required !== false && empty(ctx.inputs?.[name]));
+    const names = stage.inputs ?? [];
+    const missing = names.filter((name) => recipe.inputs[name]?.required !== false && empty(ctx.inputs?.[name]));
+    // Every input optional and every one left empty: the stage had nothing this run.
+    if (missing.length === 0 && names.every((name) => empty(ctx.inputs?.[name]))) return { ...base, status: "nothing given", tone: "dim" };
     return missing.length === 0 ? { ...base, status: "given", tone: "green" } : { ...base, status: "not given", tone: "dim" };
   }
   if (records && records.size > 0 && stepIds.length > 0) {
@@ -109,6 +112,9 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
     if (waiting) return { ...base, status: "waiting for you", tone: "amber" };
     const finished = recs.filter((r) => r.status === "succeeded" || r.status === "skipped");
     if (finished.length === stepIds.length) {
+      // Every step skipped because an optional input was left empty ("nothing given for <input>"):
+      // the stage had nothing to do this run, which is not a fault and not "done".
+      if (recs.length > 0 && recs.every((r) => r.status === "skipped" && r.skipReason?.startsWith("nothing given"))) return { ...base, status: "nothing given", tone: "dim" };
       if (recs.length > 0 && recs.every((r) => r.reusedFrom?.startsWith("keep:"))) return { ...base, status: "ready · kept", tone: "green" };
       const reused = recs.filter((r) => r.reusedFrom).length;
       return { ...base, status: reused === recs.length && reused > 0 ? "done · reused" : "done", tone: "green" };

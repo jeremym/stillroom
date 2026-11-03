@@ -67,6 +67,37 @@ describe("stripFor", () => {
     expect(stripFor(kept, { records: skipped, running: true })[0].status).toBe("ready · kept");
   });
 
+  it("says nothing given for a stage whose optional input was left empty", () => {
+    // Links or a folder, whichever you give: the links stage's loop skips with "nothing given for urls".
+    const either: RecipeInfo = {
+      ...recipe,
+      inputs: { ...recipe.inputs, urls: { type: "urls", required: false }, folder: { type: "directory", required: false } },
+      steps: [...recipe.steps, { id: "pages", kind: "map", name: "Read each link", slot: null, tool: null, dependsOn: [], reads: [] }] as unknown as RecipeInfo["steps"],
+      stages: [
+        { id: "links", name: "Your links", inputs: ["urls"], steps: ["pages"] },
+        { id: "docs", name: "Your folder", inputs: ["folder"], steps: ["list"] },
+        ...recipe.stages.slice(1),
+      ],
+    };
+    const skippedFor = (stepId: string, input: string) => rec(stepId, "skipped", { skipReason: `nothing given for ${input}`, output: stepId === "pages" ? [] : null });
+    // While running: the links stage was given nothing, the folder stage is running.
+    const live = stripFor(either, { records: [skippedFor("pages", "urls"), rec("list", "running")], running: true, inputs: { folder: "/x" } });
+    expect(live[0]).toMatchObject({ status: "nothing given", tone: "dim" });
+    expect(live[1].status).toBe("running 1 of 1");
+    // On Results: the folder was given nothing this time, the links ran.
+    const done = stripFor(either, { records: [rec("pages", "succeeded"), skippedFor("list", "folder"), rec("answer", "succeeded"), rec("check", "succeeded")], runStatus: "succeeded" });
+    expect(done.map((x) => x.status)).toEqual(["done", "nothing given", "done", "done"]);
+    // A step skipped for another reason (a `when` that was not set) is still "done", and a loop over
+    // a list that turned out empty is work that finished, not something withheld.
+    const when = stripFor(either, { records: [rec("pages", "skipped", { skipReason: "${inputs.urls} was not set" }), rec("list", "skipped", { skipReason: "nothing to loop over", output: [] })] });
+    expect(when.map((x) => x.status).slice(0, 2)).toEqual(["done", "done"]);
+    // An inputs-only stage whose optional inputs were all left empty says the same during a run; needs you is never shown for an optional input.
+    const inputsOnly = { ...either, stages: [{ id: "give", name: "Give", inputs: ["urls", "folder"] }, ...either.stages.slice(2)] };
+    expect(stripFor(inputsOnly, { records: [rec("answer", "running")], running: true, inputs: { urls: [], folder: "" } })[0]).toMatchObject({ status: "nothing given", tone: "dim" });
+    expect(stripFor(inputsOnly, { records: [rec("answer", "running")], running: true, inputs: { urls: ["https://a"], folder: "" } })[0].status).toBe("given");
+    expect(stripFor(inputsOnly, { inputs: { urls: [], folder: "", question: "q" } })[0].status).not.toBe("needs you");
+  });
+
   it("maps steps and outputs to stages", () => {
     expect(stageOfStep(recipe, "answer")?.id).toBe("ask");
     expect(outputsByStage(recipe)).toEqual([

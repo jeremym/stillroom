@@ -85,6 +85,7 @@ Each model or agent step names a prompt file. Write the whole prompt: who the mo
 8. Write for a person who is not a programmer: step names, labels, and descriptions in friendly words; technical terms, when unavoidable, in parentheses.
 9. A place the user names to write into (a notes vault, a project folder) is a `directory` input; steps write there with `fs.write` under `${inputs.<that input>}`, and the recipe declares `filesystem.write: ["${inputs.<that input>}"]`. To add to an existing file (a table of contents), `file.read` it, have a model step write the new text, and `fs.write` the result.
 10. Decide in one pass: pick the simplest recipe that does what the goal says and answer. Do not weigh alternatives in the answer; the checker's notes guide any fix.
+11. When the goal asks for something no tool does (sending mail or messages, posting to Notion, Slack, or any service, running on a clock, reading a mailbox, transcribing a recording), do not invent a step or a tool for it. Give the recipe a `directory` input for a folder the user chooses, make the last stage write the result there with `fs.write` under `${inputs.<that input>}` (declared as in rule 9), and say in that stage's `why` what was asked and what the recipe does instead: "Notion has no door here; the brief is saved as Markdown in the folder you choose, which Notion can import."
 
 ## Your answer
 

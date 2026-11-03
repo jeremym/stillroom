@@ -107,18 +107,41 @@ pub struct Run {
     pub note: Option<String>,
 }
 
-/// A run started by something other than the user: so far, a folder watch.
+/// A run started by something other than the user: a folder watch or a schedule. Serialized
+/// with `kind` beside the fields (`{ "kind": "watch", "watchId": …, "folder": …, "changed": […] }`),
+/// the shape run records have always had.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunTrigger {
-    /// `watch` for now.
-    pub kind: String,
-    pub watch_id: String,
-    /// The watched folder.
-    pub folder: String,
-    /// File names whose change set the run off. Empty when the user pressed Run now.
-    #[serde(default)]
-    pub changed: Vec<String>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunTrigger {
+    #[serde(rename_all = "camelCase")]
+    Watch {
+        watch_id: String,
+        /// The watched folder.
+        folder: String,
+        /// File names whose change set the run off. Empty when the user pressed Run now.
+        #[serde(default)]
+        changed: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Schedule {
+        schedule_id: String,
+        /// The local time of day the schedule is set for, `HH:MM`.
+        time: String,
+        /// True when the run was the launch catch-up for a time the app was closed at, not
+        /// the clock reaching the time.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        caught_up: bool,
+    },
+}
+
+impl RunTrigger {
+    /// `watch` or `schedule`: the word history uses.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            RunTrigger::Watch { .. } => "watch",
+            RunTrigger::Schedule { .. } => "schedule",
+        }
+    }
 }
 
 /// Lightweight row for run lists.
@@ -168,5 +191,44 @@ impl Run {
             completion_tokens: self.steps.iter().filter_map(|s| s.completion_tokens).sum(),
             trigger: self.trigger.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_json(trigger: &str) -> String {
+        format!(
+            r#"{{"id":"r1","recipeId":"x","recipeName":"X","recipeVersion":null,"status":"succeeded",
+                 "startedAt":"2026-11-01T07:30:00Z","finishedAt":null,"inputs":{{}},"resolutions":null,
+                 "steps":[],"outputs":{{}},"error":null,"trigger":{trigger}}}"#
+        )
+    }
+
+    #[test]
+    fn old_watch_triggers_still_load_and_write_the_same_shape() {
+        // A record from before schedules existed: `changed` present…
+        let run: Run = serde_json::from_str(&run_json(r#"{"kind":"watch","watchId":"w1","folder":"/in","changed":["a.eml"]}"#)).unwrap();
+        assert_eq!(run.trigger, Some(RunTrigger::Watch { watch_id: "w1".into(), folder: "/in".into(), changed: vec!["a.eml".into()] }));
+        // …or missing, as Run now wrote it once.
+        let run: Run = serde_json::from_str(&run_json(r#"{"kind":"watch","watchId":"w1","folder":"/in"}"#)).unwrap();
+        assert_eq!(run.trigger.as_ref().map(|t| t.kind()), Some("watch"));
+        let v = serde_json::to_value(run.trigger.unwrap()).unwrap();
+        assert_eq!(v, serde_json::json!({ "kind": "watch", "watchId": "w1", "folder": "/in", "changed": [] }));
+        // No trigger at all: the user pressed Run.
+        let run: Run = serde_json::from_str(&run_json("null")).unwrap();
+        assert_eq!(run.trigger, None);
+    }
+
+    #[test]
+    fn a_schedule_trigger_says_which_schedule_and_when() {
+        let t = RunTrigger::Schedule { schedule_id: "s1".into(), time: "07:30".into(), caught_up: false };
+        assert_eq!(serde_json::to_value(&t).unwrap(), serde_json::json!({ "kind": "schedule", "scheduleId": "s1", "time": "07:30" }));
+        let t = RunTrigger::Schedule { schedule_id: "s1".into(), time: "07:30".into(), caught_up: true };
+        assert_eq!(serde_json::to_value(&t).unwrap(), serde_json::json!({ "kind": "schedule", "scheduleId": "s1", "time": "07:30", "caughtUp": true }));
+        let run: Run = serde_json::from_str(&run_json(r#"{"kind":"schedule","scheduleId":"s1","time":"07:30"}"#)).unwrap();
+        assert_eq!(run.trigger, Some(RunTrigger::Schedule { schedule_id: "s1".into(), time: "07:30".into(), caught_up: false }));
+        assert_eq!(run.summary().trigger.map(|t| t.kind()), Some("schedule"));
     }
 }

@@ -1,6 +1,7 @@
 //! Stillroom desktop shell: wires the recipe library, executor, model router, and store to the webview.
 
 mod plan_journal;
+mod schedules;
 mod watches;
 
 use serde::{Deserialize, Serialize};
@@ -17,13 +18,14 @@ use stillroom_core::planner::{planner_recipe, trial_request, PLANNER_SLOT};
 use stillroom_core::{
     consent, edits_for_rerun, pins_from_run, planning_reason, rank_for_planning, resolve_slots_with, stage_fingerprint, stage_models, validate_edit, Cancel, Draft, Executor, Finding, Grant, Measured,
     ModelDefaults, PlanEvent, PlanOutcome, PlanRequest, Planner, PlanningFacts, PromptState, RecipeBundle, RecipeInfo, RecipeLibrary, RecipeSource, ResolveDefaults, ResolvedVia, Run, RunTrigger,
-    ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
+    Schedule, ShelfState, StepEdit, StepRecord, Store, SystemPrompts, Watch,
 };
 use stillroom_models::codex::Codex;
 use stillroom_models::ollama::Ollama;
 use stillroom_models::openai::OpenAi;
 use stillroom_models::{InstalledModel, ModelRouter, ProviderStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
+use schedules::{ScheduleRuntime, ScheduleView};
 use watches::{WatchRuntime, WatchView};
 
 pub(crate) struct AppState {
@@ -1532,10 +1534,17 @@ fn duplicate_recipe(app: AppHandle, state: State<'_, AppState>, recipe_id: Strin
     Ok(copy.info())
 }
 
-/// Delete one of the user's recipes (its folder), its run keeps, and any watches bound to it.
-/// Catalog recipes (built-in, community, sample) cannot be deleted; they leave the shelf instead.
+/// Delete one of the user's recipes (its folder), its run keeps, and any watches and schedules
+/// bound to it. Catalog recipes (built-in, community, sample) cannot be deleted; they leave the
+/// shelf instead.
 #[tauri::command]
-fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRuntime>, recipe_id: String) -> CmdResult<()> {
+fn delete_recipe(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    rt: State<'_, WatchRuntime>,
+    schedules_rt: State<'_, ScheduleRuntime>,
+    recipe_id: String,
+) -> CmdResult<()> {
     let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
     if !bundle.source.is_user() {
         return Err("Recipes from the catalog cannot be deleted; take one off the shelf instead.".into());
@@ -1558,6 +1567,12 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
                 store.delete_watch(&w.id).map_err(err)?;
             }
         }
+        for s in store.list_schedules().map_err(err)? {
+            if s.recipe_id == recipe_id {
+                schedules_rt.stop(&s.id);
+                store.delete_schedule(&s.id).map_err(err)?;
+            }
+        }
     }
     std::fs::remove_dir_all(&dir).map_err(err)?;
     // Set up promises that deleting the recipe deletes what its kept stages built (recipe-data/<id>/).
@@ -1575,6 +1590,7 @@ fn delete_recipe(app: AppHandle, state: State<'_, AppState>, rt: State<'_, Watch
         let _ = store.mark_runs_deleted(&recipe_id).map_err(err)?;
     }
     let _ = app.emit("watch:changed", ());
+    let _ = app.emit("schedule:changed", ());
     let _ = app.emit("shelf:changed", ShelfChanged { recipe_id, state: None });
     Ok(())
 }
@@ -1915,6 +1931,72 @@ fn fire_watch(app: AppHandle, state: State<'_, AppState>, rt: State<'_, WatchRun
     Ok(())
 }
 
+#[tauri::command]
+fn list_schedules(state: State<'_, AppState>, rt: State<'_, ScheduleRuntime>) -> CmdResult<Vec<ScheduleView>> {
+    let schedules = state.store.lock().map_err(err)?.list_schedules().map_err(err)?;
+    Ok(schedules.into_iter().map(|s| rt.view(s)).collect())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddScheduleArgs {
+    recipe_id: String,
+    inputs: indexmap::IndexMap<String, Value>,
+    #[serde(default)]
+    pins: BTreeMap<String, String>,
+    /// Local time of day, 24-hour, `HH:MM`.
+    time: String,
+    /// `mon`…`sun`; empty means every day.
+    #[serde(default)]
+    days: Vec<String>,
+}
+
+/// Save a schedule and count it in. It first fires when its time next comes; nothing runs now.
+/// Refused like a run or a watch while the recipe lacks the user's yes to its permissions.
+#[tauri::command]
+fn add_schedule(app: AppHandle, state: State<'_, AppState>, rt: State<'_, ScheduleRuntime>, args: AddScheduleArgs) -> CmdResult<ScheduleView> {
+    let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
+    state.check_consent(&bundle)?;
+    let schedule = Schedule::new(&bundle.recipe, &args.time, &args.days, args.inputs, args.pins).map_err(err)?;
+    state.store.lock().map_err(err)?.save_schedule(&schedule).map_err(err)?;
+    rt.start(&schedule);
+    let _ = app.emit("schedule:changed", ());
+    Ok(rt.view(schedule))
+}
+
+#[tauri::command]
+fn set_schedule_enabled(app: AppHandle, state: State<'_, AppState>, rt: State<'_, ScheduleRuntime>, id: String, enabled: bool) -> CmdResult<ScheduleView> {
+    let mut schedule = state.store.lock().map_err(err)?.get_schedule(&id).map_err(err)?.ok_or("that schedule is gone")?;
+    schedule.enabled = enabled;
+    state.store.lock().map_err(err)?.save_schedule(&schedule).map_err(err)?;
+    if enabled {
+        rt.start(&schedule);
+    } else {
+        rt.stop(&id);
+    }
+    let _ = app.emit("schedule:changed", ());
+    Ok(rt.view(schedule))
+}
+
+#[tauri::command]
+fn delete_schedule(app: AppHandle, state: State<'_, AppState>, rt: State<'_, ScheduleRuntime>, id: String) -> CmdResult<()> {
+    rt.stop(&id);
+    state.store.lock().map_err(err)?.delete_schedule(&id).map_err(err)?;
+    let _ = app.emit("schedule:changed", ());
+    Ok(())
+}
+
+/// Run a schedule's recipe now, without waiting for its time, and hand back the run.
+#[tauri::command]
+async fn fire_schedule(app: AppHandle, state: State<'_, AppState>, rt: State<'_, ScheduleRuntime>, id: String) -> CmdResult<Run> {
+    let schedule = state.store.lock().map_err(err)?.get_schedule(&id).map_err(err)?.ok_or("that schedule is gone")?;
+    if !schedule.enabled {
+        return Err("the schedule is paused; resume it first".into());
+    }
+    rt.start(&schedule);
+    schedules::fire(&app, &id, false).await
+}
+
 /// A file extension as the webview may suggest it for a save: short, letters and digits only.
 fn checked_extension(ext: &str) -> CmdResult<&str> {
     let ext = ext.trim().trim_start_matches('.');
@@ -2143,6 +2225,9 @@ pub fn run() {
             app.manage(WatchRuntime::default());
             let rt = app.state::<WatchRuntime>();
             rt.start_all(app.handle(), &app.state::<AppState>());
+            app.manage(ScheduleRuntime::default());
+            let schedules_rt = app.state::<ScheduleRuntime>();
+            schedules_rt.start_all(app.handle(), &app.state::<AppState>());
             // The main window is declared in tauri.conf.json with `create: false` and built here, so
             // it can refuse navigation away from the app's own pages (there is no config key for that).
             let main_config = app
@@ -2217,6 +2302,11 @@ pub fn run() {
             open_privacy_pane,
             open_link,
             fire_watch,
+            list_schedules,
+            add_schedule,
+            set_schedule_enabled,
+            delete_schedule,
+            fire_schedule,
             save_text_as,
             save_binary_as,
             save_artifact_as,

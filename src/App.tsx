@@ -15,7 +15,7 @@ import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
 import { PlanNote, PlanStreamView } from "./components/PlanStreamView";
 import { EMPTY_STREAM, phaseWord, reducePlan } from "./planStream";
 import { AskAgain } from "./components/AskAgain";
-import { Welcome } from "./components/Welcome";
+import { FirstRun } from "./components/FirstRun";
 import { ArchiveZone, CardMenu, EmptyShelf, RecipeCard } from "./components/Shelf";
 import { CatalogPlace } from "./components/Catalog";
 import { ImportPlace } from "./components/ImportPlace";
@@ -40,10 +40,10 @@ const FlowView = lazy(() => import("./flow/FlowView"));
 /* Places. Library is home; the Catalog (browse, ⌘B) sits beside it. Opening a recipe puts the Dial on
    screen with that recipe's five places; the Dial turns by itself when a run starts, finishes, or
    needs you. Settings and New recipe sit outside the Dial, reached from the Rail or the menu. */
-type Place = "welcome" | "library" | "browse" | "import" | "new" | "recipe" | "setup" | "running" | "results" | "door";
-type RecipePlace = Exclude<Place, "welcome" | "library" | "browse" | "import" | "new">;
+type Place = "first-run" | "library" | "browse" | "import" | "new" | "recipe" | "setup" | "running" | "results" | "door";
+type RecipePlace = Exclude<Place, "first-run" | "library" | "browse" | "import" | "new">;
 const PLACE_LABEL: Record<Place, string> = {
-  welcome: "Welcome", library: "Library", browse: "Catalog", import: "Get a recipe", new: "New recipe",
+  "first-run": "First run", library: "Library", browse: "Catalog", import: "Get a recipe", new: "New recipe",
   recipe: "Recipe", setup: "Set up", running: "Running", results: "Results", door: "Recipe card",
 };
 const RECIPE_PLACES: RecipePlace[] = ["recipe", "setup", "running", "results", "door"];
@@ -97,7 +97,8 @@ function App() {
   }, []);
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
-  // The welcome shows until it has been finished or skipped once (firstRun absent means never shown).
+  // The first-run screen shows until a recipe has been drafted from it, or it was browsed past or skipped
+  // once (firstRun absent means never shown). The hint then follows the first run to Results.
   const [firstRunHint, setFirstRunHint] = useState(false);
   const [stopping, setStopping] = useState(false);
   // A watch that ran while another run was on screen: it stays out of the way, this line says it happened.
@@ -183,18 +184,6 @@ function App() {
     api.listWatches().then(setWatches).catch(() => {});
   }, []);
 
-  const finishWelcome = useCallback((recipeId?: string) => {
-    saveSettings({ firstRun: false });
-    if (recipeId) {
-      setFirstRunHint(true);
-      setRecipeId(recipeId);
-      setFreshId(null);
-      setPlace("setup");
-    } else {
-      setPlace("library");
-    }
-  }, [saveSettings]);
-
   const openRecipe = useCallback((id: string, where: RecipePlace = "recipe") => {
     setRecipeId(id);
     setFreshId(null);
@@ -267,7 +256,7 @@ function App() {
   useEffect(() => {
     api.getSettings().then((s) => {
       setSettingsState(s);
-      if (s.firstRun !== false) setPlace("welcome");
+      if (s.firstRun !== false) setPlace("first-run");
     }).catch((e) => setError(String(e)));
     api.runtimeStatus().then(setStatus).catch((e) => setError(String(e)));
     refreshModels();
@@ -473,7 +462,8 @@ function App() {
     }
   }
 
-  async function createRecipe(req: NewRecipeRequest) {
+  /** `firstRun`: drafted from the first-run screen; the note says so, the screen is done, and the hint follows the run. */
+  async function createRecipe(req: NewRecipeRequest, firstRun = false) {
     setCreating(true);
     setCreateError(null);
     setPlanProblems(null);
@@ -494,7 +484,9 @@ function App() {
         }
         draft = out.draft;
         const tries = out.attempts === 1 ? "first try" : `${out.attempts} tries`;
-        note = `Drafted by ${shortModel(out.modelId)} (${whereWord(out.modelId)}) on the ${tries} in ${fmtElapsed(Math.round(out.durationMs / 1000))}. Walk the steps and their prompts, then Save; nothing has run yet.`;
+        note = firstRun
+          ? "Your first recipe. Set up a run, or open the recipe card to see how it was made."
+          : `Drafted by ${shortModel(out.modelId)} (${whereWord(out.modelId)}) on the ${tries} in ${fmtElapsed(Math.round(out.durationMs / 1000))}. Walk the steps and their prompts, then Save; nothing has run yet.`;
       } else if (req.mode === "copy" && req.sourceId) {
         // The engine makes the copy and writes where it came from (its provenance).
         const info = await api.duplicateRecipe(req.sourceId, req.id, req.name, req.icon ?? null);
@@ -512,6 +504,10 @@ function App() {
       setRecipeId(saved.recipe.id);
       setFreshId(saved.recipe.id);
       setPlanNote(note);
+      if (firstRun) {
+        saveSettings({ firstRun: false });
+        setFirstRunHint(true);
+      }
       setPlace(req.mode === "goal" ? "recipe" : "door");
     } catch (e) {
       setCreateError(String(e));
@@ -652,7 +648,7 @@ function App() {
             <button className="home" onClick={() => setPlace("library")} title="Library: every recipe"><Logo size={28} /></button>
             {place === "library" && <><span className="sep">›</span><span className="here">Library</span></>}
             {(place === "browse" || place === "import") && <><span className="sep">›</span><button onClick={() => setPlace("library")} title="Library: your shelf">Library</button><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
-            {(place === "new" || place === "welcome") && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
+            {place === "new" && <><span className="sep">›</span><span className="here">{PLACE_LABEL[place]}</span></>}
             {isRecipePlace(place) && recipe && (
               <>
                 {looking && <><span className="sep">›</span><button onClick={browseCatalog} title="The catalog (⌘B)">Catalog</button></>}
@@ -729,11 +725,13 @@ function App() {
             </p>
           )}
 
-          {place === "welcome" && (
-            <Welcome models={models} settings={settings} recipes={shelf.shelf} onSave={saveSettings}
-              onOpenSettings={() => api.openSettings().catch((e) => setError(String(e)))} onRefreshModels={refreshModels}
-              onPickRecipe={(id) => finishWelcome(id)} onSkip={() => finishWelcome()}
-              onBrowse={() => { saveSettings({ firstRun: false }); browseCatalog(); }} />
+          {place === "first-run" && recipes && (
+            <FirstRun recipes={recipes.recipes} reserved={recipes.reserved ?? []} busy={creating} error={createError} problems={planProblems}
+              onCreate={(req) => createRecipe(req, true)} progress={planProgress}
+              below={creating ? <PlanStreamView state={planStream} /> : planProblems && planTranscript ? <PlanNote note="The planner's draft was not saved; here is what it wrote." transcript={planTranscript} /> : undefined}
+              onStop={() => api.stopRun("plan").catch((e) => setError(String(e)))}
+              models={models} onRefreshModels={refreshModels} onOpenSettings={() => api.openSettings().catch((e) => setError(String(e)))}
+              onSave={saveSettings} onBrowse={browseCatalog} onSkip={() => setPlace("library")} />
           )}
 
           {place === "library" && (
@@ -797,7 +795,7 @@ function App() {
           )}
 
           {place === "setup" && recipes && recipe && firstRunHint && (
-            <p className="result-line hint-line"><Glyph name="sparkles" /> Step 3 of 3: choose what the recipe reads, then press <strong>Run</strong>. The Dial above follows the run to Results on its own.</p>
+            <p className="result-line hint-line"><Glyph name="sparkles" /> Choose what the recipe reads, then press <strong>Run</strong>. The Dial above follows the run to Results on its own.</p>
           )}
           {place === "setup" && recipes && recipe && (
             <RecipePanel recipes={shelf.shelf.some((r) => r.id === recipe.id) ? shelf.shelf : [recipe, ...shelf.shelf]} recipe={recipe} onSelect={(id) => openRecipe(id, "setup")} pins={pins} onPins={updatePins}

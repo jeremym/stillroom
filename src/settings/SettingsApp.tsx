@@ -576,7 +576,7 @@ export default function SettingsApp() {
             <p>Describe the goal. Get the result. See how it was made.</p>
             <p className="muted">{status ? `${status.schemaTitle} v0 · ${status.runCount} runs · tools: ${status.tools.join(", ")}` : "…"}</p>
             <p className="muted">Keyboard: ⌘0 Library · ⌘1 Recipe · ⌘2 Set up · ⌘3 Running · ⌘4 Results · ⌘5 Recipe card · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ Help</p>
-            <button onClick={() => save({ firstRun: true })}>{settings.firstRun ? "The welcome will show on next launch" : "Show the welcome on next launch"}</button>
+            <button onClick={() => save({ firstRun: true })}>{settings.firstRun ? "The first-run screen will show on next launch" : "Show the first-run screen on next launch"}</button>
           </Zone>
         )}
 

@@ -230,12 +230,25 @@ tr.nested td:nth-child(2) { padding-left: 24px; }
 .trace-table summary { cursor: pointer; font-size: var(--size-small); }
 .trace-table .panel { margin-top: 10px; }
 
-/* Power on */
-.boot { min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 18px; padding: 40px 20px; animation: p1-boot 900ms ease-out both; }
+/* First run: the goal screen, seen once. The head powers on; the example goals and the plumbing line sit inside the zone. */
+.first-run-head { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; padding: 24px 20px 18px; animation: p1-boot 900ms ease-out both; }
 .boot-line { font-family: var(--display); font-size: calc(var(--size-display) * 1.4); letter-spacing: 0.12em; text-transform: uppercase; margin: 0; }
-.boot-sub { max-width: 640px; margin: 0; }
 @keyframes p1-boot { from { opacity: 0; filter: brightness(2); } to { opacity: 1; filter: none; } }
-@media (prefers-reduced-motion: reduce) { .boot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .first-run-head { animation: none; } }
+.examples { margin: 8px 0 0; }
+.examples p { margin: 0 0 4px; font-size: var(--size-small); }
+.examples ul { margin: 0; padding-left: 1.2em; }
+.examples li { margin: 2px 0; }
+.examples button.link { padding: 0; }
+.cannot-yet { margin-top: 8px; font-size: var(--size-small); }
+.cannot-yet p { margin: 4px 0 0 1.2em; max-width: 72ch; }
+.first-run-links .sep { margin: 0 6px; color: var(--phos-faint); }
+.first-run-links button.link { padding: 0; }
+.plumbing { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--bezel); }
+.plumbing-line { margin: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: var(--size-small); }
+.plumbing-line .sep { color: var(--phos-faint); }
+.plumbing-line button.link { padding: 0; font-size: inherit; }
+.plumbing-help { margin-top: 10px; }
 
 /* Recipe card: lanes and marks */
 .flow-canvas { position: relative; }

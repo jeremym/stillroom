@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Glyph, RECIPE_GLYPHS, type GlyphName } from "../brand";
 import { Tabs, Tag, Zone, fmtElapsed, useElapsed, type TabItem } from "@overtone-foundry/app-kit";
 import { api } from "../api";
 import { isLocalModel, shortModel, whereWord } from "../models";
 import { costLine, gb, optionLabel } from "../planWith";
 import { slugify, uniqueId } from "../recipes/new";
+import type { ExampleGoal } from "../firstRun/examples";
 import { PromptEditor } from "./PromptEditor";
 import type { PlannerCandidate, PlannerPreview, RecipeInfo, TryPlanningResult } from "../types";
 
@@ -40,6 +41,22 @@ interface Props {
   onStop?: () => void;
   /** Rendered directly under the Draft it / Create row: a progress window while the planner works. */
   below?: ReactNode;
+  /** Which starts to offer, first one selected. One start alone hides the tab row (the first run offers only a goal). */
+  starts?: readonly NewRecipeMode[];
+  /** Example goals listed under the goal box; clicking one fills the goal (and the material, when it has some). */
+  examples?: readonly ExampleGoal[];
+  /** Rendered under the goal box and its examples (the first run's "cannot do yet" fold). */
+  afterGoal?: ReactNode;
+  /** Rendered in the Draft it row in place of Cancel (the first run's browse and skip links). */
+  actions?: ReactNode;
+  /** A reason Draft it stays disabled whatever is typed ("needs a model that can plan"). */
+  blocked?: string | null;
+  /** Rendered at the very bottom of the zone (the first run's plumbing line). */
+  foot?: ReactNode;
+  /** Show the Plan with picker and the prompt toggle; false folds them away (the plumbing line stands in). */
+  planWith?: boolean;
+  /** Told whenever the planner preview or the chosen model changes, so a line elsewhere can say who will plan. */
+  onPlanner?: (info: { preview: PlannerPreview | null; chosen: PlannerCandidate | null }) => void;
 }
 
 const STARTS: TabItem<NewRecipeMode>[] = [
@@ -63,8 +80,10 @@ const VIA_WORD: Record<string, string> = { pinned: "your pick", default: "your d
 /** A trial plan (Try planning) from this screen: running since, or what it came back with. */
 type Trial = { modelId: string; since: string } | { modelId: string; result: TryPlanningResult } | { modelId: string; error: string };
 
-export function NewRecipe({ recipes, reserved = [], busy, error, progress, problems, onCreate, onCancel, onStop, below }: Props) {
-  const [mode, setMode] = useState<NewRecipeMode>("goal");
+export function NewRecipe({ recipes, reserved = [], busy, error, progress, problems, onCreate, onCancel, onStop, below, starts, examples, afterGoal, actions, blocked, foot, planWith = true, onPlanner }: Props) {
+  const offered = useMemo(() => (starts && starts.length > 0 ? STARTS.filter((t) => starts.includes(t.id)) : STARTS), [starts]);
+  const [mode, setMode] = useState<NewRecipeMode>(offered[0]?.id ?? "goal");
+  const goalBox = useRef<HTMLTextAreaElement>(null);
   const [sourceId, setSourceId] = useState(recipes[0]?.id ?? "");
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<GlyphName>("recipe");
@@ -78,7 +97,15 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
   const [promptError, setPromptError] = useState<string | null>(null);
   const taken = useMemo(() => [...recipes.map((r) => r.id), ...reserved], [recipes, reserved]);
   const id = uniqueId(slugify(name), taken);
-  const ready = name.trim().length > 0 && (mode === "blank" || (mode === "copy" && Boolean(sourceId)) || (mode === "goal" && goal.trim().length > 0));
+  const ready = !blocked && name.trim().length > 0 && (mode === "blank" || (mode === "copy" && Boolean(sourceId)) || (mode === "goal" && goal.trim().length > 0));
+
+  /** An example goal, taken as typed: the goal box (and the material box, when it has some), then the cursor back in the goal. */
+  function fill(ex: ExampleGoal) {
+    if (busy) return;
+    setGoal(ex.sentence);
+    setMaterial(ex.material ?? "");
+    goalBox.current?.focus();
+  }
 
   useEffect(() => {
     if (mode !== "goal") return;
@@ -113,12 +140,13 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
   const chosenId = model || picked?.modelId || null;
   const chosen: PlannerCandidate | null = chosenId ? (preview?.candidates ?? []).find((c) => c.modelId === chosenId) ?? null : null;
   const cost = chosen ? costLine(chosen, preview?.memoryBytes) : null;
+  useEffect(() => { onPlanner?.({ preview, chosen }); }, [preview, chosen, onPlanner]);
   // The button says what it still needs, the way Run does in Set up, instead of sitting dim with no reason.
-  const needs = !name.trim() ? "needs a name" : mode === "goal" && !goal.trim() ? "needs a goal" : mode === "copy" && !sourceId ? "needs a recipe to copy" : null;
+  const needs = blocked ? blocked : !name.trim() ? "needs a name" : mode === "goal" && !goal.trim() ? "needs a goal" : mode === "copy" && !sourceId ? "needs a recipe to copy" : null;
   const planLabel = busy && mode === "goal" ? (progress ?? "Planning…") : busy ? "Creating…" : (mode === "goal" ? "Draft it" : "Create and open its card") + (needs ? ` · ${needs}` : "");
 
   return (
-    <Zone className="accent" tabs={<Tabs label="Start from" items={STARTS} value={mode} onChange={(m) => { if (!busy) setMode(m); }} controls="new-recipe-form" />}>
+    <Zone className="accent" tabs={offered.length > 1 ? <Tabs label="Start from" items={offered} value={mode} onChange={(m) => { if (!busy) setMode(m); }} controls="new-recipe-form" /> : undefined}>
       <div id="new-recipe-form" role="tabpanel">
         {mode === "copy" && (
           <div className="field">
@@ -133,15 +161,26 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
           <>
             <div className="field">
               <label><strong className="glow-amber">What should this recipe do? *</strong> <span className="muted">· the one thing you must fill in</span></label>
-              <textarea rows={6} value={goal} autoFocus placeholder={GOAL_PLACEHOLDER}
+              <textarea ref={goalBox} rows={6} value={goal} autoFocus placeholder={GOAL_PLACEHOLDER}
                 disabled={busy} onChange={(e) => setGoal(e.target.value)} />
+              {examples && examples.length > 0 && (
+                <div className="examples" data-testid="examples">
+                  <p className="muted">Or start from one of these:</p>
+                  <ul>
+                    {examples.map((ex) => (
+                      <li key={ex.id}><button type="button" className="link" disabled={busy} onClick={() => fill(ex)}>{ex.sentence}</button></li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {afterGoal}
             </div>
             <div className="field">
               <label><strong>Built into the recipe</strong> <span className="muted">· optional · what stays the same every time, so the recipe carries it</span></label>
               <textarea rows={4} value={material} disabled={busy} placeholder={MATERIAL_PLACEHOLDER} onChange={(e) => setMaterial(e.target.value)} />
               <p className="muted material-note">Pasted here: part of the recipe, used every run, travels with it when shared. Asked for each run: an input, described in the goal above. Set up lets you switch either way later.</p>
             </div>
-            <div className="field">
+            {planWith && <><div className="field">
               <label><strong>Plan with</strong> <span className="muted">· the model that writes the draft. Auto picks a model that fits in memory, answers in a fixed shape (JSON), and has planned quickly before.</span></label>
               <div className="row" style={{ marginTop: 4 }}>
                 <select value={model} disabled={busy || Boolean(trying)} aria-label="Planning model" onChange={(e) => setModel(e.target.value)}>
@@ -187,7 +226,7 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
                   {promptError && <pre className="error">{promptError}</pre>}
                 </div>
               )}
-            </div>
+            </div></>}
           </>
         )}
 
@@ -217,9 +256,10 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
           <button className="primary" style={{ marginTop: 0 }} disabled={!ready || busy || Boolean(trying)} onClick={submit}>
             {busy && mode === "goal" && <Glyph name="ai" />} {planLabel}
           </button>
-          {busy && mode === "goal" && onStop ? <button className="stop" onClick={onStop}><Glyph name="stop" /> Stop</button> : <button disabled={busy} onClick={onCancel}>Cancel</button>}
+          {busy && mode === "goal" && onStop ? <button className="stop" onClick={onStop}><Glyph name="stop" /> Stop</button> : actions ?? <button disabled={busy} onClick={onCancel}>Cancel</button>}
         </div>
         {below}
+        {foot}
       </div>
     </Zone>
   );

@@ -2,6 +2,7 @@
 
 mod plan_journal;
 mod schedules;
+mod updates;
 mod watches;
 
 use serde::{Deserialize, Serialize};
@@ -428,6 +429,8 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeStatus {
+    /// The version of Stillroom that is running, as the bundle says.
+    version: String,
     schema_title: String,
     db_path: String,
     tools: Vec<String>,
@@ -443,6 +446,7 @@ fn runtime_status(state: State<'_, AppState>) -> CmdResult<RuntimeStatus> {
     let mut tools: Vec<String> = state.tools.ids().into_iter().map(String::from).collect();
     tools.sort();
     Ok(RuntimeStatus {
+        version: env!("CARGO_PKG_VERSION").to_string(),
         schema_title: schema["title"].as_str().unwrap_or("?").to_string(),
         db_path: state.db_path.clone(),
         tools,
@@ -597,7 +601,7 @@ fn get_settings(state: State<'_, AppState>) -> CmdResult<Value> {
 }
 
 /// The top-level settings Stillroom knows. Anything else in a patch is refused.
-const SETTING_KEYS: &[&str] = &["look", "ollama", "models", "pins", "firstRun", "codex", "openai", "planner"];
+const SETTING_KEYS: &[&str] = &["look", "ollama", "models", "pins", "firstRun", "codex", "openai", "planner", updates::SETTING];
 
 /// A service address as a setting: a web address (http or https) with a host, kept without any
 /// user name or password that was typed into it, and without a trailing slash. Empty means unset.
@@ -663,6 +667,15 @@ fn checked_setting(key: &str, value: &Value) -> CmdResult<Value> {
     };
     match key {
         "firstRun" => value.as_bool().map(Value::Bool).ok_or_else(|| "firstRun must be true or false".to_string()),
+        "updates" => {
+            let o = want_object(value)?;
+            if let Some(d) = o.get("daily") {
+                if !d.is_boolean() {
+                    return Err("updates.daily must be true or false".to_string());
+                }
+            }
+            Ok(Value::Object(o))
+        }
         "codex" => tidy(want_object(value)?, "path", &|s| checked_program("codex.path", s)),
         "ollama" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("ollama.baseUrl", s)),
         "openai" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("openai.baseUrl", s)),
@@ -690,6 +703,7 @@ fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: Value) -> Cmd
             let engine_field = match k.as_str() {
                 stillroom_core::store::PLANNER_SETTING => Some(stillroom_core::store::PLANNER_MEASURED_FIELD),
                 MODELS_SETTING => Some(SPEED_FIELD),
+                updates::SETTING => Some(updates::LAST_FIELD),
                 _ => None,
             };
             let v = match (engine_field, v) {
@@ -782,6 +796,8 @@ mod settings_tests {
     fn unknown_keys_and_wrong_shapes_are_refused() {
         assert_eq!(checked_setting("secrets", &json!({})).unwrap_err(), "secrets is not a setting Stillroom knows");
         assert_eq!(checked_setting("firstRun", &json!("yes")).unwrap_err(), "firstRun must be true or false");
+        assert_eq!(checked_setting("updates", &json!({ "daily": "yes" })).unwrap_err(), "updates.daily must be true or false");
+        assert_eq!(checked_setting("updates", &json!({ "daily": true })).unwrap(), json!({ "daily": true }));
         assert_eq!(checked_setting("look", &json!("green")).unwrap_err(), "look must be an object");
         assert_eq!(checked_setting("look", &json!({ "theme": "green" })).unwrap(), json!({ "theme": "green" }));
         assert_eq!(checked_setting("codex", &Value::Null).unwrap(), Value::Null, "null removes");
@@ -2228,6 +2244,7 @@ pub fn run() {
             app.manage(ScheduleRuntime::default());
             let schedules_rt = app.state::<ScheduleRuntime>();
             schedules_rt.start_all(app.handle(), &app.state::<AppState>());
+            updates::start_daily(app.handle().clone());
             // The main window is declared in tauri.conf.json with `create: false` and built here, so
             // it can refuse navigation away from the app's own pages (there is no config key for that).
             let main_config = app
@@ -2246,6 +2263,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             runtime_status,
+            updates::check_for_updates,
             list_models,
             hardware,
             codex_status,

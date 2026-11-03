@@ -226,6 +226,8 @@ export interface RunSummary {
 }
 
 export interface RuntimeStatus {
+  /** The version of Stillroom that is running, as the bundle says. */
+  version: string;
   schemaTitle: string;
   dbPath: string;
   tools: string[];
@@ -530,6 +532,21 @@ export interface Settings {
   /** The planner: a pinned model, or none for Auto (local only); and what Try planning measured per model id. */
   planner?: { model?: string; measured?: Record<string, PlanMeasurement> };
   firstRun?: boolean;
+  /** Is there a newer Stillroom: the daily check on launch (off unless turned on) and what the last check found. */
+  updates?: { daily?: boolean; last?: UpdateCheck };
+}
+
+/** What asking the release feed found. */
+export interface UpdateCheck {
+  current: string;
+  latest: string | null;
+  newer: boolean;
+  url: string | null;
+  notes: string | null;
+  publishedAt: string | null;
+  checkedAt: string;
+  /** Why there is no answer: offline, GitHub refused, the feed changed shape. */
+  error: string | null;
 }
 
 export interface PullEvent {

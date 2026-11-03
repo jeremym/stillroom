@@ -107,6 +107,10 @@ function App() {
   const [backgroundNote, setBackgroundNote] = useState<{ text: string; runId: string | null } | null>(null);
   // A quiet line for something that went right and left no other trace (Saved to …).
   const [note, setNote] = useState<string | null>(null);
+  // "Not now" on the update line is remembered for that version only; the next release shows again.
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(() => { try { return localStorage.getItem("p1.updateDismissed"); } catch { return null; } });
+  const updateDismissed = dismissedVersion !== null && dismissedVersion === settings.updates?.last?.latest;
+  const dismissUpdate = (v: string) => { setDismissedVersion(v); try { localStorage.setItem("p1.updateDismissed", v); } catch { /* per-viewer */ } };
   useEffect(() => { if (place !== "library") setNote(null); }, [place]);
   // Get a recipe…: the pick, held in quarantine until Add or Discard. Leaving the place discards.
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
@@ -740,6 +744,14 @@ function App() {
             <p className="quiet-line" role="status">
               <Glyph name="folder" /> {note}
               <button className="quiet" onClick={() => setNote(null)}>Dismiss</button>
+            </p>
+          )}
+
+          {place === "library" && settings.updates?.last?.newer && settings.updates.last.latest && !updateDismissed && (
+            <p className="quiet-line" role="status" data-testid="update-line">
+              <Glyph name="help" /> Stillroom {settings.updates.last.latest} is out; you have {settings.updates.last.current}.
+              {settings.updates.last.url && <button className="link" onClick={() => api.openLink(settings.updates!.last!.url!).catch((e) => setError(String(e)))}>Download from GitHub</button>}
+              <button className="quiet" onClick={() => dismissUpdate(settings.updates!.last!.latest!)}>Not now</button>
             </p>
           )}
 

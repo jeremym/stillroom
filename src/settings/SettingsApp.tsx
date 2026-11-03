@@ -9,8 +9,9 @@ import { measuredTag } from "../planWith";
 import { PullModel } from "../components/PullModel";
 import { PromptEditor } from "../components/PromptEditor";
 import { fmtSpeed, speedOf, thisMacLine } from "../hardware";
-import type { CodexStatus, Hardware, InstalledModel, ModelsResponse, PermissionEntry, PlanMeasurement, RecipesResponse, RuntimeStatus, Schedule, Settings, TryPlanningResult, TryResult, WatchView } from "../types";
+import type { CodexStatus, Hardware, InstalledModel, ModelsResponse, PermissionEntry, PlanMeasurement, RecipesResponse, RuntimeStatus, Schedule, Settings, TryPlanningResult, TryResult, UpdateCheck, WatchView } from "../types";
 import { whenWord } from "../schedules";
+import { updateWord } from "../updates";
 
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
@@ -596,12 +597,18 @@ export default function SettingsApp() {
         )}
 
         {section === "about" && (
-          <Zone title="About" sub="Stillroom 0.1, pre-alpha">
-            <p>Describe the goal. Get the result. See how it was made.</p>
-            <p className="muted">{status ? `${status.schemaTitle} v0 · ${status.runCount} runs · tools: ${status.tools.join(", ")}` : "…"}</p>
-            <p className="muted">Keyboard: ⌘0 Library · ⌘1 Recipe · ⌘2 Set up · ⌘3 Running · ⌘4 Results · ⌘5 Recipe card · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ Help</p>
-            <button onClick={() => save({ firstRun: true })}>{settings.firstRun ? "The first-run screen will show on next launch" : "Show the first-run screen on next launch"}</button>
-          </Zone>
+          <>
+            <Zone title={status ? `Stillroom ${status.version}` : "Stillroom"} sub={status && status.version.startsWith("0.") ? "an early release: the format can still change" : undefined}>
+              <p>Describe the goal. Get the result. See how it was made.</p>
+              <p className="muted">{status ? `${status.schemaTitle} v0 · ${status.runCount} runs · tools: ${status.tools.join(", ")}` : "…"}</p>
+              <p className="muted">Keyboard: ⌘0 Library · ⌘1 Recipe · ⌘2 Set up · ⌘3 Running · ⌘4 Results · ⌘5 Recipe card · ⌘N New recipe · ⌘R Run · ⌘, Settings · ⌘/ Help</p>
+              <button onClick={() => save({ firstRun: true })}>{settings.firstRun ? "The first-run screen will show on next launch" : "Show the first-run screen on next launch"}</button>
+            </Zone>
+            <Zone title="Updates" sub="asks GitHub for the newest release number; nothing is downloaded or installed">
+              <UpdatesPanel last={settings.updates?.last} daily={settings.updates?.daily === true}
+                onDaily={(on) => save({ updates: { ...settings.updates, daily: on } })} onError={setError} />
+            </Zone>
+          </>
         )}
 
         {error && <pre className="error">{error}</pre>}
@@ -648,5 +655,39 @@ function TryPlanningCell({ model, state, measured, onTry }: { model: InstalledMo
       {state && "error" in state && <span className="red"> · {/stopped|cancel/i.test(state.error) ? "stopped" : state.error}</span>}
       {state && "result" in state && !state.result.clean && state.result.problems[0] && <span className="muted"> · {state.result.problems[0]}</span>}
     </span>
+  );
+}
+
+/* Settings › About › Updates: Check now, what the last check found, and the daily check. The check is
+   the one call Stillroom makes beyond this Mac on its own, so it is off until turned on here. */
+export function UpdatesPanel({ last, daily, onDaily, onError }: { last?: UpdateCheck; daily: boolean; onDaily: (on: boolean) => void; onError: (e: string | null) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const word = updateWord(last);
+  async function checkNow() {
+    setBusy(true);
+    onError(null);
+    try {
+      await api.checkForUpdates();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <p className={word.tone} role="status" data-testid="update-word">
+        {word.text}
+        {last?.newer && last.url && <> <button className="link" onClick={() => api.openLink(last.url!).catch((e) => onError(String(e)))}>download from GitHub</button></>}
+        {last?.newer && last.notes && <> · <button className="link" onClick={() => setShowNotes((v) => !v)}>{showNotes ? "hide what changed" : "what changed"}</button></>}
+      </p>
+      {showNotes && last?.notes && <pre className="muted update-notes">{last.notes}</pre>}
+      <div className="row">
+        <button onClick={checkNow} disabled={busy}>{busy ? "Checking…" : "Check now"}</button>
+        <Toggle on={daily} onChange={onDaily} label="Check once a day when Stillroom opens" />
+      </div>
+      <p className="muted">Either way this is one request to GitHub's release feed for this repository, with no account and nothing about you or your recipes in it. Installed through Homebrew? <span className="mono">brew upgrade stillroom</span> does the same from the Terminal.</p>
+    </>
   );
 }

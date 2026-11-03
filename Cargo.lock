@@ -4328,6 +4328,7 @@ dependencies = [
  "chrono",
  "indexmap 2.14.2",
  "keyring",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "stillroom-core",

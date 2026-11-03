@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Schedule, Settings, ShelfState, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Schedule, Settings, ShelfState, ToolInfo, UpdateCheck, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
+  /** Ask GitHub's release feed whether a newer Stillroom exists. The one call the app makes beyond this Mac on its own; remembered under `updates.last`. */
+  checkForUpdates: () => invoke<UpdateCheck>("check_for_updates"),
   listModels: () => invoke<ModelsResponse>("list_models"),
   /** This Mac: chip, memory, cores, and the room a model has. Read once by the engine; unknowns are null. */
   hardware: () => invoke<Hardware>("hardware"),

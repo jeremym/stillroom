@@ -86,6 +86,8 @@ Backlog item from FIRST-USE §9: a loop over an empty optional input is an error
 
 ## 5. Phases
 
+**Status 2026-11-02 (evening): all four phases shipped on `main` as 0.3.3.** Live on a fresh data folder: the first run boots to the goal screen with the five examples, the cannot-yet fold, and the plumbing line reading the real Ollama; the PDFs example drafted in 18 s with the "Your first recipe" note; a schedule added from Set up appeared on the Library with its next-run words and Run now produced a run whose note reads "Started by the schedule set for 00:30" (`docs/screenshots/first-run-*.png`). Headless, every example and the Notion honesty case drafts clean and is a compat fixture (PDFs 7 s, notes and cards 20 s, cited brief 8 s, sites brief 57 s, Notion 51 s, mail 254 s; the mail one wants a ready-made email stage to be quick). Found on the way, and fixed: Ollama's constrained decoding writes JSON in the schema's property order, so the planner's answer schema now lists a step's kind-specific fields before `inputs` (every live tool step had been coming out with `params` and nothing else); the planner's alias rewrite is scoped to stages in the strip; a `params`→`inputs` repair joined the registry. Inbox Triage is a built-in again, with `docs/mail-rule.md`.
+
 | Phase | What ships | Sessions | Verified by |
 |---|---|---|---|
 | **1. Goal-first first run** | The `first-run` place, the five examples (wording as in §2, "each morning" left out), the plumbing line, skip and browse, `Welcome.tsx` retired. | 1 | A fresh data folder boots to the goal screen; each example drafted clean live on the suggested model; screenshots. |

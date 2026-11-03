@@ -1758,6 +1758,257 @@ stages:
         std::fs::remove_dir_all(base).ok();
     }
 
+    fn plain_request(yaml: &str, inputs: IndexMap<String, Value>) -> RunRequest {
+        RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
+            recipe: Recipe::from_yaml(yaml).unwrap(),
+            prompts: HashMap::from([("prompts/brief.md".to_string(), "Write the brief.".to_string())]),
+            inputs,
+            resolutions: BTreeMap::from([(
+                "writer".to_string(),
+                Resolution { slot: "writer".into(), model_id: "test:echo".into(), via: ResolvedVia::Capability },
+            )]),
+            artifact_base: None,
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
+        }
+    }
+
+    fn record<'r>(run: &'r Run, id: &str) -> &'r StepRecord {
+        run.steps.iter().find(|s| s.step_id == id).unwrap_or_else(|| panic!("no record for {id}: {:?}", run.steps.iter().map(|s| &s.step_id).collect::<Vec<_>>()))
+    }
+
+    /// An empty list (or nothing at all) is a loop that runs zero times, not an error: the loop
+    /// gives `[]`, says why, runs nothing inside, and what reads it carries on with the empty list.
+    /// A value that is not a list at all still fails.
+    #[tokio::test]
+    async fn an_empty_loop_runs_zero_times() {
+        let yaml = r#"
+schemaVersion: "0"
+id: empty-loop
+name: Empty loop
+inputs:
+  items: { type: json }
+steps:
+  - id: each
+    kind: map
+    over: ${inputs.items}
+    as: it
+    steps:
+      - id: again
+        kind: tool
+        tool: list.filter
+        inputs: { items: ["${it}"], path: ok }
+  - id: table
+    kind: tool
+    tool: list.table
+    inputs: { items: "${steps.each.output}", columns: { Ok: it.ok } }
+outputs:
+  rows: { from: "${steps.table.output.rows}", type: table }
+"#;
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(NoModels));
+        let make = |items: Value| plain_request(yaml, IndexMap::from([("items".to_string(), items)]));
+        for nothing in [json!([]), json!(""), Value::Null] {
+            let run = exec.run(make(nothing.clone()), None).await;
+            assert_eq!(run.status, RunStatus::Succeeded, "{nothing}: {:?}", run.error);
+            let each = record(&run, "each");
+            assert_eq!(each.status, StepStatus::Skipped);
+            assert_eq!(each.skip_reason.as_deref(), Some("nothing to loop over"));
+            assert_eq!(each.output, Some(json!([])));
+            assert!(!run.steps.iter().any(|s| s.step_id.starts_with("each[")), "nothing inside the loop ran");
+            assert_eq!(record(&run, "table").status, StepStatus::Succeeded, "what reads the loop gets an empty list");
+            assert_eq!(run.outputs["rows"], json!([]));
+        }
+        let run = exec.run(make(json!([{ "ok": true }])), None).await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        assert_eq!(record(&run, "each").status, StepStatus::Succeeded);
+        assert_eq!(record(&run, "each[0].again").status, StepStatus::Succeeded);
+        let run = exec.run(make(json!(7)), None).await;
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(run.error.as_deref().unwrap_or_default().contains("is not a list (got number)"), "{:?}", run.error);
+    }
+
+    /// "Links or a folder, whichever you give": with the folder left empty, the step that lists it
+    /// is skipped with the input's name as the reason, the loop over the listing gives `[]` for the
+    /// same reason, a model step whose only material is the folder is skipped, a tool step reading
+    /// the listing carries the skip, the brief still runs with what there is, and an output taken
+    /// from a skipped step is null.
+    #[tokio::test]
+    async fn a_step_given_nothing_is_skipped_and_the_skip_carries_to_what_reads_it() {
+        let yaml = r#"
+schemaVersion: "0"
+id: either-or
+name: Either or
+inputs:
+  folder: { type: directory, required: false }
+  urls: { type: urls, required: false }
+  focus: { type: text }
+modelSlots:
+  writer: { requires: [text] }
+steps:
+  - id: list
+    kind: tool
+    tool: fs.list
+    inputs: { path: "${inputs.folder}", extensions: [md] }
+  - id: files
+    kind: map
+    over: ${steps.list.output.entries}
+    as: file
+    steps:
+      - id: read
+        kind: tool
+        tool: file.read
+        inputs: { path: "${file.path}" }
+  - id: pages
+    kind: map
+    over: ${inputs.urls}
+    as: url
+    steps:
+      - id: fetch
+        kind: tool
+        tool: http.fetch
+        inputs: { url: "${url}" }
+  - id: brief
+    kind: model
+    slot: writer
+    prompt: prompts/brief.md
+    inputs: { focus: "${inputs.focus}", files: "${steps.files.output}", pages: "${steps.pages.output}" }
+  - id: about_folder
+    kind: model
+    slot: writer
+    prompt: prompts/brief.md
+    inputs: { folder: "${inputs.folder}" }
+  - id: count
+    kind: tool
+    tool: list.filter
+    inputs: { items: "${steps.list.output.entries}", path: name }
+outputs:
+  brief: { from: "${steps.brief.output}", type: markdown }
+  entries: { from: "${steps.list.output.entries}", type: json }
+  folder_note: { from: "${steps.about_folder.output}", type: text }
+stages:
+  - { id: folder, name: Your folder, inputs: [folder], steps: [list, files] }
+  - { id: links, name: Your links, inputs: [urls], steps: [pages] }
+  - { id: brief, name: The brief, inputs: [focus], steps: [brief, about_folder, count], outputs: [brief, entries, folder_note] }
+"#;
+        let dir = std::env::temp_dir().join(format!("stillroom-either-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.md"), "alpha").unwrap();
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+
+        // Only the folder: the links loop is skipped for the links, everything else runs.
+        let run = exec
+            .run(
+                plain_request(yaml, IndexMap::from([("folder".to_string(), json!(dir.to_string_lossy())), ("focus".to_string(), json!("what matters"))])),
+                None,
+            )
+            .await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        assert_eq!(record(&run, "list").status, StepStatus::Succeeded);
+        assert_eq!(record(&run, "files[0].read").output.as_ref().unwrap()["text"], json!("alpha"));
+        let pages = record(&run, "pages");
+        assert_eq!((pages.status, pages.skip_reason.as_deref(), pages.output.clone()), (StepStatus::Skipped, Some("nothing given for urls"), Some(json!([]))));
+        assert_eq!(record(&run, "brief").status, StepStatus::Succeeded);
+        assert_eq!(record(&run, "about_folder").status, StepStatus::Succeeded);
+        assert_eq!(record(&run, "count").status, StepStatus::Succeeded);
+
+        // Nothing but the focus: the folder chain is skipped as one, the brief still runs.
+        let run = exec.run(plain_request(yaml, IndexMap::from([("focus".to_string(), json!("what matters"))])), None).await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        for (id, out) in [("list", Value::Null), ("files", json!([])), ("about_folder", Value::Null), ("count", Value::Null)] {
+            let r = record(&run, id);
+            assert_eq!(r.status, StepStatus::Skipped, "{id}");
+            assert_eq!(r.skip_reason.as_deref(), Some("nothing given for folder"), "{id}");
+            assert_eq!(r.output, Some(out), "{id}");
+        }
+        assert!(!run.steps.iter().any(|s| s.parent.is_some()), "nothing inside either loop ran");
+        assert_eq!(record(&run, "pages").skip_reason.as_deref(), Some("nothing given for urls"));
+        let brief = record(&run, "brief");
+        assert_eq!(brief.status, StepStatus::Succeeded, "the brief has the focus and two empty lists to work with");
+        assert!(brief.output.as_ref().unwrap().as_str().unwrap().contains("what matters"));
+        assert_eq!(run.outputs["entries"], Value::Null, "an output from a skipped step is null");
+        assert_eq!(run.outputs["folder_note"], Value::Null);
+        assert!(run.outputs["brief"].is_string());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A kept stage given nothing this run is skipped with the same word: not served from its
+    /// keep, not rebuilt, its manifest and journal untouched; a later stage reading the keep sees
+    /// what it held. With `manual` the keep would otherwise have been judged fresh; with
+    /// `when_sources_change` it builds again once something is given.
+    #[tokio::test]
+    async fn a_kept_stage_given_nothing_is_skipped_and_its_keep_left_alone() {
+        let yaml = r#"
+schemaVersion: "0"
+id: kept-empty
+name: Kept empty
+inputs:
+  text: { type: text, required: false }
+steps:
+  - id: remember
+    kind: tool
+    tool: keep.put
+    inputs: { id: latest, data: "${inputs.text}" }
+  - id: echo
+    kind: tool
+    tool: keep.get
+    inputs: { id: latest, stage: memory }
+outputs:
+  saw: { from: "${steps.echo.output.record.data}", type: text }
+stages:
+  - { id: ask, name: Ask, inputs: [text] }
+  - { id: memory, name: Remember, steps: [remember], keep: { refresh: REFRESH } }
+  - { id: out, name: Answer, steps: [echo], outputs: [saw] }
+"#;
+        let exec = Executor::new(Arc::new(ToolRegistry::builtin()), Arc::new(EchoModel));
+        for refresh in ["manual", "when_sources_change"] {
+            let yaml = yaml.replace("REFRESH", refresh);
+            let base = std::env::temp_dir().join(format!("stillroom-kept-empty-{}", uuid::Uuid::now_v7()));
+            let make = |text: Option<&str>| {
+                let mut req = keep_request(&yaml, &base, text.unwrap_or_default());
+                if text.is_none() {
+                    req.inputs.clear();
+                }
+                req
+            };
+            let first = exec.run(make(Some("one")), None).await;
+            assert_eq!(first.status, RunStatus::Succeeded, "{refresh}: {:?}", first.error);
+            let keep = Keep::open(keep_dir(&base, "kept-empty", "memory")).unwrap();
+            let built = keep.manifest().unwrap();
+            assert_eq!(built.run_id.as_deref(), Some(first.id.as_str()));
+
+            let second = exec.run(make(None), None).await;
+            assert_eq!(second.status, RunStatus::Succeeded, "{refresh}: {:?}", second.error);
+            let r = record(&second, "remember");
+            assert_eq!((r.status, r.skip_reason.as_deref(), r.reused_from.as_deref()), (StepStatus::Skipped, Some("nothing given for text"), None), "{refresh}");
+            assert_eq!(second.outputs["saw"], json!("one"), "{refresh}: the later stage reads what the keep holds");
+            let after = keep.manifest().unwrap();
+            assert_eq!(after.run_id, built.run_id, "{refresh}: the manifest is untouched");
+            assert_eq!(after.built_at, built.built_at, "{refresh}");
+            assert_eq!(keep.journal(5).unwrap().len(), 1, "{refresh}: nothing journaled");
+            assert_eq!(keep.count().unwrap(), 1, "{refresh}");
+
+            let third = exec.run(make(Some("two")), None).await;
+            assert_eq!(third.status, RunStatus::Succeeded, "{refresh}: {:?}", third.error);
+            let r = record(&third, "remember");
+            if refresh == "manual" {
+                assert_eq!(r.reused_from.as_deref(), Some("keep:memory"), "manual: only Rebuild changes it");
+                assert_eq!(third.outputs["saw"], json!("one"));
+            } else {
+                assert_eq!(r.status, StepStatus::Succeeded, "sources changed: built again");
+                assert_eq!(third.outputs["saw"], json!("two"));
+                assert_eq!(keep.journal(5).unwrap()[0].reason, "sources changed");
+            }
+            std::fs::remove_dir_all(base).ok();
+        }
+    }
+
     fn keep_request(yaml: &str, base: &std::path::Path, text: &str) -> RunRequest {
         RunRequest {
             keep_base: Some(base.to_path_buf()),

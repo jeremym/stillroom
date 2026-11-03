@@ -753,6 +753,34 @@ mod tests {
         assert!(problems.is_empty(), "blank recipe should be valid, got: {problems:?}");
     }
 
+    /// "Links or a folder, whichever you give": an optional list or folder input with no
+    /// default may feed a loop or a tool; the run skips what was not given.
+    #[test]
+    fn an_optional_input_with_no_default_may_be_looped_over() {
+        let yaml = serde_json::json!({
+            "schemaVersion": "0",
+            "id": "either-or",
+            "name": "Either or",
+            "inputs": {
+                "urls": { "type": "urls", "label": "Links", "required": false },
+                "folder": { "type": "directory", "label": "A folder", "required": false }
+            },
+            "permissions": { "filesystem": { "read": ["input"] }, "network": ["input"] },
+            "steps": [
+                { "id": "pages", "kind": "map", "over": "${inputs.urls}", "as": "url",
+                  "steps": [ { "id": "fetch", "kind": "tool", "tool": "http.fetch", "inputs": { "url": "${url}" } } ] },
+                { "id": "list", "kind": "tool", "tool": "fs.list", "inputs": { "path": "${inputs.folder}" } }
+            ],
+            "outputs": { "pages": { "from": "${steps.pages.output}", "type": "json" }, "files": { "from": "${steps.list.output.entries}", "type": "json" } },
+            "stages": [
+                { "id": "links", "name": "Your links", "inputs": ["urls"], "steps": ["pages"], "outputs": ["pages"] },
+                { "id": "folder", "name": "Your folder", "inputs": ["folder"], "steps": ["list"], "outputs": ["files"] }
+            ]
+        });
+        let draft = Draft { yaml, files: BTreeMap::new() };
+        assert_eq!(draft.problems(&tools()), Vec::<String>::new());
+    }
+
     #[test]
     fn builtin_recipes_read_clean() {
         for name in ["summarize-file", "learning-kit", "research-brief", "daily-news-log", "ask-your-documents", "batch-briefing"] {

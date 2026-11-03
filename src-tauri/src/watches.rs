@@ -200,7 +200,7 @@ async fn run_once(app: &AppHandle, id: &str, changed: Vec<String>) {
             let _ = app.emit("watch:run", WatchRunEvent { run_id: Some(run_id.to_string()), ..started.clone() });
         })
     };
-    let trigger = RunTrigger { kind: "watch".into(), watch_id: watch.id.clone(), folder: watch.folder.clone(), changed };
+    let trigger = RunTrigger::Watch { watch_id: watch.id.clone(), folder: watch.folder.clone(), changed };
     let result = execute(
         app,
         &state,

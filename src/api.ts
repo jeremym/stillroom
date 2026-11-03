@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Settings, ShelfState, ToolInfo, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Schedule, Settings, ShelfState, ToolInfo, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -102,6 +102,14 @@ export const api = {
   setWatchEnabled: (id: string, enabled: boolean) => invoke<WatchView>("set_watch_enabled", { id, enabled }),
   removeWatch: (id: string) => invoke<void>("remove_watch", { id }),
   fireWatch: (id: string) => invoke<void>("fire_watch", { id }),
+  /** Schedules: a recipe that runs at a time of day while Stillroom is open. An engine without them refuses the call. */
+  listSchedules: () => invoke<Schedule[]>("list_schedules"),
+  /** `days` are "mon".."sun"; empty means every day. Refused like a run while the consent step is unanswered. */
+  addSchedule: (recipeId: string, inputs: Record<string, unknown>, pins: Record<string, string>, time: string, days: string[]) =>
+    invoke<Schedule>("add_schedule", { args: { recipeId, inputs, pins, time, days } }),
+  setScheduleEnabled: (id: string, enabled: boolean) => invoke<Schedule>("set_schedule_enabled", { id, enabled }),
+  deleteSchedule: (id: string) => invoke<void>("delete_schedule", { id }),
+  fireSchedule: (id: string) => invoke<Run>("fire_schedule", { id }),
   listRuns: (limit = 20) => invoke<RunSummary[]>("list_runs", { limit }),
   getRun: (id: string) => invoke<Run | null>("get_run", { id }),
   usage: () => invoke<ModelUsage[]>("usage"),

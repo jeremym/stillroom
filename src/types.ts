@@ -133,12 +133,50 @@ export interface Run {
   continues?: string | null;
 }
 
-export interface RunTrigger {
-  kind: "watch" | string;
+/** What started a run when it was not the Run button: a folder watch or a schedule. */
+export type RunTrigger = WatchTrigger | ScheduleTrigger;
+
+export interface WatchTrigger {
+  kind: "watch";
   watchId: string;
   folder: string;
   /** File names whose change set the run off; empty for "Run now". */
   changed: string[];
+}
+
+export interface ScheduleTrigger {
+  kind: "schedule";
+  scheduleId: string;
+  /** The time of day the schedule is set for, "07:30" (24-hour, local). */
+  time: string;
+}
+
+/** A schedule: a recipe that runs by itself at a time of day, on the days chosen, while Stillroom is open. */
+export interface Schedule {
+  id: string;
+  recipeId: string;
+  recipeName: string;
+  inputs: Record<string, unknown>;
+  pins: Record<string, string>;
+  /** "07:30", 24-hour, local time. */
+  time: string;
+  /** "mon".."sun"; empty means every day. */
+  days: string[];
+  enabled: boolean;
+  createdAt: string;
+  lastFiredAt: string | null;
+  lastRunId: string | null;
+  /** When it fires next, or null while off. */
+  nextAt: string | null;
+}
+
+export interface ScheduleRunEvent {
+  scheduleId: string;
+  recipeId: string;
+  phase: "started" | "finished" | "failed";
+  runId: string | null;
+  status: RunStatus | null;
+  error: string | null;
 }
 
 /** A folder watch: a recipe that runs by itself when something lands in a folder. */

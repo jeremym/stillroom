@@ -2,7 +2,8 @@
 //! change to `tests/compat/` first; a fixture is only replaced when a migration is written for it.
 //!
 //! - `compat/recipes/v0-pre-stages/`: the four recipes as they were on `main` before stages.
-//! - `compat/recipes/v0-stages/`: the six built-ins and `samples/inbox-triage` as of the stages work.
+//! - `compat/recipes/v0-stages/`: the six built-ins and Inbox Triage (then `samples/inbox-triage`, now a
+//!   built-in) as of the stages work.
 //! - `compat/recipes/v0-notes/`: hand-made recipes that are fine but out of date in one way each,
 //!   so the checker's Notes and their Fixes are pinned here too.
 //! - `compat/planner-answers/`: planner answers in the shapes the merge rules were written for.

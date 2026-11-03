@@ -24,6 +24,10 @@ pub const CATCH_UP_DELAY: Duration = Duration::from_secs(10);
 
 struct Live {
     running: bool,
+    /// When it was counted in during this session (added or resumed), so moments that went by
+    /// while it was paused are not owed. None for one counted in at launch: the stored last
+    /// fire decides, which is what lets a morning the app was closed for be caught up.
+    since: Option<DateTime<Utc>>,
 }
 
 /// The enabled schedules, by id, and the ticker that checks them.
@@ -61,10 +65,15 @@ impl ScheduleRuntime {
         ScheduleView { schedule, next_at }
     }
 
-    /// Count an enabled schedule in. Idempotent: a running one stays running.
+    /// Count an enabled schedule in from now (added or resumed). Idempotent: one already counted
+    /// in, running or not, is left as it is.
     pub fn start(&self, schedule: &Schedule) {
+        self.insert(&schedule.id, Some(Utc::now()));
+    }
+
+    fn insert(&self, id: &str, since: Option<DateTime<Utc>>) {
         if let Ok(mut map) = self.live.lock() {
-            map.entry(schedule.id.clone()).or_insert(Live { running: false });
+            map.entry(id.to_string()).or_insert(Live { running: false, since });
         }
     }
 
@@ -80,7 +89,7 @@ impl ScheduleRuntime {
     pub fn start_all(&self, app: &AppHandle, state: &AppState) {
         let schedules = state.store.lock().ok().and_then(|s| s.list_schedules().ok()).unwrap_or_default();
         for s in schedules.iter().filter(|s| s.enabled) {
-            self.start(s);
+            self.insert(&s.id, None);
         }
         let handle = tauri::async_runtime::spawn(tick_loop(app.clone()));
         if let Ok(mut t) = self.ticker.lock() {
@@ -138,7 +147,16 @@ fn due_now(app: &AppHandle) -> Vec<String> {
     let Ok(live) = rt.live.lock() else { return Vec::new() };
     schedules
         .into_iter()
-        .filter(|s| s.enabled && s.missed(now) && live.get(&s.id).is_some_and(|l| !l.running))
+        .filter(|s| {
+            s.enabled
+                && live.get(&s.id).is_some_and(|l| {
+                    !l.running
+                        && match l.since {
+                            Some(since) => s.missed_since(since, now),
+                            None => s.missed(now),
+                        }
+                })
+        })
         .map(|s| s.id)
         .collect()
 }

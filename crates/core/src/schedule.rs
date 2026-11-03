@@ -82,8 +82,15 @@ impl Schedule {
     /// (or after the schedule was made, if it never fired) is already behind `now`. This is
     /// what the app checks at launch, so a morning the app was closed for is caught up.
     pub fn missed<Tz: TimeZone>(&self, now: DateTime<Tz>) -> bool {
-        let since = self.last_fired_at.unwrap_or(self.created_at).with_timezone(&now.timezone());
-        match next_at(&self.time, &self.days, since) {
+        self.missed_since(self.last_fired_at.unwrap_or(self.created_at), now)
+    }
+
+    /// `missed`, counting only moments after `since` as well as after the last fire: the
+    /// runtime passes the moment a paused schedule was resumed, so a morning that went by
+    /// while it was paused is not run late.
+    pub fn missed_since<Tz: TimeZone>(&self, since: DateTime<Utc>, now: DateTime<Tz>) -> bool {
+        let floor = self.last_fired_at.unwrap_or(self.created_at).max(since).with_timezone(&now.timezone());
+        match next_at(&self.time, &self.days, floor) {
             Some(due) => due <= now,
             None => false,
         }
@@ -262,6 +269,11 @@ outputs:
         s.last_fired_at = Some(east("2026-11-02T07:30:00").with_timezone(&Utc));
         assert!(!s.missed(east("2026-11-04T12:00:00")));
         assert!(s.missed(east("2026-11-09T12:00:00")));
+        // Resumed on the Monday at noon after a week paused: this Monday's moment is not owed.
+        let resumed = east("2026-11-09T12:00:00").with_timezone(&Utc);
+        assert!(!s.missed_since(resumed, east("2026-11-09T12:00:30")));
+        assert!(s.missed_since(resumed, east("2026-11-16T07:31:00")), "the next Monday is");
+        assert!(s.missed_since(east("2026-11-01T00:00:00").with_timezone(&Utc), east("2026-11-09T12:00:00")), "a floor before the last fire changes nothing");
     }
 
     #[test]

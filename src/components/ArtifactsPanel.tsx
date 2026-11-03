@@ -5,7 +5,7 @@ import { isDeck, deckToHtml, deckToPptx } from "./SlidesView";
 import { isAudio } from "./AudioView";
 import { ArtifactEditor } from "./ArtifactEditor";
 import { pickViewer } from "../viewers";
-import type { OutputSpec, Run, StepInfo } from "../types";
+import type { OutputSpec, Run, StepInfo, StepRecord } from "../types";
 
 /** The step an output comes straight from, if `from` is `${steps.<id>.output}` with no deeper path. */
 function sourceStep(spec: OutputSpec | undefined): string | null {
@@ -37,6 +37,8 @@ interface ArtifactProps {
   spec: OutputSpec | undefined;
   value: unknown;
   steps: StepInfo[];
+  /** The run's step records, so a result with no value can say why (an input left empty). */
+  records?: StepRecord[];
   busy: boolean;
   onEdit?: (stepId: string, output: unknown) => void;
   /** A saved example, not a run on your files: look only, nothing to edit or save. */
@@ -49,7 +51,15 @@ function kindIsEditable(kind: string | undefined, value: unknown) {
   return typeof value === "string" || (typeof value === "object" && value !== null);
 }
 
-function Artifact({ runId, name, spec, value, steps, busy, onEdit, readOnly = false }: ArtifactProps) {
+/** Why a result has no value: its step was skipped because an optional input was left empty ("nothing
+    given for links"), or it simply has not run yet (it comes after a review). */
+function nothingWord(steps: StepRecord[] | undefined, stepId: string | null): string {
+  const reason = steps?.find((r) => r.stepId === stepId)?.skipReason;
+  if (reason && reason.startsWith("nothing given")) return `Nothing this run: ${reason.replace(/^nothing given for /, "")} was left empty.`;
+  return "Not produced yet. This comes after the review above.";
+}
+
+function Artifact({ runId, name, spec, value, steps, records, busy, onEdit, readOnly = false }: ArtifactProps) {
   const label = spec?.label ?? name;
   const stepId = sourceStep(spec);
   const editable = !readOnly && Boolean(onEdit && stepId && kindIsEditable(spec?.type, value));
@@ -118,7 +128,7 @@ function Artifact({ runId, name, spec, value, steps, busy, onEdit, readOnly = fa
           onSave={(output) => { setEditing(false); onEdit?.(stepId, output); }}
         /></div>
       ) : value == null ? (
-        <p className="muted">Not produced yet. This comes after the review above.</p>
+        <p className="muted">{nothingWord(records, stepId)}</p>
       ) : (
         <div className="paper">{pickViewer({ kind, value, onSvg: setSvg })}</div>
       )}
@@ -167,7 +177,7 @@ export function ArtifactsPanel({ run, outputs, steps, busy, onEdit, readOnly, gr
           ))}
         </nav>
       )}
-      <Artifact key={`${run.id}:${name}`} runId={run.id} name={name} spec={outputs[name]} value={value} steps={steps} busy={busy} onEdit={onEdit} readOnly={readOnly} />
+      <Artifact key={`${run.id}:${name}`} runId={run.id} name={name} spec={outputs[name]} value={value} steps={steps} records={run.steps} busy={busy} onEdit={onEdit} readOnly={readOnly} />
     </>
   );
 }

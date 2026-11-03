@@ -7,7 +7,7 @@ A recipe is a folder with `recipe.yaml` plus prompt files under `prompts/` and o
 - `${inputs.name}` is the value of an input.
 - `${steps.id.output}` is the whole output of step `id`; `${steps.id.output.field}` reaches inside it. Only dotted field names: there are no wildcards, indexes, or filters (`[*]`, `[0]`, `.map(...)` do not exist). Never `${id}` on its own; a step's result is always `${steps.id.output}`.
 - A for-each (`map`) step's output is a list, one entry per item. To use everything it produced, pass the whole list, `${steps.id.output}`; a model step receives it as JSON and can read every entry. To work on one entry at a time, put the model step inside the loop.
-- Inside a loop, the current item is `${item}`. If the loop sets `as`, the item is called that instead (`as: url` means `${url}`, and `${item}` is then wrong). Simplest: leave `as` out and write `${item}`. Inner steps see each other as `${steps.innerId.output}`.
+- Inside a loop, the current item is `${item}`. Do not set `as` on a loop: with `as: url` the item is called `${url}` and every `${item}` inside is wrong. Inner steps see each other as `${steps.innerId.output}`.
 
 ### recipe.yaml, as JSON
 
@@ -37,12 +37,12 @@ Output types: `markdown`, `text`, `json`, `table`, `html`, `slides`, `diagram`, 
 
 ### Steps
 
-Names inside a recipe (step ids, input names, slot names, output names) are a letter followed by letters, digits, or underscores: `read_file`, `writer`, `study_path`. No hyphens or spaces, because references are written with dots and word characters only. Every step has `id` (unique), `kind`, a short `name` the user sees, and `inputs` (a map of names to values or references). Steps run as soon as what they reference is done; `dependsOn: ["id"]` adds an ordering with no data link.
+Names inside a recipe (step ids, input names, slot names, output names) are a letter followed by letters, digits, or underscores: `read_file`, `writer`, `study_path`. No hyphens or spaces, because references are written with dots and word characters only. A step of your own never takes the id of a ready-made stage (`write_brief`, `read_links`, `study_cards`): those names are taken; say what the step does instead (`save_brief`). Every step has `id` (unique), `kind`, a short `name` the user sees, and `inputs` (a map of names to values or references). Steps run as soon as what they reference is done; `dependsOn: ["id"]` adds an ordering with no data link.
 
-- `tool`: runs one of the tools listed below. `"tool": "file.read"`, `"inputs"` as the tool's parameters.
+- `tool`: runs one of the tools listed below, with the tool's parameters as the step's `inputs`: `{ "id": "read", "kind": "tool", "name": "Read the file", "tool": "file.read", "inputs": { "path": "${inputs.file}" } }`. Write them under `inputs` for every kind of step; `params` is only a model step's temperature and thinking.
 - `model`: one prompt, one answer, no tools. `"slot": "<slot>"`, `"prompt": "prompts/<file>.md"`, `"inputs"` become the message the model receives (each input is a titled section). Optional `"outputSchema": "schemas/<file>.json"` makes the answer JSON that matches the schema (the slot then needs `structured_output`). Optional `"params": { "temperature": 0.2, "think": false, "contextLength": 16384 }`.
 - `agent`: like `model` but may call tools from `"allowedTools": ["fs.list"]` in a loop; `"maxTurns"` and `"maxToolCalls"` bound it. Use only when the step must decide what to look at; prefer `tool` and `model` steps otherwise.
-- `map`: runs its `steps` once per item. `"over": "${inputs.urls}"`, `"as": "url"`, `"concurrency": 3`. Its output is a list with one entry per item; each entry holds the item under its name (`item`, or what `as` says, e.g. `url`) and the inner steps' outputs by id (so `${steps.read.output}` is the list, and inside one entry `url` is the link and `extract.summary` the extraction).
+- `map`: runs its `steps` once per item. `"over": "${inputs.urls}"`, `"concurrency": 3`, no `as`. Its output is a list with one entry per item; each entry holds the item under `item` and the inner steps' outputs by id (so `${steps.read.output}` is the list, and inside one entry `item` is the link and `extract.summary` the extraction).
 - `review`: pauses so the user can approve items. `"items": "${steps.find.output.items}"`, `"title": "...", "show": ["field", "field"]`. Its output has `approved` and `rejected` lists.
 
 ### Stages: the strip the user reads first

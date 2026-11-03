@@ -16,6 +16,7 @@ vi.mock("../api", () => ({
     runtimeStatus: vi.fn(() => Promise.reject(new Error("not here"))),
     listRecipes: vi.fn(() => Promise.reject(new Error("not here"))),
     listWatches: vi.fn(() => Promise.resolve([])),
+    listSchedules: vi.fn(() => Promise.reject(new Error("not here"))),
     hasSecret: vi.fn(() => Promise.resolve(false)),
     codexStatus: vi.fn(() => Promise.reject(new Error("not here"))),
     permissionStatus: vi.fn(() => Promise.resolve([])),

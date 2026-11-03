@@ -12,9 +12,10 @@ describe("example goals", () => {
       expect(e.like).toMatch(/^[a-z][a-z0-9-]*$/);
     }
   });
-  it("promise only what the engine does: no schedule, no sending, no services", () => {
+  it("promise only what the engine does: no sending, no services; a schedule is fine now that schedules exist", () => {
     const all = EXAMPLE_GOALS.map((e) => e.sentence).join(" ");
-    expect(all).not.toMatch(/each morning|every day|Notion|Slack/i);
+    expect(all).not.toMatch(/Notion|Slack|send it|post it/i);
+    expect(EXAMPLE_GOALS.find((e) => e.id === "news-brief")?.sentence).toMatch(/^Each morning/);
     expect(EXAMPLE_GOALS.find((e) => e.id === "mail-sorter")?.sentence).toContain("for me to send");
   });
   it("the cannot-yet line names the five gaps", () => {

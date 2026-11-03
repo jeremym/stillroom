@@ -14,7 +14,7 @@ export interface ExampleGoal {
 export const EXAMPLE_GOALS: readonly ExampleGoal[] = [
   {
     id: "news-brief",
-    sentence: "Read the sites I follow about a topic, keep only what is new, and write me a short brief into my notes folder.",
+    sentence: "Each morning, read the sites I follow about a topic, keep only what is new, and write me a short brief into my notes folder.",
     like: "daily-news-log",
   },
   {
@@ -42,4 +42,4 @@ export const EXAMPLE_GOALS: readonly ExampleGoal[] = [
 /** What is not offered, said plainly under a fold on the first screen. One short paragraph. */
 export const CANNOT_YET =
   "Send mail or messages. Post to Notion, Slack, or any service: nothing leaves this Mac; a recipe writes files, and your notes app can watch a folder. " +
-  "Read a mailbox directly: save messages to a folder with a Mail rule instead. Transcribe a recording. Run on a schedule.";
+  "Read a mailbox directly: save messages to a folder with a Mail rule instead. Transcribe a recording. Run on a schedule while Stillroom is closed (a schedule runs while it is open).";

@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 // @ts-expect-error type error without @types/node package
@@ -7,6 +8,9 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react()],
+
+  // Agents work in git worktrees under .claude/; their copies of the tests are not this app's.
+  test: { exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/**", "**/target/**"] },
 
   // The app kit is linked from a sibling folder that has its own node_modules; make it share
   // this app's React and Lucide so hooks run against one React.

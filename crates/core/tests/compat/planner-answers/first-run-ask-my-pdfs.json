@@ -1,0 +1,26 @@
+{
+  "about": "Recorded live from ollama:qwen3.8:27b-mlx in 7 s, 1 model call(s): the goal \"Ask me for a folder of PDFs and a question, and answer from them with the page it came from.\".",
+  "request": {
+    "goal": "Ask me for a folder of PDFs and a question, and answer from them with the page it came from.",
+    "material": null,
+    "id": "ask-my-pdfs",
+    "name": "Ask my PDFs",
+    "icon": "search"
+  },
+  "strip": {
+    "stages": [
+      {
+        "use": "index_folder",
+        "name": "Index the PDFs",
+        "why": "Read every PDF in the folder you choose, split them into passages, and index those passages by meaning (embeddings) so a question can be matched against them later."
+      },
+      {
+        "use": "answer_from_index",
+        "name": "Answer with a page",
+        "why": "Take the question you ask, find the passages in the index that match it, and write an answer that cites each point by file and page so you can check where it came from."
+      }
+    ]
+  },
+  "answer": null,
+  "problems": []
+}

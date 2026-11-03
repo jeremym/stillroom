@@ -104,8 +104,8 @@ mod tests {
         ]);
         let r = lib.scan();
         assert!(r.errors.is_empty(), "{:?}", r.errors);
-        let sample = r.bundles.iter().find(|b| b.recipe.id == "inbox-triage").expect("the sample is scanned from samples/");
-        assert_eq!(sample.source, RecipeSource::Sample);
+        let triage = r.bundles.iter().find(|b| b.recipe.id == "inbox-triage").expect("Inbox Triage is scanned from recipes/");
+        assert_eq!(triage.source, RecipeSource::Builtin);
         assert!(!r.bundles.iter().any(|b| b.root.ends_with("inbox") || b.root.ends_with("archive")), "fixture folders without recipe.yaml are skipped");
         let mine: Vec<_> = r.bundles.iter().filter(|b| b.recipe.id == "summarize-file").collect();
         assert_eq!(mine.len(), 1, "one entry per id");

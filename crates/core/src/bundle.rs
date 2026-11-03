@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn loads_inbox_triage_with_nested_prompts_and_schemas() {
-        let b = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::User).unwrap();
+        let b = RecipeBundle::load(repo_recipes().join("inbox-triage"), RecipeSource::User).unwrap();
         assert_eq!(b.prompts.len(), 3, "{:?}", b.prompts.keys());
         let info = b.info();
         let triage = info.steps.iter().find(|s| s.id == "triage").unwrap();
@@ -415,14 +415,16 @@ mod tests {
         assert_eq!(builtin.shelf, ShelfState::Catalog, "a built-in starts in the catalog");
         assert_eq!(builtin.clone().with_shelf(Some(ShelfState::Shelf)).shelf, ShelfState::Shelf);
         assert_eq!(builtin.clone().with_shelf(Some(ShelfState::Archive)).shelf, ShelfState::Archive);
-        let yours = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::User).unwrap().info();
+        let yours = RecipeBundle::load(repo_recipes().join("inbox-triage"), RecipeSource::User).unwrap().info();
         assert_eq!(yours.shelf, ShelfState::Shelf, "your own starts on the shelf");
         assert_eq!(yours.clone().with_shelf(Some(ShelfState::Archive)).shelf, ShelfState::Archive);
         assert_eq!(yours.clone().with_shelf(Some(ShelfState::Catalog)).shelf, ShelfState::Shelf, "never in the catalog");
         assert_eq!(serde_json::to_value(&builtin).unwrap()["shelf"], serde_json::json!("catalog"));
-        let sample = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::Sample).unwrap().info();
+        // A sample (a catalog recipe that needs fixture folders copied first) starts in the catalog
+        // too; Inbox Triage stands in, loaded as one.
+        let sample = RecipeBundle::load(repo_recipes().join("inbox-triage"), RecipeSource::Sample).unwrap().info();
         assert_eq!(sample.shelf, ShelfState::Catalog, "a sample starts in the catalog too");
-        assert!(sample.tags.contains(&"sample".to_string()), "the sample row is found by its tag: {:?}", sample.tags);
+        assert!(sample.tags.contains(&"built-in".to_string()), "Inbox Triage is a built-in now: {:?}", sample.tags);
         assert_eq!(sample.clone().with_shelf(Some(ShelfState::Shelf)).shelf, ShelfState::Shelf);
         assert_eq!(serde_json::to_value(&sample).unwrap()["source"], serde_json::json!("sample"));
         let json = serde_json::to_value(&sample).unwrap();
@@ -435,8 +437,9 @@ mod tests {
     fn consent_lists_literal_entries_for_anything_but_a_built_in() {
         let builtin = RecipeBundle::load(repo_recipes().join("summarize-file"), RecipeSource::Builtin).unwrap().info();
         assert_eq!(builtin.consent, Consent::default());
-        // The sample reads and writes only the folders the user picks: nothing literal.
-        let sample = RecipeBundle::load(repo_recipes().join("../samples/inbox-triage"), RecipeSource::Sample).unwrap().info();
+        // Inbox Triage reads and writes only the folders the user picks: nothing literal, even
+        // when loaded as a sample.
+        let sample = RecipeBundle::load(repo_recipes().join("inbox-triage"), RecipeSource::Sample).unwrap().info();
         assert!(sample.consent.needed.is_empty(), "{:?}", sample.consent);
         // A user recipe with a literal path needs a yes until the shell applies a grant.
         let tmp = std::env::temp_dir().join(format!("stillroom-consent-{}", uuid::Uuid::now_v7()));

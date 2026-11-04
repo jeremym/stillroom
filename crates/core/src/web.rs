@@ -24,7 +24,7 @@ impl WebSearch {
 }
 
 /// The words when no service is set.
-pub const NO_SERVICE: &str = "No web search service is set. In Settings › Models, give the address of a SearXNG instance (one you run, or one you trust); until then this step cannot search.";
+pub const NO_SERVICE: &str = "No web search service is set. In Settings › Services, give the address of a SearXNG instance (one you run, or one you trust); until then this step cannot search.";
 
 /// The request a SearXNG instance understands: `<base>/search?q=…&format=json`.
 pub fn search_url(base: &str, query: &str, count: usize, language: Option<&str>) -> Result<url::Url, String> {

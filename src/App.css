@@ -352,6 +352,9 @@ div.consent-zone { margin: 10px 0 14px; }
 .change-after { border-color: var(--phos-dim) !important; }
 @media (max-width: 900px) { .change-side-by-side { grid-template-columns: 1fr; } }
 
+/* Settings: the one line a section opens with. */
+.settings-lead { margin: 0 0 12px; }
+
 /* Permission rows on Set up: what this run touches, each folder tried before Run. */
 .perm-rows h3 { margin-bottom: 4px; }
 .perm-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; }

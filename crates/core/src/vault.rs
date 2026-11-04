@@ -1,4 +1,4 @@
-//! The person's Obsidian vault: a folder of Markdown notes chosen once in Settings › Folders.
+//! The person's Obsidian vault: a folder of Markdown notes chosen once in Settings › Services.
 //! `vault.write` puts a note there with YAML front matter and `[[wikilinks]]` to related notes;
 //! `vault.list` names the notes already there so a recipe can link to them. Choosing the vault
 //! is the permission: these tools write only under it, whatever the recipe's own permissions say.
@@ -13,12 +13,12 @@ use crate::tools::{Tool, ToolContext, ToolDescription, ToolError};
 /// Where the vault is, read each call so a change in Settings takes at once.
 pub type VaultPath = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 
-pub const NO_VAULT: &str = "No Obsidian vault is set. In Settings › Folders, choose your vault's folder; until then this step cannot write notes.";
+pub const NO_VAULT: &str = "No Obsidian vault is set. In Settings › Services, choose your vault's folder; until then this step cannot write notes.";
 
 fn vault_root(p: &VaultPath) -> Result<PathBuf, ToolError> {
     let root = p().filter(|r| !r.as_os_str().is_empty()).ok_or_else(|| ToolError::Failed(NO_VAULT.into()))?;
     if !root.is_dir() {
-        return Err(ToolError::Failed(format!("The Obsidian vault folder {} is not there; choose it again in Settings › Folders.", root.display())));
+        return Err(ToolError::Failed(format!("The Obsidian vault folder {} is not there; choose it again in Settings › Services.", root.display())));
     }
     Ok(root)
 }
@@ -124,7 +124,7 @@ impl Tool for VaultWrite {
 
     fn describe(&self) -> Option<ToolDescription> {
         Some(ToolDescription {
-            description: "Write a note into the user's Obsidian vault (chosen once in Settings › Folders; the recipe needs no folder input or permission for it). The note gets YAML front matter (tags, any fields you give, created) and a Related section with a [[wikilink]] to each name in links.".into(),
+            description: "Write a note into the user's Obsidian vault (chosen once in Settings › Services; the recipe needs no folder input or permission for it). The note gets YAML front matter (tags, any fields you give, created) and a Related section with a [[wikilink]] to each name in links.".into(),
             returns: "`{ path, note, folder, links }`; `note` is the name other notes link to as [[note]].".into(),
             parameters: json!({
                 "type": "object",
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(listed["notes"][0]["folder"], "Reading/Briefs");
         // No vault set: the words say where to set it.
         let none = VaultWrite { vault: Arc::new(|| None) };
-        assert!(none.call(&ctx(), json!({ "name": "a", "text": "b" })).await.unwrap_err().to_string().contains("Settings › Folders"));
+        assert!(none.call(&ctx(), json!({ "name": "a", "text": "b" })).await.unwrap_err().to_string().contains("Settings › Services"));
         std::fs::remove_dir_all(vault).ok();
     }
 

@@ -17,10 +17,12 @@ import { updateWord } from "../updates";
 /* The Settings window (⌘,): what the app looks like, what it thinks with, where things live.
    Every change is saved as it is made and every window hears about it. */
 
-type Section = "look" | "models" | "prompts" | "folders" | "watches" | "permissions" | "privacy" | "about";
+type Section = "look" | "models" | "cloud" | "services" | "prompts" | "folders" | "watches" | "permissions" | "privacy" | "about";
 const SECTIONS: { id: Section; label: string; glyph: GlyphName }[] = [
   { id: "look", label: "Look", glyph: "image" },
   { id: "models", label: "Models", glyph: "models" },
+  { id: "cloud", label: "Cloud", glyph: "cloud" },
+  { id: "services", label: "Services", glyph: "globe" },
   { id: "prompts", label: "Prompts", glyph: "chat" },
   { id: "folders", label: "Folders", glyph: "folder" },
   { id: "watches", label: "Watches and schedules", glyph: "watch" },
@@ -73,14 +75,14 @@ export default function SettingsApp() {
   const [codexDraft, setCodexDraft] = useState("");
   const [codexPath, setCodexPath] = useState("");
   const refreshCodex = useCallback(() => { api.codexStatus().then(setCodex).catch((e) => setError(String(e))); }, []);
-  useEffect(() => { if (section === "models") refreshCodex(); }, [section, refreshCodex, settings.codex?.path]);
+  useEffect(() => { if (section === "cloud" || section === "privacy") refreshCodex(); }, [section, refreshCodex, settings.codex?.path]);
   const [oaUrl, setOaUrl] = useState("");
   const [oaDraft, setOaDraft] = useState("");
   const [oaKeyDraft, setOaKeyDraft] = useState("");
   const [oaKeySet, setOaKeySet] = useState<boolean | null>(null);
   const [oaKeyBusy, setOaKeyBusy] = useState(false);
   const refreshOaKey = useCallback(() => { api.hasSecret("openai.apiKey").then(setOaKeySet).catch(() => setOaKeySet(null)); }, []);
-  useEffect(() => { if (section === "models") refreshOaKey(); }, [section, refreshOaKey]);
+  useEffect(() => { if (section === "cloud" || section === "privacy") refreshOaKey(); }, [section, refreshOaKey]);
   useEffect(() => { setOaUrl(settings.openai?.baseUrl ?? ""); }, [settings.openai?.baseUrl]);
   const [searchUrl, setSearchUrl] = useState("");
   useEffect(() => { setSearchUrl(settings.search?.baseUrl ?? ""); }, [settings.search?.baseUrl]);
@@ -367,6 +369,12 @@ export default function SettingsApp() {
               )}
             </Zone>
 
+          </>
+        )}
+
+        {section === "cloud" && (
+          <>
+            <p className="muted settings-lead">Nothing here is on until you turn it on. A step on a cloud model sends its prompt and inputs off this Mac and is marked amber everywhere it appears; Auto never picks one. Privacy lists what is on.</p>
             <Zone title="Codex" sub="cloud models through your ChatGPT plan" className={codexOn ? "accent" : undefined}
               aside={codex && <><span className={`dot ${codex.installed && codex.signedIn ? "ok" : "bad"}`} />{!codex.installed ? "not installed" : !codex.signedIn ? "not signed in" : codexOn ? "on" : "off"}</>}>
               <p className="muted">Stillroom can hand an AI step to the <strong>Codex app</strong> (the command <span className="mono">codex exec</span>, run headless in a read-only sandbox). It is billed to the ChatGPT plan Codex is signed in with, never per token. <span className="amber">The prompt and the step's inputs leave this Mac</span>; every step on a Codex model is marked amber. Auto never picks one: you choose it as a pin or a default.</p>
@@ -479,6 +487,12 @@ export default function SettingsApp() {
               )}
             </Zone>
 
+          </>
+        )}
+
+        {section === "services" && (
+          <>
+            <p className="muted settings-lead">Doors a recipe may use once you have set them up. Each is off until you give it an address or a folder, and a recipe that needs one you have not set says so and stops.</p>
             <Zone title="Web search" sub="optional · a search service for recipes that look things up">
               <p className="muted">Stillroom ships no search of its own and holds no key. Give the address of a SearXNG instance you run or trust (its JSON format must be on), and the <span className="mono">web.search</span> tool finds pages through it; <span className="mono">http.fetch</span> then reads them under the recipe's own network permission. Without an address, a recipe that searches says so and stops.</p>
               <div className="row field-row">
@@ -490,6 +504,14 @@ export default function SettingsApp() {
                 {settings.search?.baseUrl && <button className="quiet" onClick={() => { setSearchUrl(""); save({ search: null }); }}>Forget</button>}
               </div>
             </Zone>
+          <Zone title="Obsidian vault" sub="optional · where recipes may write notes">
+            <p className="muted">Choose your vault's folder once, and a recipe that names Obsidian writes notes into it with front matter and <span className="mono">[[wikilinks]]</span> to related notes (the <span className="mono">vault.write</span> and <span className="mono">vault.list</span> tools). Choosing it here is the permission: nothing else may write there, and a recipe needs no folder input for it. Without a vault, such a recipe says so and stops.</p>
+            <div className="row">
+              <button onClick={() => openDialog({ directory: true, multiple: false, title: "Choose your Obsidian vault" }).then((p) => { if (typeof p === "string" && p) save({ vault: { path: p } }); }).catch((e) => setError(String(e)))}>Choose vault…</button>
+              <span className="mono">{settings.vault?.path ?? "no vault chosen"}</span>
+              {settings.vault?.path && <button className="quiet" onClick={() => save({ vault: null })}>Forget</button>}
+            </div>
+          </Zone>
           </>
         )}
 
@@ -516,16 +538,6 @@ export default function SettingsApp() {
                 <button onClick={() => api.revealRecipesFolder().catch((e) => setError(String(e)))}>Show my recipes folder</button>
               </>
             ) : <p className="muted">…</p>}
-          </Zone>
-        )}
-        {section === "folders" && (
-          <Zone title="Obsidian vault" sub="optional · where recipes may write notes">
-            <p className="muted">Choose your vault's folder once, and a recipe that names Obsidian writes notes into it with front matter and <span className="mono">[[wikilinks]]</span> to related notes (the <span className="mono">vault.write</span> and <span className="mono">vault.list</span> tools). Choosing it here is the permission: nothing else may write there, and a recipe needs no folder input for it. Without a vault, such a recipe says so and stops.</p>
-            <div className="row">
-              <button onClick={() => openDialog({ directory: true, multiple: false, title: "Choose your Obsidian vault" }).then((p) => { if (typeof p === "string" && p) save({ vault: { path: p } }); }).catch((e) => setError(String(e)))}>Choose vault…</button>
-              <span className="mono">{settings.vault?.path ?? "no vault chosen"}</span>
-              {settings.vault?.path && <button className="quiet" onClick={() => save({ vault: null })}>Forget</button>}
-            </div>
           </Zone>
         )}
 
@@ -609,6 +621,8 @@ export default function SettingsApp() {
               {codexOn && <p className="amber"><Glyph name="warning" /> Codex is on: a step you put on a Codex model sends its prompt and inputs to OpenAI through your ChatGPT plan. Such steps are marked amber on the map and in Set up.</p>}
               {openaiOn && openaiStatus && !openaiStatus.local && <p className="amber"><Glyph name="warning" /> An API-key service at <span className="mono">{openaiStatus.baseUrl}</span> is on: a step you put on one of its models sends its prompt and inputs there. Such steps are marked amber.</p>}
               {!codexOn && !(openaiOn && openaiStatus && !openaiStatus.local) && <p className="muted">No cloud provider is on, so no model step leaves this Mac.</p>}
+              {settings.search?.baseUrl && <p className="muted">A recipe that searches sends its query to the search service at <span className="mono">{settings.search.baseUrl}</span> (Settings › Services).</p>}
+              {settings.vault?.path && <p className="muted">A recipe that names Obsidian may write notes into <span className="mono">{settings.vault.path}</span> and nowhere else (Settings › Services).</p>}
               <p>A recipe reaches the network only if it declares <span className="mono">permissions.network</span>. The usual grant is <span className="mono">input</span>: exactly the hosts in the links you typed, checked on every redirect.</p>
             </Zone>
             <Zone title="Remembered answers" sub="what Reuse unchanged steps draws on">

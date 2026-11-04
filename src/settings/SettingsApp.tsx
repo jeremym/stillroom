@@ -586,6 +586,10 @@ export default function SettingsApp() {
               {!codexOn && !(openaiOn && openaiStatus && !openaiStatus.local) && <p className="muted">No cloud provider is on, so no model step leaves this Mac.</p>}
               <p>A recipe reaches the network only if it declares <span className="mono">permissions.network</span>. The usual grant is <span className="mono">input</span>: exactly the hosts in the links you typed, checked on every redirect.</p>
             </Zone>
+            <Zone title="Remembered answers" sub="what Reuse unchanged steps draws on">
+              <p className="muted">Every AI step's answer is kept on this Mac with the prompt, model, settings, and inputs that made it, so a later run with exactly the same can reuse it instead of asking the model again (selective rerun). Nothing here leaves the Mac. Forgetting them makes every step of every recipe run fresh next time.</p>
+              <ForgetAnswers />
+            </Zone>
             <Zone title="Recipes that may use the network">
               {recipes ? (() => {
                 const net = recipes.recipes.filter((r) => r.permissions?.network);
@@ -690,5 +694,21 @@ export function UpdatesPanel({ last, daily, onDaily, onError }: { last?: UpdateC
       </div>
       <p className="muted">Either way this is one request to GitHub's release feed for this repository, with no account and nothing about you or your recipes in it. Installed through Homebrew? <span className="mono">brew upgrade stillroom</span> does the same from the Terminal.</p>
     </>
+  );
+}
+
+/** Settings › Privacy: forget every remembered step answer, and say how many went. */
+function ForgetAnswers() {
+  const [busy, setBusy] = useState(false);
+  const [word, setWord] = useState<string | null>(null);
+  return (
+    <div className="row">
+      <button disabled={busy} onClick={() => {
+        setBusy(true);
+        setWord(null);
+        api.clearStepCache().then((n) => setWord(n === 0 ? "Nothing was remembered." : `Forgot ${n} answer${n === 1 ? "" : "s"}; the next run of every recipe asks its models again.`)).catch((e) => setWord(String(e))).finally(() => setBusy(false));
+      }}>Forget remembered answers</button>
+      {word && <span className="muted">{word}</span>}
+    </div>
   );
 }

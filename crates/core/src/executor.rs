@@ -421,19 +421,26 @@ impl Executor {
         self
     }
 
-    /// Everything that determines a step's output: its definition, the resolved inputs,
-    /// and for model and agent steps the model id and the prompt text.
+    /// Everything that determines a step's output: its definition, the resolved inputs, and for
+    /// model and agent steps the model id, the prompt text, and the settings the call really
+    /// used (the context length and thinking a step leaves to Settings › Models).
     fn cache_key(&self, req: &RunRequest, step: &Step, inputs: &Value) -> Option<String> {
         let def = serde_json::to_string(step).ok()?;
         let inputs = serde_json::to_string(inputs).ok()?;
-        let (slot, prompt) = match step {
-            Step::Model(m) => (Some(&m.slot), Some(&m.prompt)),
-            Step::Agent(a) => (Some(&a.slot), Some(&a.prompt)),
-            _ => (None, None),
+        let (slot, prompt, params) = match step {
+            Step::Model(m) => (Some(&m.slot), Some(&m.prompt), m.params.clone()),
+            Step::Agent(a) => (Some(&a.slot), Some(&a.prompt), a.params.clone()),
+            _ => (None, None, None),
         };
         let model = slot.and_then(|s| req.resolutions.get(s)).map(|r| r.model_id.clone()).unwrap_or_default();
         let prompt = prompt.and_then(|p| req.prompts.get(p)).cloned().unwrap_or_default();
-        Some(fingerprint(&[&req.recipe.id, step.id(), &def, &inputs, &model, &prompt]))
+        let effective = if slot.is_some() {
+            let p = params.unwrap_or_default();
+            serde_json::json!({ "contextLength": p.context_length.or(req.model_defaults.context_length), "think": p.think.or_else(|| req.model_defaults.think.clone()) }).to_string()
+        } else {
+            String::new()
+        };
+        Some(fingerprint(&[&req.recipe.id, step.id(), &def, &inputs, &model, &prompt, &effective]))
     }
 
     /// Whether a continued run may take this step's result from the run it continues.
@@ -2453,6 +2460,14 @@ stages:
         changed.prompts.insert("prompts/summarize.md".into(), "different prompt".into());
         let third = exec.run(changed, None).await;
         assert!(third.steps[1].reused_from.is_none());
+        // So does a changed default in Settings › Models that the step leaves to the app (context
+        // length, thinking): the call really ran with it, so the answer is not the same answer.
+        let mut defaults = make();
+        defaults.model_defaults = ModelDefaults { context_length: Some(4096), think: None };
+        let fourth = exec.run(defaults, None).await;
+        assert!(fourth.steps[1].reused_from.is_none(), "a different context length is a different call");
+        let fifth = exec.run(make(), None).await;
+        assert!(fifth.steps[1].reused_from.is_some(), "back to the first settings, the first answer is reused");
         std::fs::remove_dir_all(dir).ok();
     }
 

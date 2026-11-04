@@ -6,7 +6,7 @@ import { defaultInputs } from "../recipes/defaults";
 import { ALL_DAYS, DAY_LABEL, DEFAULT_TIME, daysToSend, whenWord } from "../schedules";
 import { aboutMs, estimateWord, inputsKnownUpTo, keepHeldWord, keepWord } from "../stages";
 import type { InputSpec, InstalledModel, KeepState, PermissionRow, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
-import { Group } from "@overtone-foundry/app-kit";
+import { Group, Help } from "@overtone-foundry/app-kit";
 import { Glyph } from "../brand";
 import { isLocalModel, whereWord } from "../models";
 import { allTicked, consentOf } from "../consent";
@@ -383,10 +383,17 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
         <p className="muted">No previous runs to estimate from. After the first run, Set up says what each stage took and which stages will not need to run again.</p>
       )}
 
-      <label className="row" style={{ margin: "6px 0" }}>
-        <input type="checkbox" checked={reuse} onChange={(e) => setReuse(e.target.checked)} />
-        <span>Reuse unchanged steps <span className="muted">(selective rerun: a step runs again only if its inputs, prompt, or model changed)</span></span>
-      </label>
+      <div className="row reuse-row" style={{ margin: "6px 0" }}>
+        <label className="row" style={{ margin: 0 }}>
+          <input type="checkbox" checked={reuse} onChange={(e) => setReuse(e.target.checked)} />
+          <span>Reuse unchanged steps <span className="muted">(selective rerun: an AI step whose prompt, model, and inputs are exactly as last time gives its last answer again)</span></span>
+        </label>
+        <Help title="Reuse unchanged steps">
+          <p>Every run remembers each AI step's answer together with everything that went into it: the recipe's id, the step as written (its prompt file, schema, temperature, thinking), the model that answered, the settings the call used, and the exact inputs the step received. On a later run, a step whose every one of those is the same takes its earlier answer instead of asking the model again. Anything different, down to one character of the prompt or one changed word in a file it reads, and the step runs fresh.</p>
+          <p>Only AI steps are reused. Program steps (read a file, list a folder, fetch a page, write a file) always run again, because the world may have changed; when they hand the same thing to the next AI step as before, that step is reused.</p>
+          <p>It is per recipe. A copy, or a recipe saved under a new id, starts with nothing remembered. Changing a step on the Recipe card, or by asking, makes that step and everything downstream of it run again next time; the steps you did not touch are reused. Untick to make every step run fresh this once. Settings › Privacy can forget every remembered answer.</p>
+        </Help>
+      </div>
       <button className="primary" disabled={blocked}
         onClick={() => onRun(recipe, inputs, pins, reuse)}>
         {running ? "Running…" : permissionNeeded ? "Run · needs your permission" : missing.length > 0 ? `Run · ${needsWord}` : unmetGroups.length > 0 ? `Run · ${groupWord(unmetGroups[0]).replace(/\.$/, "")}` : cannotRows.length > 0 ? `Run · ${STATUS_WORD[cannotRows[0].status]} ${cannotRows[0].label}` : unfillable.length > 0 ? `Run · no installed model can do ${unfillable.map(([, s]) => s.requires.join(" and ")).join("; ")}` : "Run"}

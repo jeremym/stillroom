@@ -386,13 +386,14 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       <div className="reuse-row">
         <label className="row" style={{ margin: 0 }}>
           <input type="checkbox" checked={reuse} onChange={(e) => setReuse(e.target.checked)} />
-          <span>Reuse unchanged steps <span className="muted">(selective rerun: an AI step whose prompt, model, and inputs are exactly as last time gives its last answer again)</span></span>
+          <span>Reuse unchanged steps</span>
         </label>
         <Help title="Reuse unchanged steps">
           <p>Every run remembers each AI step's answer together with everything that went into it: the recipe's id, the step as written (its prompt file, schema, temperature, thinking), the model that answered, the settings the call used, and the exact inputs the step received. On a later run, a step whose every one of those is the same takes its earlier answer instead of asking the model again. Anything different, down to one character of the prompt or one changed word in a file it reads, and the step runs fresh.</p>
           <p>Only AI steps are reused. Program steps (read a file, list a folder, fetch a page, write a file) always run again, because the world may have changed; when they hand the same thing to the next AI step as before, that step is reused.</p>
           <p>It is per recipe. A copy, or a recipe saved under a new id, starts with nothing remembered. Changing a step on the Recipe card, or by asking, makes that step and everything downstream of it run again next time; the steps you did not touch are reused. Untick to make every step run fresh this once. Settings › Privacy can forget every remembered answer.</p>
         </Help>
+        <span className="muted">(selective rerun: an AI step whose prompt, model, and inputs are exactly as last time gives its last answer again)</span>
       </div>
       <button className="primary" disabled={blocked}
         onClick={() => onRun(recipe, inputs, pins, reuse)}>

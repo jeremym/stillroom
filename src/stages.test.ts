@@ -50,6 +50,10 @@ describe("stripFor", () => {
     const kept = { ...recipe, stages: [{ ...recipe.stages[0], keep: { refresh: "when_sources_change" as const } }, ...recipe.stages.slice(1)] };
     const k = (fresh: boolean | null, refresh: "always" | "when_sources_change" | "manual" = "when_sources_change") => ({ docs: { stage: "docs", records: 42, builtAt: "2026-10-31T12:00:00Z", fresh, refresh, last: null } });
     expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(null) })[0].status).toBe("nothing kept yet · builds on the first run");
+    // An either-or group with nothing given: each of its stages needs you; one given, both are fine.
+    const either = { ...recipe, inputs: { ...recipe.inputs, folder: { ...recipe.inputs.folder, required: false }, urls: { type: "urls" as const, required: false } }, inputGroups: [{ anyOf: ["folder", "urls"] }], stages: [recipe.stages[0], { id: "links", name: "Links", inputs: ["urls"], steps: [] }, ...recipe.stages.slice(1)] };
+    expect(stripFor(either, { inputs: {} }).slice(0, 2).map((s) => s.status)).toEqual(["needs you", "needs you"]);
+    expect(stripFor(either, { inputs: { urls: ["https://a"] } }).slice(0, 2).map((s) => s.status)).toEqual(["ready", "ready"]);
     // A kept stage whose required input is still empty needs you before it says anything about its keep.
     expect(stripFor(kept, { inputs: { folder: "" }, keeps: k(null) })[0]).toMatchObject({ status: "needs you", tone: "amber" });
     expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true) })[0].status).toMatch(/^fresh · 42 records · built /);

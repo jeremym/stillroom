@@ -4,6 +4,8 @@ name: Rewrite in my voice
 summary: Rewrite a piece of text so it reads like the user's own writing, from a few samples they paste, keeping every fact; outputs the rewrite and a short note on what changed.
 why: An AI step studies the samples for tone, rhythm, and word choice, then rewrites the text to match while keeping every fact and the original order; a second note says what it changed, so nothing is hidden.
 tags: [writing]
+feeds:
+  text: ["${steps.brief_write.output}", "${steps.summary_write.output}", "${steps.answer_write.output}", "${steps.new_brief.output}"]
 inputs:
   text: { type: text, label: The text to rewrite, description: "Paste the draft." }
   samples: { type: text, label: Samples of your writing, description: "Two or three paragraphs you wrote. The more, the closer the match." }

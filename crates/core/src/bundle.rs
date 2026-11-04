@@ -80,6 +80,9 @@ pub struct RecipeInfo {
     pub outputs: IndexMap<String, crate::recipe::OutputSpec>,
     /// The strip as drawn: declared stages with anything unassigned placed, or one implied stage.
     pub stages: Vec<crate::recipe::Stage>,
+    /// Either-or inputs: a run needs at least one of each group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_groups: Vec<crate::recipe::InputGroup>,
     /// Where the recipe sits for the Library: on the shelf, in the archive, or (a catalog recipe
     /// only) in the catalog. `info()` gives the default for the source; the shell applies the
     /// store's placement through `with_shelf`.
@@ -303,6 +306,7 @@ impl RecipeBundle {
             steps: self.recipe.steps.iter().map(step_info).collect(),
             outputs: self.recipe.outputs.clone(),
             stages: self.recipe.stages_or_implied(),
+            input_groups: self.recipe.input_groups.clone(),
             shelf: ShelfState::Catalog,
             from: None,
             consent: crate::consent::consent_for(&self.recipe, self.source, &[]),

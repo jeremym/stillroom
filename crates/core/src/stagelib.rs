@@ -35,6 +35,15 @@ pub struct StageDef {
     /// Recipe inputs this stage asks for (added to the recipe when missing).
     #[serde(default)]
     pub inputs: BTreeMap<String, Value>,
+    /// A stage whose job is to bring material in (links, a folder, a file). When a strip picks two
+    /// or more, each one's source input becomes optional and the recipe gets an either-or group.
+    #[serde(default)]
+    pub source: bool,
+    /// Inputs that an earlier stage can supply instead of the person: input name → step references
+    /// to try in order (`${steps.brief_write.output}`). When one of those steps is in the recipe,
+    /// the input is not asked for and the stage's steps read the reference.
+    #[serde(default)]
+    pub feeds: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub model_slots: BTreeMap<String, Value>,
     #[serde(default)]
@@ -114,6 +123,21 @@ impl StageLibrary {
             if !st.requires.is_empty() {
                 facts.push(format!("use after {}", st.requires.iter().map(|r| format!("`{r}`")).collect::<Vec<_>>().join(", ")));
             }
+            if st.source {
+                facts.push("a source; picking two sources makes each optional, links or a folder or both".to_string());
+            }
+            let fed_by: Vec<String> = st
+                .feeds
+                .values()
+                .flatten()
+                .filter_map(|r| step_of_ref(r))
+                .filter_map(|step| self.stages.iter().find(|d| d.steps.iter().any(|s| s.get("id").and_then(Value::as_str) == Some(step.as_str()))).map(|d| format!("`{}`", d.id)))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if !fed_by.is_empty() {
+                facts.push(format!("after {} it takes its material from there and asks for nothing", fed_by.join(" or ")));
+            }
             if !st.outputs.is_empty() {
                 facts.push(format!("delivers {}", st.outputs.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
             }
@@ -146,11 +170,19 @@ impl StageLibrary {
     fn expand(&self, draft: &mut Draft, index: usize, use_id: &str, replace: bool) -> Result<(), String> {
         let def = self.get(use_id).ok_or_else(|| format!("no ready-made stage called “{use_id}”"))?;
         let yaml = draft.yaml.as_object_mut().ok_or("recipe is not an object")?;
+        // Fed inputs: an earlier stage's step already in the recipe supplies the material, so the
+        // input is not asked for and the steps read that step instead.
+        let present_before: Vec<String> = yaml.get("steps").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.get("id").and_then(Value::as_str).map(String::from)).collect()).unwrap_or_default();
+        let fed: BTreeMap<String, String> = def
+            .feeds
+            .iter()
+            .filter_map(|(input, candidates)| candidates.iter().find(|c| step_of_ref(c).is_some_and(|s| present_before.contains(&s))).map(|c| (input.clone(), c.clone())))
+            .collect();
         // Inputs: add what is missing, never overwrite what the recipe declares.
         {
             let entry = yaml.entry("inputs").or_insert_with(|| Value::Object(Default::default()));
             if let Some(map) = entry.as_object_mut() {
-                for (k, v) in &def.inputs {
+                for (k, v) in def.inputs.iter().filter(|(k, _)| !fed.contains_key(*k)) {
                     map.entry(k.clone()).or_insert_with(|| v.clone());
                 }
             }
@@ -182,7 +214,11 @@ impl StageLibrary {
             present.extend(step_ids.iter().cloned());
             for s in &def.steps {
                 let id = s.get("id").and_then(Value::as_str).unwrap_or("");
-                let resolved = resolve_optional_inputs(s.clone(), &present);
+                let mut s = s.clone();
+                for (input, reference) in &fed {
+                    replace_text(&mut s, &format!("${{inputs.{input}}}"), reference);
+                }
+                let resolved = resolve_optional_inputs(s, &present);
                 match arr.iter_mut().find(|x| x.get("id").and_then(Value::as_str) == Some(id)) {
                     Some(existing) if replace => *existing = resolved,
                     Some(_) => {}
@@ -222,7 +258,7 @@ impl StageLibrary {
             st.insert("id".into(), Value::String(def.id.clone()));
             st.insert("name".into(), Value::String(name));
             st.insert("why".into(), Value::String(why));
-            let mine: Vec<Value> = def.inputs.keys().filter(|k| !claimed.contains(k)).map(|k| Value::String(k.clone())).collect();
+            let mine: Vec<Value> = def.inputs.keys().filter(|k| !claimed.contains(k) && !fed.contains_key(*k)).map(|k| Value::String(k.clone())).collect();
             if !mine.is_empty() {
                 st.insert("inputs".into(), Value::Array(mine));
             }
@@ -252,12 +288,66 @@ impl StageLibrary {
             .map(|arr| arr.iter().enumerate().filter_map(|(i, s)| s.get("use").and_then(Value::as_str).map(|u| (i, u.to_string()))).collect())
             .unwrap_or_default();
         let mut problems = Vec::new();
-        for (i, id) in uses {
-            if let Err(e) = self.expand_into(draft, i, &id) {
+        for (i, id) in &uses {
+            if let Err(e) = self.expand_into(draft, *i, id) {
                 problems.push(e);
             }
         }
+        self.either_or(draft, &uses.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>());
         problems
+    }
+
+    /// Two or more source stages in one strip: each one's source input (links, a folder, a file)
+    /// becomes optional and the recipe gets one either-or group, so the person gives links, a
+    /// folder, or both. The engine already skips what was not given.
+    fn either_or(&self, draft: &mut Draft, used: &[&str]) {
+        let sources: Vec<&StageDef> = used.iter().filter_map(|id| self.get(id)).filter(|d| d.source).collect();
+        if sources.len() < 2 {
+            return;
+        }
+        let Some(yaml) = draft.yaml.as_object_mut() else { return };
+        let mut names: Vec<String> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
+        for d in sources {
+            for (k, spec) in &d.inputs {
+                if !matches!(spec.get("type").and_then(Value::as_str), Some("urls" | "url" | "directory" | "file" | "files")) {
+                    continue;
+                }
+                let Some(input) = yaml.get_mut("inputs").and_then(|i| i.get_mut(k)).and_then(Value::as_object_mut) else { continue };
+                input.insert("required".into(), Value::Bool(false));
+                labels.push(input.get("label").and_then(Value::as_str).unwrap_or(k).to_string());
+                names.push(k.clone());
+            }
+        }
+        if names.len() < 2 {
+            return;
+        }
+        let groups = yaml.entry("inputGroups").or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(arr) = groups.as_array_mut() {
+            let already = arr.iter().any(|g| g.get("anyOf").and_then(Value::as_array).is_some_and(|a| a.iter().any(|n| names.iter().any(|m| Some(m.as_str()) == n.as_str()))));
+            if !already {
+                arr.push(serde_json::json!({ "anyOf": names, "label": format!("Give at least one of these: {}.", labels.join(", ")) }));
+            }
+        }
+    }
+}
+
+/// The step id a reference such as `${steps.brief_write.output}` names.
+fn step_of_ref(reference: &str) -> Option<String> {
+    reference.strip_prefix("${steps.").and_then(|s| s.split(['.', '}']).next()).map(String::from)
+}
+
+/// Replace `from` with `to` inside every string of a value.
+fn replace_text(v: &mut Value, from: &str, to: &str) {
+    match v {
+        Value::String(s) => {
+            if s.contains(from) {
+                *s = s.replace(from, to);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| replace_text(x, from, to)),
+        Value::Object(o) => o.values_mut().for_each(|x| replace_text(x, from, to)),
+        _ => {}
     }
 }
 
@@ -403,6 +493,38 @@ mod tests {
         }
         let text = lib.describe();
         assert!(text.contains("- `index_folder`:"));
+    }
+
+    #[test]
+    fn a_fed_input_is_not_asked_for_when_its_maker_is_in_the_recipe() {
+        let lib = StageLibrary::load(&repo_stages_dir()).unwrap();
+        let mut draft = Draft { yaml: serde_json::json!({ "schemaVersion": "0", "id": "x", "name": "X", "steps": [], "outputs": {}, "stages": [{ "use": "summarize_file" }, { "use": "study_cards" }] }), files: Default::default() };
+        assert!(lib.expand_all(&mut draft).is_empty());
+        assert!(draft.yaml["inputs"].get("material").is_none());
+        let cards = draft.yaml["steps"].as_array().unwrap().iter().find(|s| s["id"] == "cards_write").unwrap().clone();
+        assert_eq!(cards["inputs"]["material"], "${steps.summary_write.output}");
+        // Alone, the stage still asks for the paste.
+        let mut alone = Draft { yaml: serde_json::json!({ "schemaVersion": "0", "id": "x", "name": "X", "steps": [], "outputs": {}, "stages": [{ "use": "study_cards" }] }), files: Default::default() };
+        assert!(lib.expand_all(&mut alone).is_empty());
+        assert_eq!(alone.yaml["inputs"]["material"]["type"], "text");
+        assert_eq!(alone.yaml["stages"][0]["inputs"], serde_json::json!(["material"]));
+        assert!(lib.describe().contains("- `study_cards`:") && lib.describe().contains("after `brief_new` or `summarize_file` or `write_brief` it takes its material from there"), "{}", lib.describe());
+    }
+
+    #[test]
+    fn two_source_stages_make_their_inputs_either_or_and_one_does_not() {
+        let lib = StageLibrary::load(&repo_stages_dir()).unwrap();
+        let mut both = Draft { yaml: serde_json::json!({ "schemaVersion": "0", "id": "x", "name": "X", "steps": [], "outputs": {}, "stages": [{ "use": "read_links" }, { "use": "read_folder" }] }), files: Default::default() };
+        assert!(lib.expand_all(&mut both).is_empty());
+        assert_eq!(both.yaml["inputs"]["urls"]["required"], false);
+        assert_eq!(both.yaml["inputs"]["folder"]["required"], false);
+        assert_eq!(both.yaml["inputs"]["focus"].get("required"), None, "only the source inputs become optional");
+        assert_eq!(both.yaml["inputGroups"][0]["anyOf"], serde_json::json!(["urls", "folder"]));
+        let mut one = Draft { yaml: serde_json::json!({ "schemaVersion": "0", "id": "x", "name": "X", "steps": [], "outputs": {}, "stages": [{ "use": "read_folder" }] }), files: Default::default() };
+        assert!(lib.expand_all(&mut one).is_empty());
+        assert_eq!(one.yaml["inputs"]["folder"].get("required"), None);
+        assert!(one.yaml.get("inputGroups").is_none());
+        assert!(lib.describe().contains("- `read_links`:") && lib.describe().contains("a source; picking two sources makes each optional"));
     }
 
     #[test]

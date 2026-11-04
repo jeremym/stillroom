@@ -184,6 +184,30 @@ fn first_run_draft(name: &str, lib: &StageLibrary) -> (PlannerAnswerFixture, Dra
     (fx, draft)
 }
 
+/// Jeremy's learn-anything goal: two source stages make links and the folder either-or, and the
+/// study cards take their material from the brief instead of asking for a paste.
+#[test]
+fn links_or_a_folder_become_either_or_and_cards_are_fed_from_the_brief() {
+    let lib = StageLibrary::load(&repo_stages_dir()).unwrap();
+    let (_, draft) = first_run_draft("two-call-links-or-folder-brief-cards", &lib);
+    let y = &draft.yaml;
+    assert_eq!(y["inputs"]["urls"]["required"], Value::Bool(false), "links are optional on their own");
+    assert_eq!(y["inputs"]["folder"]["required"], Value::Bool(false), "the folder is optional on its own");
+    assert!(y["inputs"].get("material").is_none(), "study_cards asks for no paste: {}", y["inputs"]);
+    assert_eq!(y["inputGroups"], serde_json::json!([{ "anyOf": ["urls", "folder"], "label": "Give at least one of these: Pages to read, Your documents." }]));
+    let cards = y["steps"].as_array().unwrap().iter().find(|s| s["id"] == "cards_write").unwrap();
+    assert_eq!(cards["inputs"]["material"], "${steps.brief_write.output}", "the cards read the brief");
+    let quiz = y["steps"].as_array().unwrap().iter().find(|s| s["id"] == "cards_quiz").unwrap();
+    assert_eq!(quiz["inputs"]["material"], "${steps.brief_write.output}");
+    let stage = y["stages"].as_array().unwrap().iter().find(|s| s["id"] == "study_cards").unwrap();
+    assert!(stage.get("inputs").is_none(), "the cards stage lists no input of its own: {stage}");
+    assert_eq!(y["inputs"]["focus"]["required"], Value::Null, "the focus is still asked for");
+    // Saved, the recipe carries the floor either-or needs.
+    let mut stamped = y.clone();
+    migrate::stamp_min_version(&mut stamped);
+    assert_eq!(stamped["runtime"]["minVersion"], "0.4.0");
+}
+
 /// Every tool a draft's steps name, loops included.
 fn tools_named(steps: &Value, out: &mut Vec<String>) {
     for s in steps.as_array().into_iter().flatten() {

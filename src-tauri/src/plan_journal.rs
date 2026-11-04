@@ -35,6 +35,8 @@ pub struct PlanRecord {
     pub result: PlanResult,
     pub transcript: String,
     pub started_at: chrono::DateTime<chrono::Local>,
+    /// The custom stages were composed one call each (a small or tight model).
+    pub per_stage: bool,
 }
 
 impl PlanRecord {
@@ -52,6 +54,7 @@ impl PlanRecord {
             result: if out.problems.is_empty() { PlanResult::Clean } else { PlanResult::WithProblems(out.problems.clone()) },
             transcript: out.transcript.clone(),
             started_at,
+            per_stage: out.per_stage,
         }
     }
 
@@ -70,6 +73,9 @@ impl PlanRecord {
         let revisions: Vec<String> = self.prompt_revisions.iter().map(|(n, r)| if *r == 0 { format!("{n} (original)") } else { format!("{n} (revision {r})") }).collect();
         s.push_str(&format!("- **Prompts:** {}\n", if revisions.is_empty() { "unknown".to_string() } else { revisions.join(", ") }));
         s.push_str(&format!("- **Attempts:** {}\n", self.attempts));
+        if self.per_stage {
+            s.push_str("- **Mode:** one call per custom stage (a small or tight model)\n");
+        }
         s.push_str(&format!("- **Duration:** {}\n", fmt_duration(self.duration_ms)));
         s.push_str(&format!("- **Tokens:** {} read, {} written\n", self.prompt_tokens, self.completion_tokens));
         s.push_str(&format!("- **Result:** {}\n\n", self.result_line()));
@@ -252,6 +258,7 @@ mod tests {
             completion_tokens: 340,
             duration_ms: 48_500,
             transcript: "── call 1 (strip) ──\n{\"stages\":[]}\n\n── call 2 (steps) ──\n{\"inputs\":{}}".into(),
+            per_stage: false,
         }
     }
 
@@ -328,6 +335,7 @@ mod tests {
             result: PlanResult::Failed("stopped".into()),
             transcript: log.transcript.clone(),
             started_at: when(),
+            per_stage: false,
         };
         let md = r.render();
         assert!(md.contains("- **Result:** failed: stopped"));

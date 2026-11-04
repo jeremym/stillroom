@@ -24,6 +24,8 @@ use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
+    #[error("{0}")]
+    Inputs(String),
     #[error("dependency cycle involving steps: {0:?}")]
     Cycle(Vec<String>),
     #[error("step {step}: {source}")]
@@ -576,6 +578,13 @@ impl Executor {
         let mut req = req;
         for (name, default) in req.recipe.optional_inputs() {
             req.inputs.entry(name).or_insert(default);
+        }
+        // Either-or groups: at least one of each must be given.
+        for g in &req.recipe.input_groups {
+            if g.any_of.iter().all(|n| req.inputs.get(n).is_none_or(empty)) {
+                let label = g.label.clone().unwrap_or_else(|| format!("Give at least one of these: {}.", g.any_of.join(", ")));
+                return finish(run, Err(ExecError::Inputs(label)));
+            }
         }
         let req = &req;
 
@@ -1555,6 +1564,53 @@ outputs:
         assert_eq!(run.status, RunStatus::Cancelled);
         assert!(run.steps.is_empty(), "no step should have started: {:?}", run.steps);
         assert_eq!(run.error.as_deref(), Some("stopped by you"));
+    }
+
+    /// A run with an either-or group refuses to start when none of the group was given, in the
+    /// group's own words.
+    #[tokio::test]
+    async fn a_run_needs_at_least_one_of_an_either_or_group() {
+        let recipe = Recipe::from_yaml(
+            r#"
+schemaVersion: "0"
+id: either
+name: Either
+inputs:
+  urls: { type: urls, required: false }
+  folder: { type: directory, required: false }
+inputGroups:
+  - { anyOf: [urls, folder], label: "Give links, a folder, or both." }
+steps:
+  - id: list
+    kind: tool
+    tool: fs.list
+    inputs: { path: "${inputs.folder}" }
+outputs:
+  files: { from: "${steps.list.output}", type: json }
+"#,
+        )
+        .unwrap();
+        let req = RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
+            recipe,
+            prompts: HashMap::new(),
+            inputs: IndexMap::new(),
+            resolutions: BTreeMap::new(),
+            artifact_base: None,
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
+        };
+        let exec = Executor::new(Arc::new(crate::tools::ToolRegistry::builtin()), Arc::new(NoModels));
+        let run = exec.run(req, None).await;
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.error.as_deref(), Some("Give links, a folder, or both."));
+        assert!(run.steps.is_empty());
     }
 
     /// A model step's observer hears where the call is (reading, then writing) before the step

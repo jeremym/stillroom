@@ -1,0 +1,22 @@
+{
+  "about": "Jeremy's learn-anything goal (2026-11-04): links or documents, a brief, study cards, saved to a folder. Two source stages make links and the folder optional with one either-or group; study_cards after write_brief takes its material from the brief and asks for nothing; the custom save stage writes into the folder the user names.",
+  "request": { "goal": "I will give you URLs or documents; make me a summary, flash cards, a cheat sheet, and save everything to a folder", "id": "learn-stuff", "name": "Learn stuff", "icon": "learn" },
+  "strip": { "stages": [ { "use": "read_links" }, { "use": "read_folder" }, { "use": "write_brief", "name": "Build study brief" }, { "use": "study_cards", "name": "Make flash cards" }, { "name": "Save materials", "why": "The brief and cards are written as files into the folder you choose." } ] },
+  "answer": {
+    "recipe": {
+      "id": "x", "name": "X", "description": "Links or documents become a brief and flash cards, saved as files.",
+      "inputs": { "output_folder": { "type": "directory", "label": "Where to save", "description": "The folder your study materials are written into." } },
+      "modelSlots": {},
+      "permissions": { "filesystem": { "write": ["${inputs.output_folder}"] } },
+      "steps": [
+        { "id": "save_brief", "kind": "tool", "name": "Save brief", "tool": "fs.write", "inputs": { "dir": "${inputs.output_folder}", "name": "study-brief.md", "text": "${steps.brief_write.output}", "overwrite": true } },
+        { "id": "save_cards", "kind": "tool", "name": "Save flashcards", "tool": "fs.write", "inputs": { "dir": "${inputs.output_folder}", "name": "flashcards.json", "text": "${steps.cards_write.output}", "overwrite": true } }
+      ],
+      "outputs": { "saved_brief": { "from": "${steps.save_brief.output}", "type": "file", "label": "Saved brief" } },
+      "stages": [
+        { "id": "save_materials", "name": "Save materials", "why": "The brief and cards are written as files into the folder you choose.", "inputs": ["output_folder"], "steps": ["save_brief", "save_cards"], "outputs": ["saved_brief"] }
+      ]
+    },
+    "files": []
+  }
+}

@@ -4,6 +4,8 @@ name: Make study cards
 summary: Turn a text (a document's text, notes, or an answer) into flashcards and a short quiz with answers, for learning it.
 why: An AI step pulls the concepts out of the text and writes a flashcard for each (question on the front, answer on the back), then a short quiz with answers, so you can test yourself.
 tags: [learning]
+feeds:
+  material: ["${steps.brief_write.output}", "${steps.summary_write.output}", "${steps.answer_write.output}", "${steps.new_brief.output}"]
 inputs:
   material: { type: text, label: What to learn, description: "Paste the notes or text to learn from." }
 modelSlots:

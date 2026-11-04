@@ -43,7 +43,14 @@ const noop = () => {};
 
 let host: HTMLDivElement;
 let root: Root;
-beforeEach(() => { vi.useFakeTimers(); host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host); });
+beforeEach(() => {
+  vi.useFakeTimers();
+  // Each test starts from an engine that has nothing to say: no rows, no estimate, no notices.
+  probe.mockResolvedValue([]);
+  estimate.mockResolvedValue(null);
+  previewResolution.mockResolvedValue({ resolutions: {}, problems: {} });
+  host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
+});
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.clearAllMocks(); vi.useRealTimers(); });
 
 const group = (name: string) => host.querySelector(`[role=group][aria-label="${name}"]`) as HTMLElement | null;
@@ -129,6 +136,32 @@ describe("Set up as stage groups", () => {
     expect(host.querySelector(".estimate")?.textContent).toContain("Expect about 6 min, a guess from this Mac and the models picked above");
     expect(host.querySelector(".estimate")?.textContent).toContain("Write the brief · about 6 min");
     expect(host.querySelector(".notice")?.textContent).toContain("qwen3:27b is 17 GB");
+  });
+
+  it("an either-or group holds Run until one of its inputs is given, and says so on each of its stages", async () => {
+    const r = recipe();
+    r.inputs.folder = { ...r.inputs.folder, required: false };
+    r.inputs.out = { ...r.inputs.out, required: false };
+    r.inputs.focus = { ...r.inputs.focus, required: false };
+    r.inputGroups = [{ anyOf: ["urls", "folder"], label: "Give at least one of these: Pages to read, Your documents." }];
+    render(r);
+    await settle();
+    expect(run().textContent).toBe("Run · Give at least one of these: Pages to read, Your documents");
+    expect(run().disabled).toBe(true);
+    expect(group("Read links")!.className).toContain("amber-rim");
+    expect(group("Read documents")!.className).toContain("amber-rim");
+    expect(group("Read links")!.querySelector(".group-why.amber")?.textContent).toContain("Either is fine; both is fine too.");
+    expect(group("Save it")!.className).toBe("group optional stage-section");
+    const links = group("Read links")!.querySelector("textarea")!;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(links, "https://example.org/a");
+      links.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    expect(run().disabled).toBe(false);
+    expect(run().textContent).toBe("Run");
+    expect(group("Read documents")!.className).not.toContain("amber-rim");
   });
 
   it("falls back to the one-line description when the engine cannot be asked", async () => {

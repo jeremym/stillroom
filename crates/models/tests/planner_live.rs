@@ -120,6 +120,7 @@ async fn plan_a_recipe_against_local_ollama() {
         cancel: None,
         model_defaults: ModelDefaults::default(),
         max_attempts: 3,
+        per_stage: std::env::var("STILLROOM_PER_STAGE").is_ok(),
     };
     let started = std::time::Instant::now();
     let observer = Arc::new(|e: PlanEvent| eprintln!("  {e:?}"));

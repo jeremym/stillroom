@@ -126,7 +126,7 @@ pub fn migrate(mut yaml: Value) -> Result<Migrated, MigrateError> {
 /// its author knowing; the loader compares the floor to what this build understands.
 // Every feature here shipped in 0.3.0 (stages, keeps, and the provenance a ready-made stage carries),
 // so a recipe saved today asks for 0.3.0, a version that exists. The next format change adds its own row.
-pub const FORMAT_FEATURES: &[(&str, &str)] = &[("stages", "0.3.0"), ("keep", "0.3.0"), ("stage source", "0.3.0")];
+pub const FORMAT_FEATURES: &[(&str, &str)] = &[("stages", "0.3.0"), ("keep", "0.3.0"), ("stage source", "0.3.0"), ("input groups", "0.4.0")];
 
 /// The version floor the recipe's features ask for, and which feature set it, if any.
 pub fn required_version(yaml: &Value) -> Option<(&'static str, &'static str)> {
@@ -140,6 +140,9 @@ pub fn required_version(yaml: &Value) -> Option<(&'static str, &'static str)> {
         if stages.iter().any(|s| s.get("source").is_some_and(Value::is_object)) {
             uses.push("stage source");
         }
+    }
+    if yaml.get("inputGroups").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
+        uses.push("input groups");
     }
     FORMAT_FEATURES
         .iter()
@@ -753,8 +756,14 @@ mod tests {
         assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("0.3.0"));
         staged["runtime"]["minVersion"] = json!("9.0");
         assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("9.0"), "an author's higher floor stays");
-        assert_eq!(supported_version("0.2.0"), "0.3.0", "this build reads every feature in the table");
+        assert_eq!(supported_version("0.2.0"), "0.4.0", "this build reads every feature in the table");
         assert_eq!(supported_version("1.2.0"), "1.2.0");
+        // Either-or groups are the first feature past 0.3.0.
+        staged["runtime"]["minVersion"] = json!("0.3.0");
+        staged["inputs"] = json!({ "urls": { "type": "urls", "required": false }, "folder": { "type": "directory", "required": false } });
+        staged["inputGroups"] = json!([{ "anyOf": ["urls", "folder"] }]);
+        assert_eq!(required_version(&staged), Some(("input groups", "0.4.0")));
+        assert_eq!(stamp_min_version(&mut staged).as_deref(), Some("0.4.0"));
     }
 
     #[test]

@@ -4,6 +4,7 @@ name: Summarize a file
 summary: "Read one text or Markdown file and write a short summary: one sentence about what it is, then the main points in the file's own order."
 why: The file is read in full and an AI step writes one sentence about it, then the main points in the file's own order.
 tags: [text, summary]
+source: true
 inputs:
   file: { type: file, label: File to summarize, description: "A plain-text or Markdown file.", accept: [".txt", ".md", ".markdown"] }
 modelSlots:

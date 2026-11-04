@@ -1411,6 +1411,7 @@ async fn try_planning(app: AppHandle, state: State<'_, AppState>, model_id: Stri
         cancel: Some(cancel),
         model_defaults: state.model_defaults(),
         max_attempts: 1,
+        per_stage: false,
     };
     let out = planner.try_strip(&trial_request(), None).await;
     *state.plan_cancel.lock().map_err(err)? = None;
@@ -1451,6 +1452,14 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
     let model_id = resolutions.get(PLANNER_SLOT).map(|r| r.model_id.clone()).ok_or("no model for the planner")?;
     let cancel = Cancel::new();
     *state.plan_cancel.lock().map_err(err)? = Some(cancel.clone());
+    // A small model (under ten billion parameters) or one that only just fits writes the custom
+    // stages one call at a time; a model with room writes them in one.
+    let hw = hardware_facts().await;
+    let per_stage = installed
+        .iter()
+        .find(|m| m.id == model_id)
+        .map(|m| matches!(stillroom_core::model::fit_of(m.size_bytes, hw.memory_bytes), stillroom_core::model::Fit::Tight | stillroom_core::model::Fit::TooLarge) || m.parameter_billions().is_some_and(|b| b < 10.0))
+        .unwrap_or(false);
     let planner = Planner {
         library: Some(state.stage_library.clone()),
         models: state.models(router),
@@ -1462,6 +1471,7 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
         cancel: Some(cancel),
         model_defaults: state.model_defaults(),
         max_attempts: 3,
+        per_stage,
     };
     // The journal watches the same events the window does, so a plan that never returns (stopped,
     // out of time) still leaves its transcript and the checker's problems behind.
@@ -1495,6 +1505,7 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
             result: plan_journal::PlanResult::Failed(e.to_string()),
             transcript: log.transcript,
             started_at,
+            per_stage,
         },
     };
     if let Err(e) = plan_journal::write(&state.plans_dir, &record) {

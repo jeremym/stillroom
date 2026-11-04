@@ -52,6 +52,7 @@ pub fn planner_recipe() -> Recipe {
         outputs: IndexMap::new(),
         budget: None,
         stages: Vec::new(),
+        input_groups: Vec::new(),
         author: None,
         license: None,
         runtime: None,
@@ -138,6 +139,9 @@ pub struct PlanOutcome {
     /// Everything the model wrote, every call, with a `── call N (strip|steps|fix) ──` line before each.
     #[serde(default)]
     pub transcript: String,
+    /// The custom stages were composed one call each (a small or tight model).
+    #[serde(default)]
+    pub per_stage: bool,
 }
 
 /// Collects what the model writes and tells the observer, throttled: a Delta goes out every
@@ -471,6 +475,9 @@ pub struct Planner {
     pub model_defaults: ModelDefaults,
     /// Model calls at most for the composing call, counting the fixes. Default 3.
     pub max_attempts: u32,
+    /// Compose one custom stage per call instead of all at once: for a small or tight model,
+    /// every answer is short and every mistake local. The fix rounds still work on the whole.
+    pub per_stage: bool,
 }
 
 pub type PlanObserver = Arc<dyn Fn(PlanEvent) + Send + Sync>;
@@ -974,6 +981,7 @@ impl Planner {
                             completion_tokens,
                             duration_ms: started.elapsed().as_millis() as u64,
                             transcript: progress.transcript(),
+                            per_stage: false,
                         });
                     }
                     if draft.yaml.get("stages").and_then(Value::as_array).is_some_and(|a| !a.is_empty()) {
@@ -1004,12 +1012,109 @@ impl Planner {
                 custom.join("\n")
             ));
         }
-        let mut messages = vec![ChatMessage::new("system", system), ChatMessage::new("user", user)];
+        let mut messages = vec![ChatMessage::new("system", system.clone()), ChatMessage::new("user", user)];
         let max = self.max_attempts.max(1);
         let mut best: Option<(Draft, Vec<String>)> = None;
         let mut last_error = String::new();
         let mut attempts = 0;
-        for attempt in 1..=max {
+        let mut first_attempt = 1;
+
+        // Per stage: with a skeleton and more than one custom stage, a small or tight model writes
+        // one stage per call, each merged before the next so the following call can read it. The
+        // merged whole then stands as the first attempt; a fix round, if needed, works on all of it.
+        let custom: Vec<(String, String, String)> = skeleton
+            .as_ref()
+            .zip(lib)
+            .map(|(sk, lib)| {
+                sk.yaml
+                    .get("stages")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|s| s.get("id").and_then(Value::as_str).is_some_and(|id| lib.get(id).is_none()))
+                    .map(|s| {
+                        let f = |k: &str| s.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                        (f("id"), f("name"), f("why"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let per_stage = self.per_stage && custom.len() > 1;
+        if per_stage {
+            let lib = lib.expect("a skeleton comes from a library");
+            let mut sk = skeleton.clone().expect("custom stages come from a skeleton");
+            let n = custom.len() as u32;
+            let mut written: Vec<String> = Vec::new();
+            let mut whole = true;
+            for (i, (id, name, why)) in custom.iter().enumerate() {
+                let mut sys = system.clone();
+                if !written.is_empty() {
+                    sys.push_str("\n\n## Already written by you\n\nThese custom stages are done. Reference their steps as `${steps.<id>.output}` and do not write them again:\n");
+                    sys.push_str(&written.join("\n"));
+                }
+                let mut usr = user_message(req);
+                usr.push_str(&format!(
+                    "\n## Your part\n\nWrite only this one stage, keeping its id and name:\n- `{id}` **{name}**{}\n\nAnswer with the JSON object: the inputs, model slots, steps, outputs, and files this stage needs (reuse inputs and slots the built stages already declare rather than adding more), and `stages` containing only this stage, with its id, name, why, and the inputs, steps, and outputs it holds.\n",
+                    if why.is_empty() { String::new() } else { format!(": {why}") }
+                ));
+                progress.emit(|elapsed_ms, tokens| PlanEvent::Thinking { attempt: 1, of: max, elapsed_ms, tokens });
+                let resp = self.call(self.chat(vec![ChatMessage::new("system", sys), ChatMessage::new("user", usr)], answer_schema()), &progress, PlanPhase::Steps, i as u32 + 1, n).await?;
+                prompt_tokens += resp.prompt_tokens.unwrap_or(0);
+                completion_tokens += resp.completion_tokens.unwrap_or(0);
+                match compose(Some(&sk), &resp.content, req, Some(lib)) {
+                    Ok((draft, _)) => {
+                        let steps = draft
+                            .yaml
+                            .get("stages")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .find(|s| s.get("id").and_then(Value::as_str) == Some(id.as_str()))
+                            .and_then(|s| s.get("steps").and_then(Value::as_array))
+                            .map(|a| a.iter().filter_map(Value::as_str).map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", "))
+                            .unwrap_or_default();
+                        written.push(format!("- `{id}` **{name}**: steps {steps}"));
+                        sk = draft;
+                    }
+                    Err(e) => {
+                        last_error = e;
+                        whole = false;
+                        break;
+                    }
+                }
+            }
+            if whole {
+                attempts = 1;
+                progress.emit(|elapsed_ms, tokens| PlanEvent::Checking { attempt: 1, elapsed_ms, tokens });
+                let problems = sk.problems(&known_tools);
+                if problems.is_empty() || max == 1 {
+                    progress.done();
+                    return Ok(PlanOutcome {
+                        draft: sk,
+                        problems,
+                        schema_version: crate::migrate::CURRENT_SCHEMA_VERSION.into(),
+                        attempts: 2,
+                        model_id: self.model_id.clone(),
+                        prompt_tokens,
+                        completion_tokens,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        transcript: progress.transcript(),
+                        per_stage: true,
+                    });
+                }
+                // The merged whole is what the model "answered"; the fix round corrects it as one.
+                progress.emit(|elapsed_ms, tokens| PlanEvent::Fixing { attempt: 1, problems: problems.clone(), elapsed_ms, tokens });
+                let files: Vec<Value> = sk.files.iter().map(|(p, t)| serde_json::json!({ "path": p, "text": t })).collect();
+                let answered = serde_json::json!({ "recipe": sk.yaml, "files": files }).to_string();
+                best = Some((sk, problems.clone()));
+                messages.push(ChatMessage::new("assistant", answered));
+                let list = problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
+                messages.push(ChatMessage::new("user", format!("The draft has these problems:\n{list}\n\nFix them and answer again with the whole corrected JSON object (recipe and every file).")));
+                first_attempt = 2;
+            }
+        }
+
+        for attempt in first_attempt..=max {
             attempts = attempt;
             progress.emit(|elapsed_ms, tokens| PlanEvent::Thinking { attempt, of: max, elapsed_ms, tokens });
             let which = if attempt == 1 { PlanPhase::Steps } else { PlanPhase::Fix };
@@ -1061,6 +1166,7 @@ impl Planner {
             completion_tokens,
             duration_ms: started.elapsed().as_millis() as u64,
             transcript: progress.transcript(),
+            per_stage,
         })
     }
 }
@@ -1137,8 +1243,53 @@ mod tests {
             cancel: None,
             model_defaults: ModelDefaults::default(),
             max_attempts: 3,
+            per_stage: false,
         };
         (p, script)
+    }
+
+    /// Per stage: two custom stages become two short calls, the second told what the first wrote,
+    /// and the merged whole checks clean in one go.
+    #[tokio::test]
+    async fn a_small_model_writes_one_custom_stage_per_call() {
+        let lib = Arc::new(crate::stagelib::StageLibrary::load(&crate::stagelib::repo_stages_dir()).unwrap());
+        let strip = json!({ "stages": [ { "use": "summarize_file", "name": "Read it" }, { "name": "Cards", "why": "Cards from the summary." }, { "name": "Save", "why": "Save the cards." } ] }).to_string();
+        let cards = json!({
+            "recipe": { "id": "x", "name": "X", "description": "d", "inputs": {}, "modelSlots": {},
+                "steps": [ { "id": "cards", "kind": "model", "slot": "writer", "prompt": "prompts/cards.md", "inputs": { "text": "${steps.summary_write.output}" } } ],
+                "outputs": { "cards": { "from": "${steps.cards.output}", "type": "markdown" } },
+                "stages": [ { "id": "cards", "name": "Cards", "why": "w", "steps": ["cards"], "outputs": ["cards"] } ] },
+            "files": [ { "path": "prompts/cards.md", "text": "Make cards." } ]
+        })
+        .to_string();
+        let save = json!({
+            "recipe": { "id": "x", "name": "X", "description": "d", "inputs": { "out": { "type": "directory", "label": "Where" } }, "modelSlots": {},
+                "permissions": { "filesystem": { "write": ["${inputs.out}"] } },
+                "steps": [ { "id": "save", "kind": "tool", "tool": "fs.write", "inputs": { "dir": "${inputs.out}", "name": "cards.md", "text": "${steps.cards.output}" } } ],
+                "outputs": { "saved": { "from": "${steps.save.output}", "type": "file" } },
+                "stages": [ { "id": "save", "name": "Save", "why": "s", "inputs": ["out"], "steps": ["save"], "outputs": ["saved"] } ] },
+            "files": []
+        })
+        .to_string();
+        let (mut p, script) = planner(vec![strip, cards, save]);
+        p.library = Some(lib.clone());
+        p.per_stage = true;
+        let out = p.plan(&req(), None).await.unwrap();
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        assert!(out.per_stage);
+        let y = &out.draft.yaml;
+        assert_eq!(y["stages"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect::<Vec<_>>(), vec!["summarize_file", "cards", "save"]);
+        assert_eq!(y["stages"][1]["steps"], json!(["cards"]));
+        assert_eq!(y["stages"][2]["steps"], json!(["save"]));
+        assert!(y["inputs"].get("out").is_some() && y["inputs"].get("file").is_some());
+        assert!(out.draft.files.contains_key("prompts/cards.md"));
+        let seen = script.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "the strip, then one call per custom stage");
+        assert!(seen[1].messages[1].content.contains("Write only this one stage") && seen[1].messages[1].content.contains("`cards` **Cards**"));
+        assert!(!seen[1].messages[0].content.contains("Already written by you"));
+        assert!(seen[2].messages[0].content.contains("Already written by you") && seen[2].messages[0].content.contains("- `cards` **Cards**: steps `cards`"), "{}", seen[2].messages[0].content);
+        assert!(seen[2].messages[1].content.contains("`save` **Save**") && !seen[2].messages[1].content.contains("`cards` **Cards**"));
+        assert!(out.transcript.contains("── call 3 (steps) ──"));
     }
 
     #[test]

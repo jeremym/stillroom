@@ -132,6 +132,30 @@
       "items": {
         "$ref": "#/$defs/stage"
       }
+    },
+    "inputGroups": {
+      "type": "array",
+      "description": "Either-or inputs: a run needs at least one input of each group (links, a folder, or both). Every input named is optional on its own (required: false).",
+      "items": {
+        "type": "object",
+        "required": [
+          "anyOf"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "anyOf": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "string"
+            }
+          },
+          "label": {
+            "type": "string",
+            "description": "What to say when none of them is given."
+          }
+        }
+      }
     }
   },
   "$defs": {

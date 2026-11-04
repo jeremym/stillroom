@@ -226,6 +226,21 @@ impl Draft {
         if recipe.outputs.is_empty() {
             problems.push("The recipe has no results. Add at least one.".into());
         }
+        // Either-or groups: at least two inputs, each declared, each optional on its own.
+        for g in &recipe.input_groups {
+            if g.any_of.len() < 2 {
+                problems.push("An input group (inputGroups) needs at least two inputs to choose between.".into());
+            }
+            for n in &g.any_of {
+                match recipe.inputs.get(n) {
+                    None => problems.push(format!("An input group names “{n}”, which does not exist.")),
+                    Some(spec) if spec.get("required").and_then(Value::as_bool) != Some(false) => {
+                        problems.push(format!("Input “{n}” is one of several choices (inputGroups), so it must be optional on its own: set required: false."))
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
         problems
     }
 
@@ -779,6 +794,25 @@ mod tests {
         });
         let draft = Draft { yaml, files: BTreeMap::new() };
         assert_eq!(draft.problems(&tools()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_input_group_needs_two_declared_optional_inputs() {
+        let mut yaml = serde_json::json!({
+            "schemaVersion": "0", "id": "g", "name": "G",
+            "inputs": { "urls": { "type": "urls", "required": false }, "folder": { "type": "directory" } },
+            "inputGroups": [{ "anyOf": ["urls", "folder", "nope"] }],
+            "steps": [ { "id": "list", "kind": "tool", "tool": "fs.list", "inputs": { "path": "${inputs.folder}" } } ],
+            "outputs": { "files": { "from": "${steps.list.output}", "type": "json" } }
+        });
+        let d = Draft { yaml: yaml.clone(), files: BTreeMap::new() };
+        let p = d.problems(&tools());
+        assert!(p.iter().any(|x| x.contains("names “nope”, which does not exist")), "{p:?}");
+        assert!(p.iter().any(|x| x.contains("Input “folder” is one of several choices") && x.contains("required: false")), "{p:?}");
+        yaml["inputs"]["folder"]["required"] = serde_json::json!(false);
+        yaml["inputGroups"] = serde_json::json!([{ "anyOf": ["urls", "folder"], "label": "Give links, a folder, or both." }]);
+        let d = Draft { yaml, files: BTreeMap::new() };
+        assert_eq!(d.problems(&tools()), Vec::<String>::new());
     }
 
     #[test]

@@ -4,6 +4,7 @@ name: Read the files
 summary: Read every PDF, Word, Markdown, or text file in a folder and pull out what each says about a focus, with quotes and page numbers; kept between runs so unchanged files are not read again.
 why: Each file is read and an AI step pulls out what it says about your focus, with exact quotes and page numbers. What it found is remembered, so unchanged files are not read again next time.
 tags: [documents, findings]
+source: true
 inputs:
   folder: { type: directory, label: Your documents, description: "A folder of .pdf, .docx, .md, or .txt files. Subfolders are read too." }
   focus: { type: text, label: What do you need to know?, description: A question or a sentence about what matters. }

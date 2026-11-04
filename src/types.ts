@@ -385,9 +385,17 @@ export interface RecipeInfo {
   outputs: Record<string, OutputSpec>;
   /** The strip as drawn: declared stages with anything unassigned placed, or one implied "Make". */
   stages: Stage[];
+  /** Either-or inputs: a run needs at least one of each group (links, a folder, or both). */
+  inputGroups?: InputGroup[];
 }
 
 /** One chapter of a recipe, as the user reads it in the strip. */
+/** Inputs of which a run needs at least one; each is optional on its own. */
+export interface InputGroup {
+  anyOf: string[];
+  label?: string | null;
+}
+
 export interface Stage {
   id: string;
   name: string;
@@ -704,4 +712,6 @@ export interface PlanOutcome {
   durationMs: number;
   /** Everything the model wrote, every call, with a "── call N (…) ──" line before each. Older engines omit it. */
   transcript?: string;
+  /** The custom stages were composed one call each (a small or tight model). */
+  perStage?: boolean;
 }

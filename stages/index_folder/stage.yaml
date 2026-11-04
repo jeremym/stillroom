@@ -4,6 +4,7 @@ name: Build the index
 summary: Read every PDF, Word, Markdown, or text file in a folder, split them into passages, and index the passages by meaning (embeddings), kept between runs. Pair with answer_from_index.
 why: Each file is read, split into passages, and each passage turned into numbers (embeddings) and remembered, so a question can find the passages that match it. Built once; rebuilt only when the files change, and only new or changed passages are embedded again.
 tags: [documents, index]
+source: true
 inputs:
   folder: { type: directory, label: Your documents, description: "A folder of .pdf, .docx, .md, or .txt files. Subfolders are read too." }
 modelSlots:

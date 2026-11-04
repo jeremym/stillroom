@@ -4,6 +4,7 @@ name: Read the pages
 summary: Fetch each link the user gives and pull out what each page says about a focus, with exact quotes; a page that fails to load is reported, not fatal.
 why: Each link is fetched and an AI step pulls out what the page says about your focus, with exact quotes, so nothing is invented; a page that fails to load is reported, not fatal.
 tags: [web, findings]
+source: true
 inputs:
   urls: { type: urls, label: Pages to read, description: "One link per line. The recipe reaches these sites and no others." }
   focus: { type: text, label: What do you need to know?, description: A question or a sentence about what matters. }

@@ -4,6 +4,8 @@ name: Repurpose a piece
 summary: Turn one article or long post into a short post, a thread of short posts, a one-paragraph summary, and a bullet outline, each faithful to the original.
 why: One AI step per form rewrites the piece as a short post, a thread, a one-paragraph summary, and an outline; each keeps to what the piece says, so you can pick and paste.
 tags: [writing, content]
+feeds:
+  piece: ["${steps.brief_write.output}", "${steps.summary_write.output}", "${steps.new_brief.output}"]
 inputs:
   piece: { type: text, label: The piece, description: "Paste the article or post." }
   audience: { type: string, label: Who it is for, description: "Optional, e.g. 'engineers on LinkedIn'.", required: false }

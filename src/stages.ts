@@ -125,10 +125,10 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
 
   // Before a run: a stage that still needs you says so first; then a kept stage says what it holds.
   const keep = ctx.keeps?.[stage.id];
-  const stillNeeds = Boolean(ctx.inputs) && (stage.inputs ?? []).some((name) => {
+  const stillNeeds = Boolean(ctx.inputs) && ((stage.inputs ?? []).some((name) => {
     const spec = recipe.inputs[name];
     return spec && spec.required !== false && empty(ctx.inputs?.[name]);
-  });
+  }) || (recipe.inputGroups ?? []).some((g) => g.anyOf.some((n) => (stage.inputs ?? []).includes(n)) && g.anyOf.every((n) => empty(ctx.inputs?.[n]))));
   if (keep && stage.keep) {
     // Fresh or stale is a verdict about particular inputs; until the inputs this stage can see are
     // all given, say only what the keep holds, after "needs you" when one of its own is still empty.
@@ -145,7 +145,7 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
     if (!spec || spec.required === false) return false;
     return empty(ctx.inputs?.[name]);
   });
-  if (missing.length > 0) return { ...base, status: "needs you", tone: "amber" };
+  if (missing.length > 0 || stillNeeds) return { ...base, status: "needs you", tone: "amber" };
   if ((stage.inputs ?? []).length > 0 && ctx.inputs) return { ...base, status: "ready", tone: "green" };
   if ((stage.steps ?? []).some((id) => recipe.steps.find((s) => s.id === id)?.kind === "review")) return { ...base, status: "your approval", tone: "dim" };
   return { ...base, status: "—", tone: "dim" };

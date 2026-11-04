@@ -52,6 +52,10 @@ pub struct Recipe {
     /// The strip: ordered chapters, each grouping inputs, steps, and outputs with a why.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<Stage>,
+    /// Either-or inputs: a run needs at least one of each group (links, a folder, or both).
+    /// Every input in a group is optional on its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_groups: Vec<InputGroup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<Author>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +109,16 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
         }
     }
     std::cmp::Ordering::Equal
+}
+
+/// Inputs of which a run needs at least one: "links, a folder, or both".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InputGroup {
+    pub any_of: Vec<String>,
+    /// What to say when none is given, e.g. "Give at least one of these: Pages to read, Your documents."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// One chapter of a recipe, as the user reads it in the strip.

@@ -172,11 +172,14 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
   const missing = Object.entries(recipe.inputs)
     .filter(([k, spec]) => spec.required !== false && (inputs[k] == null || inputs[k] === "" || (Array.isArray(inputs[k]) && (inputs[k] as unknown[]).length === 0)))
     .map(([k]) => k);
+  // Either-or groups: a group with none of its inputs given holds Run, in the group's own words.
+  const groupWord = (g: { anyOf: string[]; label?: string | null }) => g.label ?? `Give at least one of these: ${g.anyOf.map((k) => recipe.inputs[k]?.label ?? k).join(", ")}.`;
+  const unmetGroups = (recipe.inputGroups ?? []).filter((g) => g.anyOf.every((k) => inputs[k] == null || inputs[k] === "" || (Array.isArray(inputs[k]) && (inputs[k] as unknown[]).length === 0)));
   const slotCandidates = (requires: string[]) =>
     models.filter((m) => requires.every((c) => m.capabilities.includes(c as never)));
   const unfillable = Object.entries(recipe.modelSlots).filter(([, s]) => slotCandidates(s.requires).length === 0);
   const cannotRows = (rows ?? []).filter(cannot);
-  const blocked = running || missing.length > 0 || unfillable.length > 0 || permissionNeeded || cannotRows.length > 0;
+  const blocked = running || missing.length > 0 || unmetGroups.length > 0 || unfillable.length > 0 || permissionNeeded || cannotRows.length > 0;
   // What Run still needs, by stage: "stage 2 needs Your documents; stage 4 needs What to learn".
   const needsWord = (() => {
     const label = (k: string) => recipe.inputs[k]?.label ?? k;
@@ -261,10 +264,13 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
         const names = (st.inputs ?? []).filter((n) => n in recipe.inputs);
         const required = names.filter((n) => recipe.inputs[n].required !== false);
         const est = estimate?.stages.find((e) => e.id === st.id);
+        // An either-or group this stage takes part in, still unmet: the stage needs you too, and says what would do.
+        const unmetHere = unmetGroups.filter((g) => g.anyOf.some((k) => names.includes(k)));
         return (
           <Group key={st.id} id={`stage-${st.id}`} className="stage-section" n={recipe.stages.length > 1 ? recipe.stages.indexOf(st) + 1 : undefined}
-            title={st.name} why={st.why} needsYou={required.some((n) => missing.includes(n))} optional={names.length > 0 && required.length === 0}
+            title={st.name} why={st.why} needsYou={required.some((n) => missing.includes(n)) || unmetHere.length > 0} optional={names.length > 0 && required.length === 0 && unmetHere.length === 0}
             aside={est ? <span className="tag">{estimateWord(est)}</span> : undefined}>
+          {unmetHere.map((g) => <p key={g.anyOf.join()} className="group-why amber">{groupWord(g)} Either is fine; both is fine too.</p>)}
           {st.keep && (() => {
             const k = keeps?.[st.id];
             const w = k ? (inputsKnownUpTo(recipe, st, inputs) ? keepWord(k) : keepHeldWord(k)) : { status: "…", tone: "dim" as const };
@@ -383,7 +389,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       </label>
       <button className="primary" disabled={blocked}
         onClick={() => onRun(recipe, inputs, pins, reuse)}>
-        {running ? "Running…" : permissionNeeded ? "Run · needs your permission" : missing.length > 0 ? `Run · ${needsWord}` : cannotRows.length > 0 ? `Run · ${STATUS_WORD[cannotRows[0].status]} ${cannotRows[0].label}` : unfillable.length > 0 ? `Run · no installed model can do ${unfillable.map(([, s]) => s.requires.join(" and ")).join("; ")}` : "Run"}
+        {running ? "Running…" : permissionNeeded ? "Run · needs your permission" : missing.length > 0 ? `Run · ${needsWord}` : unmetGroups.length > 0 ? `Run · ${groupWord(unmetGroups[0]).replace(/\.$/, "")}` : cannotRows.length > 0 ? `Run · ${STATUS_WORD[cannotRows[0].status]} ${cannotRows[0].label}` : unfillable.length > 0 ? `Run · no installed model can do ${unfillable.map(([, s]) => s.requires.join(" and ")).join("; ")}` : "Run"}
       </button>
       {folderInputs.length > 0 && (
         <>

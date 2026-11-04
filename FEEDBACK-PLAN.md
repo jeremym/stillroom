@@ -1,6 +1,6 @@
 # Feedback, fit, and talking to the planner
 
-Status: built, revision 2, 2026-11-04 (all five phases on the `feedback` branch; see §10), from Jeremy's test pass of 0.3.3 with a recipe of his own (Jeremy Learn Stuff, planner journal `plans/2026-11-04-115141-jeremy-learn-stuff.md`). Read `FIRST-RUN-PLAN.md` for the goal screen, `STAGES-PLAN.md` for stages and the stage library, `UI-PLAN.md` for the look. This plan covers five things Jeremy hit in one sitting: the dead time while a local model warms up, no idea whether this Mac can run the model it picked, a Set up form whose sections and labels do not read, permissions and required inputs that are unclear until Run refuses, and a planner that made every source required when the goal said "URLs or documents".
+Status: shipped in 0.4.0 on 2026-11-04 (see §10), from Jeremy's test pass of 0.3.3 with a recipe of his own (Jeremy Learn Stuff, planner journal `plans/2026-11-04-115141-jeremy-learn-stuff.md`). Read `FIRST-RUN-PLAN.md` for the goal screen, `STAGES-PLAN.md` for stages and the stage library, `UI-PLAN.md` for the look. This plan covers five things Jeremy hit in one sitting: the dead time while a local model warms up, no idea whether this Mac can run the model it picked, a Set up form whose sections and labels do not read, permissions and required inputs that are unclear until Run refuses, and a planner that made every source required when the goal said "URLs or documents".
 
 ## 0. Vocabulary
 

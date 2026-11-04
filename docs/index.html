@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stillroom</title>
+  <meta name="description" content="A goal-first, local-first AI workflow studio for the Mac. Describe the goal, get the result, see how it was made. Recipes run on local models through Ollama.">
+  <link rel="stylesheet" href="site/site.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235cff7a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 3h6M10.5 3v5.5L5 19a1.5 1.5 0 0 0 1.3 2h11.4a1.5 1.5 0 0 0 1.3-2L13.5 8.5V3M8 15h8'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="rail">
+    <div class="rail-in">
+      <a class="logo" href="#top" aria-label="Stillroom">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10.5 3v5.5L5 19a1.5 1.5 0 0 0 1.3 2h11.4a1.5 1.5 0 0 0 1.3-2L13.5 8.5V3M8 15h8"/></svg>
+        <span class="word">Stillroom</span>
+      </a>
+      <nav>
+        <a href="#run">A run</a>
+        <a href="#recipes">Recipes</a>
+        <a href="#make">Make your own</a>
+        <a href="#local">Local first</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/jeremym/stillroom">Source</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell" id="top">
+    <section class="hero">
+      <div>
+        <div class="kicker">A goal-first, local-first AI workflow studio for the Mac</div>
+        <h1 class="glow">Describe the goal.<br>Get the result.<br>See how it was made.</h1>
+        <p class="lead">Say what you want in a sentence. Stillroom drafts a <strong>recipe</strong>, a reusable set of steps with its prompts, runs it on models that live on your Mac, and hands you real things: a brief, flashcards, a diagram, a deck, a filed inbox. Then, only if you want, open the recipe card and see every step, prompt, and model that made them.</p>
+        <div class="actions">
+          <a class="btn primary" href="#install">Install with Homebrew</a>
+          <a class="btn" href="https://github.com/jeremym/stillroom/releases">Releases</a>
+        </div>
+        <p class="fine">Apple silicon · macOS 13 or newer · <a href="https://ollama.com">Ollama</a> with one chat model · no account, no cloud unless you turn one on · MIT</p>
+      </div>
+      <figure>
+        <img src="screenshots/first-run-goal-screen.png" alt="The first screen: a box that asks what the recipe should do, with five example goals under it" width="1268" height="1381" loading="eager">
+        <figcaption>The first thing you see is the goal box. Five example goals are one click away; each drafts clean.</figcaption>
+      </figure>
+    </section>
+
+    <section class="zone" id="run">
+      <div class="zone-head"><h2>A run <span class="muted">(set up, running, results)</span></h2></div>
+      <p>Every recipe is a strip of a few stages you can read in order: what you give, what is read, what is made, where it goes. Set up asks for each stage's inputs in its own numbered box, tries every folder before Run, and says how long to expect. Running shows each step as it happens, down to whether the model is still loading or already writing. Results are the things made, each one a tab you can read, edit, or save.</p>
+      <div class="strip" aria-hidden="true">
+        <div class="strip-cell"><span class="strip-n">1</span><span class="strip-label">Set up</span><div class="strip-why">Each stage's inputs in a box; amber until it has what it needs.</div></div>
+        <div class="strip-cell"><span class="strip-n">2</span><span class="strip-label">Running</span><div class="strip-why">Loading the model, reading the prompt, writing: said as it happens.</div></div>
+        <div class="strip-cell"><span class="strip-n">3</span><span class="strip-label">Results</span><div class="strip-why">What was made, who made it, and the trace behind it.</div></div>
+      </div>
+      <div class="shots">
+        <figure><img src="screenshots/feedback-setup-either-or.png" alt="Set up with two amber stage boxes: Read the links and Read the documents, each saying give at least one of these" loading="lazy"><figcaption>Set up: links or a folder, either is fine. A stage glows amber until it has what it needs.</figcaption></figure>
+        <figure><img src="screenshots/feedback-running-writing.png" alt="Running: the recipe map with the AI step lit, and a log saying writing, 479 words, 43 words a second" loading="lazy"><figcaption>Running: the step that is working, and what it is doing right now.</figcaption></figure>
+        <figure><img src="screenshots/stages-results.png" alt="Results: what the recipe made, shown as tabs" loading="lazy"><figcaption>Results: each thing made is a tab. Edit one, and only the steps after it run again.</figcaption></figure>
+      </div>
+    </section>
+
+    <section class="zone" id="recipes">
+      <div class="zone-head"><h2>Recipes that ship with it <span class="muted">(the catalog)</span></h2></div>
+      <p>A recipe is a folder: <code>recipe.yaml</code>, its prompts, its schemas. These come with the app. Add one to your shelf, run it, copy it, change it. Share one as a zip; a recipe someone gives you is checked and asks before it touches anything beyond your own inputs.</p>
+      <ul class="rows">
+        <li><strong>Describe a document</strong><span>Say what a file is and what is in it, in a few sentences. The example recipe.</span></li>
+        <li><strong>Summarize a file</strong><span>One sentence about what it is, then the main points in the file's own order.</span></li>
+        <li><strong>Learning kit</strong><span>Notes, flashcards, a concept map, a process diagram, slides, and narrated audio from one document. The knowledge spine is kept between runs.</span></li>
+        <li><strong>Research brief</strong><span>Fetch the pages you give, pull out quoted findings, write a cited brief. Remembers what it read.</span></li>
+        <li><strong>Daily news log</strong><span>Watch the sites you follow and log only what is new. Run it every morning on a schedule.</span></li>
+        <li><strong>Ask your documents</strong><span>Index a folder once, then ask it anything and get the passages it came from.</span></li>
+        <li><strong>Batch briefing</strong><span>A folder of files plus links into one brief, with a section for what is missing.</span></li>
+        <li><strong>Inbox triage</strong><span>Emails saved to a folder: sorted, filed by an agent, replies drafted, and you approve before anything is written. Nothing is ever sent.</span></li>
+      </ul>
+    </section>
+
+    <section class="zone" id="make">
+      <div class="zone-head"><h2>Make your own <span class="muted">(the planner, and asking for a change)</span></h2></div>
+      <p>Type a goal. The planner picks from a library of ready-made stages and composes new ones only where nothing fits, then a checker reads the draft and sends problems back to the model until it is clean. You watch it write. Every prompt the planner uses is in Settings, editable, versioned, and resettable.</p>
+      <p>Don't like something? Tell it. <em>"The quiz should come from the brief, not from pasted notes. Drop the voice script."</em> The planner rewrites the recipe with only that change, you read what moved, and nothing is saved until you choose: a copy, or in place.</p>
+      <div class="shots">
+        <figure><img src="screenshots/planner-drafted-card.png" alt="A recipe drafted from a goal, shown as a map of inputs, steps, and results" loading="lazy"><figcaption>A goal became a recipe. The card shows every step and the model each one uses.</figcaption></figure>
+        <figure><img src="screenshots/feedback-ask-for-a-change-result.png" alt="Ask for a change: a list of what changed, each rewritten prompt before and after, and Save as a copy" loading="lazy"><figcaption>Ask for a change: what moved, in words, before anything is saved.</figcaption></figure>
+        <figure><img src="screenshots/feedback-recipe-card.png" alt="The recipe card: the strip of six stages above a map with inputs on the left, steps in the middle, results on the right" loading="lazy"><figcaption>The recipe card. Open the door whenever you like; edit on the map or by asking.</figcaption></figure>
+      </div>
+      <h3>What a recipe can do</h3>
+      <p>Read text, Markdown, PDF, and Word files. Fetch the pages you name and no others. Loop over a folder or a list of links. Ask a model for an answer in a fixed shape. Let an agent choose which files to look at, with a budget. Pause for your approval. Remember what it built between runs (an index, parsed pages, a log) and skip itself until its sources change. Draw a concept map, render a diagram, build a deck, read a script aloud in the Mac's own voice. Write files into a folder you chose.</p>
+    </section>
+
+    <section class="zone" id="local">
+      <div class="zone-head"><h2>Local first <span class="muted">(what leaves your Mac: nothing, unless you say so)</span></h2></div>
+      <div class="facts">
+        <span class="label">Models</span><span>Run in <a href="https://ollama.com">Ollama</a> on your Mac. Settings shows what this Mac can hold, how each model fits, and how fast it has been here.</span>
+        <span class="label">Files</span><span>A recipe reads only what you choose and writes only to its own results and the folders you name. Set up tries every folder before Run and says so if one cannot be written.</span>
+        <span class="label">Network</span><span>Only if a recipe declares it, and then only the hosts in the links you typed, checked on every redirect.</span>
+        <span class="label">Cloud</span><span>Off. The Codex app on a ChatGPT plan, or any OpenAI-compatible service by key, can be turned on; a step on one is marked <span class="tag amber">cloud</span> everywhere it appears.</span>
+        <span class="label">Reuse</span><span>An AI step whose prompt, model, settings, and inputs are exactly as last time gives its last answer again. Change one thing and that step and everything after it run fresh.</span>
+      </div>
+      <div class="shots two">
+        <figure><img src="screenshots/feedback-settings-fit.png" alt="Settings › Models: this Mac's chip and memory, and a table of models with a Fit column" loading="lazy"><figcaption>Settings › Models: this Mac, and how each model fits in it.</figcaption></figure>
+        <figure><img src="screenshots/feedback-setup-permissions.png" alt="Set up: permission rows saying what the run reads, writes, and reaches" loading="lazy"><figcaption>What this run touches, as rows, before it runs.</figcaption></figure>
+      </div>
+    </section>
+
+    <section class="zone" id="install">
+      <div class="zone-head"><h2>Install <span class="muted">(Homebrew, or the zip)</span></h2></div>
+      <p>An Apple silicon Mac on macOS 13 or newer, and Ollama with at least one chat model (<code>ollama pull qwen3</code> is a fine start).</p>
+<pre><code>brew install --cask jeremym/tap/stillroom
+open -a Stillroom</code></pre>
+      <p>Or download <code>Stillroom-X.Y.Z.zip</code> from <a href="https://github.com/jeremym/stillroom/releases">Releases</a>, unzip, move it to Applications, and right-click → Open the first time.</p>
+      <div class="notice">Pre-alpha. Signed with the project's own certificate, not an Apple Developer ID, and not notarized. The cask clears the quarantine flag so it opens without a Gatekeeper prompt.</div>
+      <h3>Verify a download</h3>
+<pre><code>shasum -a 256 Stillroom-X.Y.Z.zip             # matches the release .sha256
+codesign -d -r- /Applications/Stillroom.app   # a genuine build prints the leaf below
+certificate leaf = H"32ace20bdc543323908a451fea68106e9225a6b9"</code></pre>
+      <h3>Where things live</h3>
+      <p>Your recipes, runs, and remembered answers stay in your Library folder, in one SQLite file and one folder of recipes. Delete them and the app forgets everything. The source, the recipe format, the stage library, and the plan are on <a href="https://github.com/jeremym/stillroom">GitHub</a>; community recipes arrive by pull request.</p>
+    </section>
+
+    <footer>
+      <p>Stillroom is made by <a href="https://overtonefoundry.com">Overtone Foundry</a>. MIT licence. Wording rule, kept everywhere: the friendly word first, the technical one in parentheses.</p>
+    </footer>
+  </main>
+</body>
+</html>

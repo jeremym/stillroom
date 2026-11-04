@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Schedule, Settings, ShelfState, ToolInfo, UpdateCheck, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, PermissionRow, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Schedule, Settings, ShelfState, ToolInfo, UpdateCheck, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -116,6 +116,8 @@ export const api = {
   getRun: (id: string) => invoke<Run | null>("get_run", { id }),
   usage: () => invoke<ModelUsage[]>("usage"),
   estimate: (recipeId: string) => invoke<RunEstimate | null>("estimate", { recipeId }),
+  /** What a run with these inputs would touch, one row per permission entry, every chosen folder tried. */
+  probePermissions: (recipeId: string, inputs: Record<string, unknown>) => invoke<PermissionRow[]>("probe_permissions", { recipeId, inputs }),
   /** Save text where the user chooses. The save dialog runs on the Rust side; the webview never names a path.
    *  Resolves to the path written, or null when the user cancelled. */
   saveTextAs: (name: string, ext: string, content: string) => invoke<string | null>("save_text_as", { name, ext, content }),

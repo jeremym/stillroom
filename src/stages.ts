@@ -37,7 +37,7 @@ function keepParts(k: KeepState): { n: string; when: string } {
 /** The keep's state for the inputs at hand (Set up, the strip): fresh, stale, or not built. */
 export function keepWord(k: KeepState): { status: string; tone: StageTone } {
   const { n, when } = keepParts(k);
-  if (k.fresh == null) return { status: "not built yet", tone: "dim" };
+  if (k.fresh == null) return { status: "nothing kept yet · builds on the first run", tone: "dim" };
   if (k.refresh === "always") return { status: `runs every time${n}`, tone: "green" };
   if (k.fresh) return { status: `fresh${n}${when}`, tone: "green" };
   return { status: `stale · will rebuild${n}`, tone: "amber" };
@@ -46,7 +46,7 @@ export function keepWord(k: KeepState): { status: string; tone: StageTone } {
 /** The keep's state when no inputs are known (the Recipe page): what it holds, with no verdict on freshness. */
 export function keepHeldWord(k: KeepState): { status: string; tone: StageTone } {
   const { n, when } = keepParts(k);
-  if (k.fresh == null) return { status: "not built yet", tone: "dim" };
+  if (k.fresh == null) return { status: "keeps nothing yet", tone: "dim" };
   if (k.refresh === "always") return { status: `runs every time${n}`, tone: "green" };
   return { status: `${when.replace(/^ · /, "")}${n}`, tone: "green" };
 }
@@ -123,11 +123,19 @@ export function stageStatus(recipe: RecipeInfo, stage: Stage, ctx: StripContext)
     if (recs.length > 0) return { ...base, status: "not finished", tone: "dim" };
   }
 
-  // Before a run: a kept stage says what it holds; any stage says if it still needs you.
+  // Before a run: a stage that still needs you says so first; then a kept stage says what it holds.
   const keep = ctx.keeps?.[stage.id];
+  const stillNeeds = Boolean(ctx.inputs) && (stage.inputs ?? []).some((name) => {
+    const spec = recipe.inputs[name];
+    return spec && spec.required !== false && empty(ctx.inputs?.[name]);
+  });
   if (keep && stage.keep) {
     // Fresh or stale is a verdict about particular inputs; until the inputs this stage can see are
-    // all given, say only what the keep holds.
+    // all given, say only what the keep holds, after "needs you" when one of its own is still empty.
+    if (stillNeeds) {
+      const held = keepHeldWord(keep);
+      return { ...base, status: keep.fresh == null ? "needs you" : `needs you · ${held.status}`, tone: "amber" };
+    }
     return { ...base, ...(inputsKnownUpTo(recipe, stage, ctx.inputs) ? keepWord(keep) : keepHeldWord(keep)) };
   }
   // With no Set up in sight (the Recipe page) a stage with inputs says only that it asks you for them.

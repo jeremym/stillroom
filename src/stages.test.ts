@@ -49,12 +49,14 @@ describe("stripFor", () => {
   it("says what a kept stage holds", () => {
     const kept = { ...recipe, stages: [{ ...recipe.stages[0], keep: { refresh: "when_sources_change" as const } }, ...recipe.stages.slice(1)] };
     const k = (fresh: boolean | null, refresh: "always" | "when_sources_change" | "manual" = "when_sources_change") => ({ docs: { stage: "docs", records: 42, builtAt: "2026-10-31T12:00:00Z", fresh, refresh, last: null } });
-    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(null) })[0].status).toBe("not built yet");
+    expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(null) })[0].status).toBe("nothing kept yet · builds on the first run");
+    // A kept stage whose required input is still empty needs you before it says anything about its keep.
+    expect(stripFor(kept, { inputs: { folder: "" }, keeps: k(null) })[0]).toMatchObject({ status: "needs you", tone: "amber" });
     expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true) })[0].status).toMatch(/^fresh · 42 records · built /);
     expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(false) })[0]).toMatchObject({ status: "stale · will rebuild · 42 records", tone: "amber" });
     expect(stripFor(kept, { inputs: { folder: "/x" }, keeps: k(true, "always") })[0].status).toBe("runs every time · 42 records");
-    // With the folder not yet chosen there is no verdict, only what the keep holds.
-    expect(stripFor(kept, { inputs: {}, keeps: k(false) })[0]).toMatchObject({ status: "built Oct 31 · 42 records", tone: "green" });
+    // With the folder not yet chosen there is no verdict: the stage needs you, and says what the keep holds.
+    expect(stripFor(kept, { inputs: {}, keeps: k(false) })[0]).toMatchObject({ status: "needs you · built Oct 31 · 42 records", tone: "amber" });
     expect(stripFor(kept, { keeps: k(false) })[0].tone).toBe("green");
     // No Set up in sight: a stage with inputs only says it asks for them.
     expect(stripFor(recipe, {})[0]).toMatchObject({ status: "you provide", tone: "dim" });

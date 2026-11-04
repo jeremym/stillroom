@@ -289,6 +289,15 @@ export interface StepInfo {
   title?: string | null;
 }
 
+/** One row of what a run would touch (Set up › Permissions), checked against the inputs typed so far. */
+export interface PermissionRow {
+  kind: "read" | "write" | "reach" | "run";
+  label: string;
+  detail: string | null;
+  status: "ok" | "not_chosen" | "cannot_read" | "cannot_write" | "missing";
+  note: string | null;
+}
+
 export interface Permissions {
   filesystem?: { read?: string[]; write?: string[] };
   network?: string[];

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Glyph } from "../brand";
 import { allTicked, allowedWord, grantKey } from "../consent";
 import type { Consent } from "../types";
+import { Group } from "@overtone-foundry/app-kit";
 
 /* The consent step: what a recipe may touch beyond its inputs and its own results, one line and one
    tick per entry. Set up shows it above the inputs and will not run the recipe until every line is
@@ -27,9 +28,8 @@ export function ConsentZone({ consent, ticked, onTick, onRevoke, busy = false, h
   const { needed, granted } = consent;
   if (needed.length === 0 && granted.length === 0) return null;
   const done = allTicked(needed, ticked);
-  return (
-    <div className="consent-zone" role="group" aria-label="What this recipe may touch">
-      {heading && <h3>{heading} <span className="muted">(permissions)</span></h3>}
+  const body = (
+    <>
       <ul className="consent-lines">
         {needed.map((g) => {
           const key = grantKey(g);
@@ -59,6 +59,10 @@ export function ConsentZone({ consent, ticked, onTick, onRevoke, busy = false, h
           <span>Takes back every line above; the recipe will not run until ticked again.</span>
         </p>
       )}
-    </div>
+    </>
   );
+  // Inside a zone with its own heading (the import), the lines stand alone; on Set up they are a group
+  // with the amber rim until every line is ticked.
+  if (heading === null) return <div className="consent-zone" role="group" aria-label="What this recipe may touch">{body}</div>;
+  return <Group className="consent-zone" title={heading} sub="permissions" label="What this recipe may touch" needsYou={needed.length > 0 && !done}>{body}</Group>;
 }

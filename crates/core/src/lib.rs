@@ -14,6 +14,7 @@ pub mod library;
 pub mod migrate;
 pub mod model;
 pub mod planner;
+pub mod probe;
 pub mod prompts;
 pub mod propagate;
 pub mod recipe;

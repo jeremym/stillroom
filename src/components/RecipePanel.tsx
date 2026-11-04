@@ -5,11 +5,16 @@ import { describePermissions } from "../permissions";
 import { defaultInputs } from "../recipes/defaults";
 import { ALL_DAYS, DAY_LABEL, DEFAULT_TIME, daysToSend, whenWord } from "../schedules";
 import { aboutMs, estimateWord, inputsKnownUpTo, keepHeldWord, keepWord } from "../stages";
-import type { InputSpec, InstalledModel, KeepState, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
+import type { InputSpec, InstalledModel, KeepState, PermissionRow, RecipeInfo, ResolutionPreview, RunEstimate, StepInfo } from "../types";
+import { Group } from "@overtone-foundry/app-kit";
 import { Glyph } from "../brand";
 import { isLocalModel, whereWord } from "../models";
 import { allTicked, consentOf } from "../consent";
 import { ConsentZone } from "./ConsentZone";
+
+const KIND_WORD: Record<PermissionRow["kind"], string> = { read: "Reads", write: "Writes", reach: "Reaches", run: "Runs" };
+const STATUS_WORD: Record<PermissionRow["status"], string> = { ok: "ok", not_chosen: "not chosen yet", cannot_read: "cannot read", cannot_write: "cannot write", missing: "missing" };
+const cannot = (r: PermissionRow) => r.status === "cannot_read" || r.status === "cannot_write";
 
 const VIA_WORD: Record<string, string> = {
   pinned: "your pin on this slot",
@@ -73,8 +78,7 @@ export function InputField({
     <div className="field">
       <label>
         <strong>{label}</strong>
-        {optional && <span className="muted"> (optional)</span>}
-        {spec.description && <span className="muted"> · {spec.description}</span>}
+        {optional ? <span className="muted"> (optional)</span> : <span className="req" title="required">*</span>}
       </label>
       {spec.type === "file" || spec.type === "files" || spec.type === "directory" ? (
         <div className="row">
@@ -93,6 +97,7 @@ export function InputField({
       ) : (
         <input type="text" value={(value as string) ?? ""} onChange={(e) => onChange(e.target.value || undefined)} />
       )}
+      {spec.description && <span className="desc">{spec.description}</span>}
     </div>
   );
 }
@@ -107,6 +112,8 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
   const permissionNeeded = consent.needed.length > 0;
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
+  // What this run would touch, each folder tried, asked of the engine a moment after the inputs settle.
+  const [rows, setRows] = useState<PermissionRow[] | null>(null);
   const [preview, setPreview] = useState<ResolutionPreview | null>(null);
   const [reuse, setReuse] = useState(true);
   const folderInputs = Object.entries(recipe.inputs).filter(([, spec]) => spec.type === "directory").map(([k]) => k);
@@ -119,6 +126,14 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
   const [scheduled, setScheduled] = useState<string | null>(null);
 
   useEffect(() => { onInputsChange?.(inputs); }, [inputs, onInputsChange]);
+
+  useEffect(() => {
+    let live = true;
+    const h = window.setTimeout(() => {
+      Promise.resolve().then(() => api.probePermissions(recipe.id, inputs)).then((r) => { if (live) setRows(r); }).catch(() => { if (live) setRows(null); });
+    }, 250);
+    return () => { live = false; window.clearTimeout(h); };
+  }, [recipe.id, inputs]);
 
   useEffect(() => {
     setInputs(defaultInputs(recipe.inputs));
@@ -151,7 +166,27 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
   const slotCandidates = (requires: string[]) =>
     models.filter((m) => requires.every((c) => m.capabilities.includes(c as never)));
   const unfillable = Object.entries(recipe.modelSlots).filter(([, s]) => slotCandidates(s.requires).length === 0);
-  const blocked = running || missing.length > 0 || unfillable.length > 0 || permissionNeeded;
+  const cannotRows = (rows ?? []).filter(cannot);
+  const blocked = running || missing.length > 0 || unfillable.length > 0 || permissionNeeded || cannotRows.length > 0;
+  // What Run still needs, by stage: "stage 2 needs Your documents; stage 4 needs What to learn".
+  const needsWord = (() => {
+    const label = (k: string) => recipe.inputs[k]?.label ?? k;
+    const parts: string[] = [];
+    const placed = new Set<string>();
+    recipe.stages.forEach((st, i) => {
+      const here = (st.inputs ?? []).filter((n) => missing.includes(n));
+      if (here.length === 0) return;
+      here.forEach((n) => placed.add(n));
+      parts.push(`${recipe.stages.length > 1 ? `stage ${i + 1} ` : ""}needs ${here.map(label).join(", ")}`);
+    });
+    const rest = missing.filter((n) => !placed.has(n));
+    if (rest.length > 0) parts.push(`needs ${rest.map(label).join(", ")}`);
+    if (parts.length > 2) {
+      const stages = recipe.stages.map((st, i) => ((st.inputs ?? []).some((n) => missing.includes(n)) ? i + 1 : 0)).filter(Boolean);
+      return `needs you in stages ${stages.join(", ")}`;
+    }
+    return parts.join("; ");
+  })();
   runRef.current = () => { if (!blocked) onRun(recipe, inputs, pins, reuse); };
 
   function toggleDay(day: string) {
@@ -213,17 +248,14 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       <ConsentZone consent={consent} ticked={ticked} onTick={tick} onRevoke={revoke} busy={consentBusy} />
       {consentError && <p className="error">Could not write your answer: {consentError}</p>}
 
-      {recipe.stages.filter((st) => (st.inputs ?? []).some((n) => n in recipe.inputs) || st.keep).map((st, i) => (
-        <section key={st.id} id={`stage-${st.id}`} className="stage-section">
-          {recipe.stages.length > 1 && (() => {
-            const est = estimate?.stages.find((e) => e.id === st.id);
-            return (
-              <h3 className="stage-head"><span className="stage-n">{recipe.stages.indexOf(st) + 1}</span> {st.name}
-                {est && <span className="tag">{estimateWord(est)}</span>}
-                {st.why && <span className="muted"> · {st.why}</span>}
-              </h3>
-            );
-          })()}
+      {recipe.stages.filter((st) => (st.inputs ?? []).some((n) => n in recipe.inputs) || st.keep).map((st) => {
+        const names = (st.inputs ?? []).filter((n) => n in recipe.inputs);
+        const required = names.filter((n) => recipe.inputs[n].required !== false);
+        const est = estimate?.stages.find((e) => e.id === st.id);
+        return (
+          <Group key={st.id} id={`stage-${st.id}`} className="stage-section" n={recipe.stages.length > 1 ? recipe.stages.indexOf(st) + 1 : undefined}
+            title={st.name} why={st.why} needsYou={required.some((n) => missing.includes(n))} optional={names.length > 0 && required.length === 0}
+            aside={est ? <span className="tag">{estimateWord(est)}</span> : undefined}>
           {st.keep && (() => {
             const k = keeps?.[st.id];
             const w = k ? (inputsKnownUpTo(recipe, st, inputs) ? keepWord(k) : keepHeldWord(k)) : { status: "…", tone: "dim" as const };
@@ -242,13 +274,13 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
               </div>
             );
           })()}
-          {(st.inputs ?? []).filter((n) => n in recipe.inputs).map((name) => (
+          {names.map((name) => (
             <InputField key={name} name={name} spec={recipe.inputs[name]} value={inputs[name]}
               onChange={(v) => setInputs((i) => ({ ...i, [name]: v }))} />
           ))}
-          {i === 0 && null}
-        </section>
-      ))}
+          </Group>
+        );
+      })}
 
       <h3>Models for this run <span className="muted">(model slots)</span></h3>
       {unfillable.some(([, s]) => s.requires.includes("embedding")) && (
@@ -262,10 +294,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
         const via = picked ? VIA_WORD[picked.via] ?? picked.via : "";
         return (
           <div className="field" key={slot}>
-            <label>
-              <strong>{slot}</strong>
-              <span className="muted"> · needs {spec.requires.join(", ")}{spec.description ? ` · ${spec.description}` : ""}</span>
-            </label>
+            <label><strong>{slot}</strong></label>
             <select
               value={pins[slot] ?? ""}
               onChange={(e) => {
@@ -287,11 +316,29 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
                 : picked ? <><Glyph name="ai" /> Will use <span className="mono">{pickedName}</span> <span className={isLocalModel(picked.modelId) ? "tag" : "tag amber"}>{whereWord(picked.modelId)}</span> · {via}</>
                 : preview ? "no model yet" : "…"}
             </p>
+            <span className="desc">Needs {spec.requires.map((c) => c.replace("_", " ")).join(", ")}{spec.description ? ` · ${spec.description}` : ""}</span>
           </div>
         );
       })}
 
-      <p className="muted">Permissions: {describePermissions(recipe.permissions, recipe.inputs)}. Nothing else is touched.</p>
+      {rows ? (
+        <div className="perm-rows">
+          <h3>Permissions <span className="muted">(what this run touches)</span></h3>
+          <ul className="perm-list">
+            {rows.map((r, i) => (
+              <li key={i} className={`perm-row ${r.status}`}>
+                <span className="perm-kind">{KIND_WORD[r.kind]}</span>
+                <span>{r.label}{r.detail && <span className="mono muted"> · {r.detail}</span>}</span>
+                {r.status !== "ok" && <span className={`tag${cannot(r) ? " amber" : ""}`}>{STATUS_WORD[r.status]}</span>}
+                {r.note && r.status !== "not_chosen" && <span className={`perm-note ${cannot(r) ? "amber" : "muted"}`}>{cannot(r) && <Glyph name="warning" />} {r.note}</span>}
+              </li>
+            ))}
+            <li className="perm-row muted">Nothing else is touched.</li>
+          </ul>
+        </div>
+      ) : (
+        <p className="muted">Permissions: {describePermissions(recipe.permissions, recipe.inputs)}. Nothing else is touched.</p>
+      )}
       <p className="muted">Steps: {recipe.steps.map(stepLabel).join(" → ")}</p>
       {estimate ? (() => {
         // A kept stage that is fresh for these inputs will be skipped: take it out of the total.
@@ -322,7 +369,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       </label>
       <button className="primary" disabled={blocked}
         onClick={() => onRun(recipe, inputs, pins, reuse)}>
-        {running ? "Running…" : permissionNeeded ? "Run · needs your permission" : missing.length > 0 ? `Run · needs ${missing.map((k) => recipe.inputs[k]?.label ?? k).join(", ")}` : unfillable.length > 0 ? `Run · no installed model can do ${unfillable.map(([, s]) => s.requires.join(" and ")).join("; ")}` : "Run"}
+        {running ? "Running…" : permissionNeeded ? "Run · needs your permission" : missing.length > 0 ? `Run · ${needsWord}` : cannotRows.length > 0 ? `Run · ${STATUS_WORD[cannotRows[0].status]} ${cannotRows[0].label}` : unfillable.length > 0 ? `Run · no installed model can do ${unfillable.map(([, s]) => s.requires.join(" and ")).join("; ")}` : "Run"}
       </button>
       {folderInputs.length > 0 && (
         <>

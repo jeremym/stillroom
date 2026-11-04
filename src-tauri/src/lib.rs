@@ -1102,6 +1102,15 @@ fn usage(state: State<'_, AppState>) -> CmdResult<Vec<ModelUsage>> {
     state.store.lock().map_err(err)?.usage_by_model().map_err(err)
 }
 
+/// What a run with these inputs would touch, one row per permission entry, with every chosen
+/// folder tried for reading or writing (a probe file, created and removed). Set up shows the rows
+/// and will not run while a row says cannot.
+#[tauri::command]
+fn probe_permissions(state: State<'_, AppState>, recipe_id: String, inputs: indexmap::IndexMap<String, Value>) -> CmdResult<Vec<stillroom_core::probe::PermissionRow>> {
+    let bundle = state.library.find(&recipe_id).ok_or_else(|| format!("recipe {recipe_id} not found"))?;
+    Ok(stillroom_core::probe::probe_permissions(&bundle.recipe, &inputs))
+}
+
 #[tauri::command]
 fn estimate(state: State<'_, AppState>, recipe_id: String) -> CmdResult<Option<RunEstimate>> {
     let stages = state.library.find(&recipe_id).map(|b| b.info().stages).unwrap_or_default();
@@ -2283,6 +2292,7 @@ pub fn run() {
             get_run,
             usage,
             estimate,
+            probe_permissions,
             list_tools,
             read_recipe_draft,
             check_recipe_draft,

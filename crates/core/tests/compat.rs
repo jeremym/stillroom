@@ -202,6 +202,8 @@ fn links_or_a_folder_become_either_or_and_cards_are_fed_from_the_brief() {
     let stage = y["stages"].as_array().unwrap().iter().find(|s| s["id"] == "study_cards").unwrap();
     assert!(stage.get("inputs").is_none(), "the cards stage lists no input of its own: {stage}");
     assert_eq!(y["inputs"]["focus"]["required"], Value::Null, "the focus is still asked for");
+    assert!(y["inputs"].get("material").is_none(), "the dead input the model re-declared is dropped: {}", y["inputs"]);
+    assert_eq!(y["stages"].as_array().unwrap().len(), 6);
     // Saved, the recipe carries the floor either-or needs.
     let mut stamped = y.clone();
     migrate::stamp_min_version(&mut stamped);

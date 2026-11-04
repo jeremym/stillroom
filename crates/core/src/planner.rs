@@ -569,8 +569,14 @@ fn already_built(draft: &Draft, lib: &crate::stagelib::StageLibrary) -> String {
         let id = st.get("id").and_then(Value::as_str).unwrap_or("");
         let Some(def) = lib.get(id) else { continue };
         s.push_str(&format!("\n{}. **{}** (`{}`): {}\n", i + 1, st.get("name").and_then(Value::as_str).unwrap_or(&def.name), id, def.summary));
-        if !def.inputs.is_empty() {
-            s.push_str(&format!("   Inputs it already asks for: {}.\n", def.inputs.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
+        // What the stage asks for as expanded: a fed input (the brief feeds the cards) is not asked for.
+        let asks: Vec<String> = st.get("inputs").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(|k| format!("`{k}`")).collect();
+        let earlier: Vec<String> = def.inputs.keys().filter(|k| !asks.iter().any(|a| a == &format!("`{k}`"))).map(|k| format!("`{k}`")).collect();
+        if !asks.is_empty() {
+            s.push_str(&format!("   Inputs it already asks for: {}.\n", asks.join(", ")));
+        }
+        if !earlier.is_empty() {
+            s.push_str(&format!("   Inputs it does not ask for (an earlier stage supplies them, or they were asked for already): {}; do not declare them.\n", earlier.join(", ")));
         }
         if !def.model_slots.is_empty() {
             s.push_str(&format!("   Model slots already declared: {}.\n", def.model_slots.keys().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")));
@@ -649,6 +655,28 @@ fn merge_partial(skeleton: &mut Draft, partial: &Draft, lib: &crate::stagelib::S
     }
     for (path, text) in &partial.files {
         skeleton.files.entry(path.clone()).or_insert_with(|| text.clone());
+    }
+    // A dead input the answer declared (nothing reads it, no stage lists it, no output comes from it)
+    // goes: the model re-declares what a ready-made stage used to ask for.
+    {
+        let text = serde_json::to_string(&json!({ "steps": base.get("steps"), "outputs": base.get("outputs"), "permissions": base.get("permissions") })).unwrap_or_default();
+        let listed: Vec<String> = base
+            .get("stages")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|s| s.get("inputs").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
+            .collect();
+        let dead: Vec<String> = base
+            .get("inputs")
+            .and_then(Value::as_object)
+            .map(|o| o.keys().filter(|k| !text.contains(&format!("${{inputs.{k}}}")) && !text.contains(&format!("${{inputs.{k}.")) && !listed.contains(k)).cloned().collect())
+            .unwrap_or_default();
+        if let Some(inputs) = base.get_mut("inputs").and_then(Value::as_object_mut) {
+            for k in dead {
+                inputs.remove(&k);
+            }
+        }
     }
     // An input, step, or output lives in the first stage that lists it.
     if let Some(stages) = base.get_mut("stages").and_then(Value::as_array_mut) {

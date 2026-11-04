@@ -1,22 +1,362 @@
 {
-  "about": "Jeremy's learn-anything goal (2026-11-04): links or documents, a brief, study cards, saved to a folder. Two source stages make links and the folder optional with one either-or group; study_cards after write_brief takes its material from the brief and asks for nothing; the custom save stage writes into the folder the user names.",
-  "request": { "goal": "I will give you URLs or documents; make me a summary, flash cards, a cheat sheet, and save everything to a folder", "id": "learn-stuff", "name": "Learn stuff", "icon": "learn" },
-  "strip": { "stages": [ { "use": "read_links" }, { "use": "read_folder" }, { "use": "write_brief", "name": "Build study brief" }, { "use": "study_cards", "name": "Make flash cards" }, { "name": "Save materials", "why": "The brief and cards are written as files into the folder you choose." } ] },
+  "about": "Jeremy's learn-anything goal, recorded live 2026-11-04 (qwen3.8:27b-mlx, one strip call and one composing call, clean first try, 5 min 48 s): links or documents, a brief, study cards, a toolkit, saved to a folder. Two source stages make links and the folder optional with one either-or group; study_cards after write_brief takes its material from the brief; the composing answer re-declared a dead `material` input, which the merge drops.",
+  "request": {
+    "goal": "Okay, for this task I would like to use it to learn a new thing.  I will give you a list of things like URLs or documents, and you will generate a summary, diagram, flash cards, cheat sheets or glossarie; also generate a prompt that can be used to have an interactive conversation with an AI, and also generate a succinctly written mass of succinct paragraphs which can be used to feed a voice transcription model to have it read things to me.",
+    "material": null,
+    "id": "learn-stuff",
+    "name": "Learn stuff",
+    "icon": "learn"
+  },
+  "strip": {
+    "stages": [
+      {
+        "use": "read_links",
+        "name": "Read the Links",
+        "why": "Fetch each URL you give and pull out what every page says about your topic, with exact quotes (web scraping)."
+      },
+      {
+        "use": "read_folder",
+        "name": "Read the Documents",
+        "why": "Read every file in a folder you point to and pull out what each says about your topic, with quotes and page numbers (document parsing)."
+      },
+      {
+        "use": "write_brief",
+        "name": "Write the Summary",
+        "why": "Turn everything gathered from the links and documents into one brief that answers your topic and cites every point by file, page, or link."
+      },
+      {
+        "use": "study_cards",
+        "name": "Make Study Cards",
+        "why": "Turn the brief into flashcards and a short quiz so you can test yourself on what you just read."
+      },
+      {
+        "name": "Build the Toolkit",
+        "why": "From the brief and cards, produce a structural diagram of the topic, a cheat sheet or glossary of key terms, a conversation prompt for an interactive AI session, and a set of short, plain paragraphs written for a voice transcription model to read aloud to you."
+      },
+      {
+        "name": "Deliver",
+        "why": "Write the summary, study cards, diagram, cheat sheet, conversation prompt, and voice script as files into a folder you choose."
+      }
+    ]
+  },
   "answer": {
     "recipe": {
-      "id": "x", "name": "X", "description": "Links or documents become a brief and flash cards, saved as files.",
-      "inputs": { "output_folder": { "type": "directory", "label": "Where to save", "description": "The folder your study materials are written into." } },
-      "modelSlots": {},
-      "permissions": { "filesystem": { "write": ["${inputs.output_folder}"] } },
+      "id": "jeremy-learn-stuff",
+      "name": "Jeremy Learn Stuff",
+      "description": "Give a focus, some links, and/or a folder of documents; get a summary, a concept map, a cheat sheet, study cards, a conversation prompt, and a voice script, all saved as files in a folder you choose.",
+      "inputs": {
+        "focus": {
+          "type": "string",
+          "label": "Focus",
+          "description": "The topic or question you want to learn about.",
+          "required": true
+        },
+        "urls": {
+          "type": "urls",
+          "label": "Links to read",
+          "description": "One link per line. Each page is fetched and read for the focus.",
+          "required": false
+        },
+        "folder": {
+          "type": "directory",
+          "label": "Documents folder",
+          "description": "A folder of PDFs, Word docs, Markdown, or text files to read.",
+          "required": false
+        },
+        "material": {
+          "type": "text",
+          "label": "Material for study cards",
+          "description": "The text to turn into flashcards and a quiz. Paste the summary or any notes here.",
+          "required": false
+        },
+        "output_folder": {
+          "type": "directory",
+          "label": "Output folder",
+          "description": "Where the summary, cards, diagram, cheat sheet, conversation prompt, and voice script are written as files.",
+          "required": true
+        }
+      },
+      "modelSlots": {
+        "reader": {
+          "requires": [
+            "text"
+          ],
+          "preference": "accuracy",
+          "description": "Reads pages and documents and pulls out findings about the focus."
+        },
+        "writer": {
+          "requires": [
+            "text"
+          ],
+          "preference": "accuracy",
+          "description": "Writes the summary, cheat sheet, conversation prompt, voice script, and formats study cards."
+        },
+        "mapper": {
+          "requires": [
+            "text",
+            "structured_output"
+          ],
+          "preference": "accuracy",
+          "description": "Turns the brief into a structured concept map (a Knowledge Spine)."
+        }
+      },
+      "permissions": {
+        "filesystem": {
+          "read": [
+            "input"
+          ],
+          "write": [
+            "${inputs.output_folder}"
+          ]
+        },
+        "network": [
+          "input"
+        ]
+      },
       "steps": [
-        { "id": "save_brief", "kind": "tool", "name": "Save brief", "tool": "fs.write", "inputs": { "dir": "${inputs.output_folder}", "name": "study-brief.md", "text": "${steps.brief_write.output}", "overwrite": true } },
-        { "id": "save_cards", "kind": "tool", "name": "Save flashcards", "tool": "fs.write", "inputs": { "dir": "${inputs.output_folder}", "name": "flashcards.json", "text": "${steps.cards_write.output}", "overwrite": true } }
+        {
+          "id": "map_concepts",
+          "kind": "model",
+          "name": "Map the concepts",
+          "slot": "mapper",
+          "prompt": "prompts/map_concepts.md",
+          "inputs": {
+            "brief": "${steps.brief_write.output}"
+          },
+          "outputSchema": "schemas/spine.json",
+          "params": {
+            "temperature": 0.2,
+            "think": false
+          }
+        },
+        {
+          "id": "draw_diagram",
+          "kind": "tool",
+          "name": "Draw the concept map",
+          "tool": "spine.concept_map",
+          "inputs": {
+            "spine": "${steps.map_concepts.output}"
+          }
+        },
+        {
+          "id": "write_cheatsheet",
+          "kind": "model",
+          "name": "Write the cheat sheet",
+          "slot": "writer",
+          "prompt": "prompts/write_cheatsheet.md",
+          "inputs": {
+            "brief": "${steps.brief_write.output}"
+          },
+          "params": {
+            "temperature": 0.3,
+            "think": false
+          }
+        },
+        {
+          "id": "write_conversation_prompt",
+          "kind": "model",
+          "name": "Write the conversation prompt",
+          "slot": "writer",
+          "prompt": "prompts/write_conversation_prompt.md",
+          "inputs": {
+            "brief": "${steps.brief_write.output}"
+          },
+          "params": {
+            "temperature": 0.3,
+            "think": false
+          }
+        },
+        {
+          "id": "write_voice_script",
+          "kind": "model",
+          "name": "Write the voice script",
+          "slot": "writer",
+          "prompt": "prompts/write_voice_script.md",
+          "inputs": {
+            "brief": "${steps.brief_write.output}"
+          },
+          "params": {
+            "temperature": 0.3,
+            "think": false
+          }
+        },
+        {
+          "id": "format_cards",
+          "kind": "model",
+          "name": "Format the study cards",
+          "slot": "writer",
+          "prompt": "prompts/format_cards.md",
+          "inputs": {
+            "cards": "${steps.cards_write.output}"
+          },
+          "params": {
+            "temperature": 0.1,
+            "think": false
+          }
+        },
+        {
+          "id": "save_summary",
+          "kind": "tool",
+          "name": "Save the summary",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.output_folder}",
+            "name": "summary.md",
+            "text": "${steps.brief_write.output}",
+            "overwrite": true
+          }
+        },
+        {
+          "id": "save_cards",
+          "kind": "tool",
+          "name": "Save the study cards",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.output_folder}",
+            "name": "study-cards.md",
+            "text": "${steps.format_cards.output}",
+            "overwrite": true
+          }
+        },
+        {
+          "id": "save_diagram",
+          "kind": "tool",
+          "name": "Save the concept map",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.output_folder}",
+            "name": "concept-map.mmd",
+            "text": "${steps.draw_diagram.output.source}",
+            "overwrite": true
+          }
+        },
+        {
+          "id": "save_cheatsheet",
+          "kind": "tool",
+          "name": "Save the cheat sheet",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.output_folder}",
+            "name": "cheat-sheet.md",
+            "text": "${steps.write_cheatsheet.output}",
+            "overwrite": true
+          }
+        },
+        {
+          "id": "save_conversation_prompt",
+          "kind": "tool",
+          "name": "Save the conversation prompt",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.output_folder}",
+            "name": "conversation-prompt.md",
+            "text": "${steps.write_conversation_prompt.output}",
+            "overwrite": true
+          }
+        },
+        {
+          "id": "save_voice_script",
+          "kind": "tool",
+          "name": "Save the voice script",
+          "tool": "fs.write",
+          "inputs": {
+            "dir": "${inputs.output_folder}",
+            "name": "voice-script.txt",
+            "text": "${steps.write_voice_script.output}",
+            "overwrite": true
+          }
+        }
       ],
-      "outputs": { "saved_brief": { "from": "${steps.save_brief.output}", "type": "file", "label": "Saved brief" } },
+      "outputs": {
+        "diagram": {
+          "from": "${steps.draw_diagram.output}",
+          "type": "diagram",
+          "label": "Concept Map",
+          "description": "A visual map of the topic's key concepts and how they connect."
+        },
+        "cheat_sheet": {
+          "from": "${steps.write_cheatsheet.output}",
+          "type": "markdown",
+          "label": "Cheat Sheet",
+          "description": "A quick-reference glossary and key points from the topic."
+        },
+        "conversation_prompt": {
+          "from": "${steps.write_conversation_prompt.output}",
+          "type": "text",
+          "label": "Conversation Prompt",
+          "description": "A prompt to paste into any AI chat for an interactive study session."
+        },
+        "voice_script": {
+          "from": "${steps.write_voice_script.output}",
+          "type": "text",
+          "label": "Voice Script",
+          "description": "Short, plain paragraphs written to be read aloud by a voice model."
+        }
+      },
       "stages": [
-        { "id": "save_materials", "name": "Save materials", "why": "The brief and cards are written as files into the folder you choose.", "inputs": ["output_folder"], "steps": ["save_brief", "save_cards"], "outputs": ["saved_brief"] }
+        {
+          "id": "build_the_toolkit",
+          "name": "Build the Toolkit",
+          "why": "The brief and cards become a concept map (a diagram of how ideas connect), a cheat sheet of key terms, a prompt for an interactive AI conversation, and short plain paragraphs ready to feed a voice reader.",
+          "steps": [
+            "map_concepts",
+            "draw_diagram",
+            "write_cheatsheet",
+            "write_conversation_prompt",
+            "write_voice_script",
+            "format_cards"
+          ],
+          "outputs": [
+            "diagram",
+            "cheat_sheet",
+            "conversation_prompt",
+            "voice_script"
+          ]
+        },
+        {
+          "id": "deliver",
+          "name": "Deliver",
+          "why": "Everything the toolkit built is written as files into the folder you choose, so you can keep, share, or open them anywhere.",
+          "inputs": [
+            "output_folder"
+          ],
+          "steps": [
+            "save_summary",
+            "save_cards",
+            "save_diagram",
+            "save_cheatsheet",
+            "save_conversation_prompt",
+            "save_voice_script"
+          ]
+        }
       ]
     },
-    "files": []
-  }
+    "files": [
+      {
+        "path": "prompts/map_concepts.md",
+        "text": "You are a learning designer. You receive a **brief**: a summary of a topic with citations to its sources.\n\nProduce a Knowledge Spine: a structured map of the topic's key concepts and how they connect.\n\n## What to produce\n\nA JSON object with exactly these fields:\n\n- `title` (string): the name of the topic, taken from the brief.\n- `concepts` (array): 6 to 15 concept objects, each with:\n  - `id` (string): a short kebab-case identifier, e.g. `neural-network`, `backpropagation`.\n  - `name` (string): a human-readable name for the concept.\n  - `prerequisites` (array of strings): ids of concepts that must be understood before this one. May be empty.\n  - `related` (array of strings): ids of concepts that are related but are not prerequisites. May be empty.\n\n## Rules\n\n- Extract concepts only from the brief. Do not invent concepts the brief does not mention.\n- Every id that appears in `prerequisites` or `related` must match an `id` in the `concepts` array.\n- Order the concepts roughly from foundational to advanced.\n- Output only the JSON object. No preamble, no explanation, no markdown fences."
+      },
+      {
+        "path": "prompts/write_cheatsheet.md",
+        "text": "You are a study-aid writer. You receive a **brief**: a summary of a topic with citations to its sources.\n\nWrite a cheat sheet and glossary for the topic.\n\n## What to produce\n\nA Markdown document with these sections, in order:\n\n1. **Key Terms** \u2014 a glossary of the most important terms from the brief. Each entry: the term in bold, then a one-sentence definition.\n2. **Quick Reference** \u2014 the most important facts, formulas, or steps, in a compact bulleted list.\n3. **Common Pitfalls** \u2014 mistakes or confusions a learner is likely to make, each with a brief correction.\n4. **Further Reading** \u2014 any sources, topics, or links the brief mentions that go deeper.\n\n## Rules\n\n- Stay inside the brief. Do not add outside knowledge.\n- Keep each entry to one or two sentences.\n- When a point comes from a specific source in the brief, cite it (file name, page number, or link).\n- No preamble. Start with the first heading."
+      },
+      {
+        "path": "prompts/write_conversation_prompt.md",
+        "text": "You are a conversation designer. You receive a **brief**: a summary of a topic with citations to its sources.\n\nWrite a single prompt that a user can paste into any AI chat (ChatGPT, Claude, Gemini, etc.) to start an interactive study session on the topic.\n\n## What to produce\n\nOne block of text \u2014 the prompt itself, ready to paste. It should:\n\n- Open by naming the topic and its scope, drawn from the brief.\n- Tell the AI to act as a patient tutor who explains, quizzes, and checks understanding.\n- List the key concepts the AI should cover, taken from the brief.\n- Ask the AI to start by asking the learner what they already know, then adapt the session.\n- Note that the AI should cite the brief's sources when it can.\n\n## Rules\n\n- Output only the prompt text. No preamble, no explanation of what the prompt does, no markdown fences around it.\n- Keep it under 400 words.\n- Stay inside the brief for all topic content. Do not add outside knowledge."
+      },
+      {
+        "path": "prompts/write_voice_script.md",
+        "text": "You are a script writer for a voice reader. You receive a **brief**: a summary of a topic with citations to its sources.\n\nWrite a set of short, plain paragraphs that a text-to-speech model will read aloud to the listener.\n\n## What to produce\n\nA sequence of short paragraphs (3 to 6 sentences each), in plain spoken English. The script should:\n\n- Open with one sentence that says what the topic is and why it matters.\n- Walk through the main ideas in order, one paragraph per idea.\n- Use simple words and short sentences. When a technical term is unavoidable, say it plainly and explain it in the next sentence.\n- Close with one paragraph that ties the ideas together and suggests what to explore next.\n\n## Rules\n\n- Stay inside the brief. Do not add outside knowledge.\n- No headings, no bullet points, no citations in the text (the listener cannot see them).\n- No preamble. Start with the first paragraph.\n- Aim for 400 to 800 words total.\n- Output only the script text. No markdown fences."
+      },
+      {
+        "path": "prompts/format_cards.md",
+        "text": "You are a study-aid formatter. You receive **cards**: a JSON object with a `cards` array. Each card has `front` (the question or prompt), `back` (the answer), and `topic` (a short label).\n\n## What to produce\n\nA Markdown document that lays out the cards for study:\n\n- Group cards by `topic` under a heading for each topic.\n- For each card, show the front as a bold question, then the answer on the next line in a blockquote.\n- End with a **Quiz** section that lists 3 to 5 questions drawn from the cards. Hide each answer inside a Markdown `<details>` block so the learner can reveal it.\n\n## Rules\n\n- Do not change the content of any card. Only reformat.\n- No preamble. Start with the first topic heading.\n- Output only the Markdown. No markdown fences around the whole document."
+      },
+      {
+        "path": "schemas/spine.json",
+        "text": "{\n  \"type\": \"object\",\n  \"required\": [\"title\", \"concepts\"],\n  \"additionalProperties\": false,\n  \"properties\": {\n    \"title\": {\n      \"type\": \"string\",\n      \"description\": \"The name of the topic\"\n    },\n    \"concepts\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"required\": [\"id\", \"name\", \"prerequisites\", \"related\"],\n        \"additionalProperties\": false,\n        \"properties\": {\n          \"id\": {\n            \"type\": \"string\",\n            \"description\": \"Short kebab-case identifier\"\n          },\n          \"name\": {\n            \"type\": \"string\",\n            \"description\": \"Human-readable concept name\"\n          },\n          \"prerequisites\": {\n            \"type\": \"array\",\n            \"items\": { \"type\": \"string\" },\n            \"description\": \"Ids of concepts that must come first\"\n          },\n          \"related\": {\n            \"type\": \"array\",\n            \"items\": { \"type\": \"string\" },\n            \"description\": \"Ids of related concepts\"\n          }\n        }\n      }\n    }\n  }\n}"
+      }
+    ]
+  },
+  "problems": []
 }

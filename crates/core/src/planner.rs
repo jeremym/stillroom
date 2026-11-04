@@ -113,6 +113,9 @@ pub enum PlanEvent {
     Fixing { attempt: u32, problems: Vec<String>, elapsed_ms: u64, tokens: u64 },
     /// A model call starts.
     Phase { which: PlanPhase, attempt: u32, of: u32, elapsed_ms: u64, tokens: u64 },
+    /// Where the model call is before and while text arrives: loading the model into memory,
+    /// reading the prompt, writing.
+    Model { phase: crate::model::CallPhase, elapsed_ms: u64, tokens: u64 },
     /// A piece of what the model is writing. Chunks are coalesced: at most a few a second.
     Delta { text: String, elapsed_ms: u64, tokens: u64 },
     /// The last model call ended; only the final check remains.
@@ -203,6 +206,11 @@ impl Progress {
             g.last_flush = std::time::Instant::now();
         }
         self.emit(|elapsed_ms, tokens| PlanEvent::Phase { which, attempt, of, elapsed_ms, tokens });
+    }
+
+    /// The model call moved: loading, reading, or writing.
+    fn model_phase(&self, phase: crate::model::CallPhase) {
+        self.emit(|elapsed_ms, tokens| PlanEvent::Model { phase, elapsed_ms, tokens });
     }
 
     /// A piece of text from the model.
@@ -861,14 +869,17 @@ impl Planner {
     /// then the response. The timeout covers the whole call; Stop drops it mid-stream.
     async fn call(&self, req: ChatRequest, progress: &Progress, which: PlanPhase, attempt: u32, of: u32) -> Result<crate::model::ChatResponse, PlanError> {
         progress.begin_call(which, attempt, of);
-        let on_delta = |text: &str| progress.delta(text);
+        let on = |ev: crate::model::StreamEvent<'_>| match ev {
+            crate::model::StreamEvent::Phase(p) => progress.model_phase(p),
+            crate::model::StreamEvent::Text(text) => progress.delta(text),
+        };
         let timed = async {
             match self.timeout {
-                Some(d) => match tokio::time::timeout(d, self.models.chat_stream(&self.model_id, req, &on_delta)).await {
+                Some(d) => match tokio::time::timeout(d, self.models.chat_events(&self.model_id, req, &on)).await {
                     Ok(r) => r.map_err(|e| PlanError::Model(e.to_string())),
                     Err(_) => Err(PlanError::Timeout(d.as_secs())),
                 },
-                None => self.models.chat_stream(&self.model_id, req, &on_delta).await.map_err(|e| PlanError::Model(e.to_string())),
+                None => self.models.chat_events(&self.model_id, req, &on).await.map_err(|e| PlanError::Model(e.to_string())),
             }
         };
         let resp = match &self.cancel {
@@ -1072,7 +1083,7 @@ mod tests {
             self.seen.lock().unwrap().push(req);
             let mut a = self.answers.lock().unwrap();
             let content = if a.is_empty() { "{}".to_string() } else { a.remove(0) };
-            Ok(ChatResponse { content, tool_calls: vec![], prompt_tokens: Some(10), completion_tokens: Some(5), completion_tokens_per_second: None })
+            Ok(ChatResponse { content, tool_calls: vec![], prompt_tokens: Some(10), completion_tokens: Some(5), completion_tokens_per_second: None, load_ms: None, prompt_ms: None })
         }
 
         /// Streams the answer in three pieces, as a provider would.
@@ -1441,11 +1452,12 @@ mod tests {
                 PlanEvent::Fixing { attempt, .. } => order.push(format!("fixing {attempt}")),
                 PlanEvent::Done { .. } => order.push("done".into()),
                 PlanEvent::Choosing { .. } => order.push("choosing".into()),
+                PlanEvent::Model { phase, .. } => order.push(format!("model {}", serde_json::to_value(phase).unwrap().as_str().unwrap())),
             }
         }
         assert_eq!(
             order,
-            vec!["thinking 1", "phase steps 1/3", "delta", "checking 1", "fixing 1", "thinking 2", "phase fix 2/3", "delta", "checking 2", "done"],
+            vec!["thinking 1", "phase steps 1/3", "model reading", "model writing", "delta", "checking 1", "fixing 1", "thinking 2", "phase fix 2/3", "model reading", "model writing", "delta", "checking 2", "done"],
             "{events:#?}"
         );
         assert_eq!(deltas, vec![answer("file.readd"), answer("file.read")], "the deltas of a call add up to what the model wrote");
@@ -1457,6 +1469,7 @@ mod tests {
             .iter()
             .map(|e| match e {
                 PlanEvent::Choosing { elapsed_ms, tokens }
+                | PlanEvent::Model { elapsed_ms, tokens, .. }
                 | PlanEvent::Thinking { elapsed_ms, tokens, .. }
                 | PlanEvent::Checking { elapsed_ms, tokens, .. }
                 | PlanEvent::Fixing { elapsed_ms, tokens, .. }

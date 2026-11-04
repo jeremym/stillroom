@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_STREAM, LINES_KEEP, TEXT_KEEP, callWord, phaseWord, reducePlan, type PlanStreamState } from "./planStream";
+import { EMPTY_STREAM, LINES_KEEP, TEXT_KEEP, callWord, modelPhaseWord, phaseWord, reducePlan, type PlanStreamState } from "./planStream";
 import type { PlanEvent } from "./types";
 
 const fold = (events: PlanEvent[], from: PlanStreamState = EMPTY_STREAM) => events.reduce((s, e) => reducePlan(s, e, 1000), from);
@@ -19,6 +19,17 @@ describe("reducePlan", () => {
     expect(s.text).toBe('{"stages": [');
     expect(s.lines).toEqual(['{"stages": [']);
     expect(s.done).toBe(false);
+  });
+  it("keeps where the model call is until the next call starts, and says it in words until text flows", () => {
+    let s = fold([{ kind: "phase", which: "strip", attempt: 1, of: 2 }, { kind: "model", phase: "loading", elapsedMs: 100, tokens: 0 }]);
+    expect(s.modelPhase).toBe("loading");
+    expect(modelPhaseWord(s.modelPhase)).toBe("loading the model into memory");
+    s = fold([{ kind: "model", phase: "reading" }], s);
+    expect(modelPhaseWord(s.modelPhase)).toBe("reading the goal");
+    s = fold([{ kind: "model", phase: "writing" }, { kind: "delta", text: "{" }], s);
+    expect(modelPhaseWord(s.modelPhase)).toBeNull();
+    s = fold([{ kind: "phase", which: "steps", attempt: 1, of: 2 }], s);
+    expect(s.modelPhase).toBeNull();
   });
   it("clears the text when a new Phase starts", () => {
     const s = fold([

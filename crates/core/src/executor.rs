@@ -5,7 +5,7 @@
 use indexmap::IndexMap;
 
 use crate::cache::{fingerprint, CachedStep, StepCache};
-use crate::model::{ChatMessage, ChatRequest, ChatResponse, ModelClient, ToolSpec};
+use crate::model::{StreamEvent, ChatMessage, ChatRequest, ChatResponse, ModelClient, ToolSpec};
 use crate::propagate::{dependencies, dependents, inputs_fingerprint, keep_dependencies, StepEdit};
 use crate::recipe::{AgentStep, MapStep, Recipe, Step};
 use crate::refs::{self, Context};
@@ -720,6 +720,12 @@ impl Executor {
                     parent: None,
                     skip_reason: None,
                     tool_calls: Vec::new(),
+                    phase: None,
+                    prompt_words: None,
+                    words_so_far: None,
+                    words_per_second: None,
+                    load_ms: None,
+                    prompt_ms: None,
                 };
                 state.position += 1;
                 if let Some(o) = &state.observe {
@@ -843,6 +849,12 @@ impl Executor {
                 parent: scope.parent.map(String::from),
                 skip_reason: None,
                 tool_calls: Vec::new(),
+                phase: None,
+                prompt_words: None,
+                words_so_far: None,
+                words_per_second: None,
+                load_ms: None,
+                prompt_ms: None,
             };
             state.position += 1;
             if let Some(o) = &state.observe {
@@ -1000,7 +1012,7 @@ impl Executor {
                         Ok(cached.output)
                     }
                     (None, None) => {
-                        let out = self.run_step(step, &record_id, req, &state.tool_ctx, &mut rec, &inputs).await?;
+                        let out = self.run_step(step, &record_id, req, &state.tool_ctx, &mut rec, &inputs, state.observe.as_ref()).await?;
                         if let (Some(cache), Some(key), true) = (&self.cache, key.as_deref(), self.reusable(req, step)) {
                             cache.put(
                                 key,
@@ -1094,25 +1106,43 @@ impl Executor {
         Ok(Value::Array(results))
     }
 
-    /// One model call with the run's timeout and stop handle applied.
-    async fn chat_call(&self, req: &RunRequest, record_id: &str, model_id: &str, chat: ChatRequest) -> Result<ChatResponse, ExecError> {
+    /// One model call with the run's timeout and stop handle applied. The call is streamed so the
+    /// record can say where it is (loading, reading, writing) and how many words are down; the
+    /// observer hears a phase change at once and the word count a few times a second.
+    async fn chat_call(&self, req: &RunRequest, rec: &mut StepRecord, model_id: &str, chat: ChatRequest, observe: Option<&StepObserver>) -> Result<ChatResponse, ExecError> {
+        let record_id = rec.step_id.clone();
+        rec.prompt_words = Some(chat.messages.iter().map(|m| word_count(&m.content)).sum());
+        rec.phase = None;
+        rec.words_so_far = None;
+        rec.words_per_second = None;
+        let live = LiveCall::new(rec.clone(), observe);
+        let on = |ev: StreamEvent<'_>| live.on(ev);
         let timed = async {
             let r = match req.model_timeout {
-                Some(d) => match tokio::time::timeout(d, self.models.chat(model_id, chat)).await {
+                Some(d) => match tokio::time::timeout(d, self.models.chat_events(model_id, chat, &on)).await {
                     Ok(r) => r,
-                    Err(_) => return Err(ExecError::Timeout { step: record_id.into(), secs: d.as_secs() }),
+                    Err(_) => return Err(ExecError::Timeout { step: record_id.clone(), secs: d.as_secs() }),
                 },
-                None => self.models.chat(model_id, chat).await,
+                None => self.models.chat_events(model_id, chat, &on).await,
             };
-            r.map_err(|e| ExecError::Model { step: record_id.into(), message: e.to_string() })
+            r.map_err(|e| ExecError::Model { step: record_id.clone(), message: e.to_string() })
         };
-        match &req.cancel {
+        let result = match &req.cancel {
             Some(c) => tokio::select! {
                 r = timed => r,
                 _ = c.cancelled() => Err(ExecError::Cancelled),
             },
             None => timed.await,
+        };
+        let (words, wps) = live.finish();
+        rec.phase = None;
+        rec.words_so_far = Some(words);
+        rec.words_per_second = wps;
+        if let Ok(resp) = &result {
+            rec.load_ms = resp.load_ms;
+            rec.prompt_ms = resp.prompt_ms;
         }
+        result
     }
 
     async fn run_step(
@@ -1123,6 +1153,7 @@ impl Executor {
         tool_ctx: &ToolContext,
         rec: &mut StepRecord,
         inputs: &Value,
+        observe: Option<&StepObserver>,
     ) -> Result<Value, ExecError> {
         let inputs = inputs.clone();
         match step {
@@ -1156,12 +1187,13 @@ impl Executor {
                     context_length: params.context_length.or(req.model_defaults.context_length),
                     think: params.think.clone().or_else(|| req.model_defaults.think.clone()),
                 };
-                let resp = self.chat_call(req, record_id, &res.model_id, chat).await?;
+                let model_id = res.model_id.clone();
+                let resp = self.chat_call(req, rec, &model_id, chat, observe).await?;
                 rec.prompt_tokens = resp.prompt_tokens;
                 rec.completion_tokens = resp.completion_tokens;
                 structured(record_id, m.output_schema.as_ref(), resp.content)
             }
-            Step::Agent(a) => self.run_agent(a, record_id, req, tool_ctx, rec, &inputs).await,
+            Step::Agent(a) => self.run_agent(a, record_id, req, tool_ctx, rec, &inputs, observe).await,
             other => Err(ExecError::Unsupported { step: record_id.into(), kind: other.kind_name() }),
         }
     }
@@ -1175,6 +1207,7 @@ impl Executor {
         tool_ctx: &ToolContext,
         rec: &mut StepRecord,
         inputs: &Value,
+        observe: Option<&StepObserver>,
     ) -> Result<Value, ExecError> {
         let res = req
             .resolutions
@@ -1214,7 +1247,7 @@ impl Executor {
                 context_length: params.context_length.or(req.model_defaults.context_length),
                 think: params.think.clone().or_else(|| req.model_defaults.think.clone()),
             };
-            let resp = self.chat_call(req, record_id, &res.model_id, chat).await?;
+            let resp = self.chat_call(req, rec, &res.model_id.clone(), chat, observe).await?;
             prompt_tokens += resp.prompt_tokens.unwrap_or(0);
             completion_tokens += resp.completion_tokens.unwrap_or(0);
             rec.prompt_tokens = Some(prompt_tokens);
@@ -1241,7 +1274,7 @@ impl Executor {
                     context_length: params.context_length.or(req.model_defaults.context_length),
                     think: Some(Value::Bool(false)),
                 };
-                let resp = self.chat_call(req, record_id, &res.model_id, chat).await?;
+                let resp = self.chat_call(req, rec, &res.model_id.clone(), chat, observe).await?;
                 rec.prompt_tokens = Some(prompt_tokens + resp.prompt_tokens.unwrap_or(0));
                 rec.completion_tokens = Some(completion_tokens + resp.completion_tokens.unwrap_or(0));
                 return structured(record_id, Some(schema), resp.content);
@@ -1400,6 +1433,79 @@ fn finish(mut run: Run, result: Result<(), ExecError>) -> Run {
     run
 }
 
+/// Words in a text, the way a person would count them.
+pub fn word_count(text: &str) -> u64 {
+    text.split_whitespace().count() as u64
+}
+
+/// What one model call is doing right now, told to the observer as it changes: a phase at once,
+/// the word count at most a few times a second. Words are counted from the stream's spaces,
+/// so a chunk that ends mid-word is not a word yet.
+struct LiveCall<'o> {
+    base: StepRecord,
+    observe: Option<&'o StepObserver>,
+    inner: std::sync::Mutex<LiveInner>,
+}
+
+struct LiveInner {
+    phase: Option<crate::model::CallPhase>,
+    spaces: u64,
+    any_text: bool,
+    writing_since: Option<std::time::Instant>,
+    last_emit: std::time::Instant,
+}
+
+const WORDS_EVERY: std::time::Duration = std::time::Duration::from_millis(400);
+
+impl<'o> LiveCall<'o> {
+    fn new(base: StepRecord, observe: Option<&'o StepObserver>) -> Self {
+        Self { base, observe, inner: std::sync::Mutex::new(LiveInner { phase: None, spaces: 0, any_text: false, writing_since: None, last_emit: std::time::Instant::now() }) }
+    }
+
+    fn words(g: &LiveInner) -> u64 {
+        g.spaces + u64::from(g.any_text)
+    }
+
+    fn speed(g: &LiveInner) -> Option<f64> {
+        let secs = g.writing_since?.elapsed().as_secs_f64();
+        (secs >= 0.5).then(|| (Self::words(g) as f64 / secs * 10.0).round() / 10.0)
+    }
+
+    fn on(&self, ev: StreamEvent<'_>) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let emit = match ev {
+            StreamEvent::Phase(p) => {
+                g.phase = Some(p);
+                if p == crate::model::CallPhase::Writing && g.writing_since.is_none() {
+                    g.writing_since = Some(std::time::Instant::now());
+                }
+                true
+            }
+            StreamEvent::Text(t) => {
+                g.spaces += t.chars().filter(|c| c.is_whitespace()).count() as u64;
+                g.any_text |= !t.trim().is_empty();
+                g.last_emit.elapsed() >= WORDS_EVERY
+            }
+        };
+        if emit {
+            g.last_emit = std::time::Instant::now();
+            if let Some(o) = self.observe {
+                let mut r = self.base.clone();
+                r.phase = g.phase;
+                r.words_so_far = Some(Self::words(&g));
+                r.words_per_second = Self::speed(&g);
+                o(&r);
+            }
+        }
+    }
+
+    /// The final word count and speed.
+    fn finish(self) -> (u64, Option<f64>) {
+        let g = self.inner.into_inner().unwrap_or_else(|e| e.into_inner());
+        (Self::words(&g), Self::speed(&g))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1451,6 +1557,63 @@ outputs:
         assert_eq!(run.error.as_deref(), Some("stopped by you"));
     }
 
+    /// A model step's observer hears where the call is (reading, then writing) before the step
+    /// ends, and the finished record keeps the word counts.
+    #[tokio::test]
+    async fn a_model_step_tells_its_observer_the_phase_and_the_words() {
+        let recipe = Recipe::from_yaml(
+            r#"
+schemaVersion: "0"
+id: one
+name: One model step
+inputs: {}
+modelSlots:
+  writer: { requires: [text] }
+steps:
+  - id: write
+    kind: model
+    slot: writer
+    prompt: prompts/w.md
+    inputs: { text: "the quick brown fox" }
+outputs:
+  out: { from: "${steps.write.output}", type: text }
+"#,
+        )
+        .unwrap();
+        let mut prompts = HashMap::new();
+        prompts.insert("prompts/w.md".to_string(), "Repeat the text.".to_string());
+        let mut resolutions = BTreeMap::new();
+        resolutions.insert("writer".to_string(), Resolution { slot: "writer".into(), model_id: "echo:m".into(), via: ResolvedVia::Capability });
+        let req = RunRequest {
+            keep_base: None,
+            rebuild: Vec::new(),
+            recipe,
+            prompts,
+            inputs: IndexMap::new(),
+            resolutions,
+            artifact_base: None,
+            reuse: false,
+            edits: BTreeMap::new(),
+            resume_from: None,
+            trigger: None,
+            cancel: None,
+            model_timeout: None,
+            model_defaults: Default::default(),
+        };
+        let seen: Arc<std::sync::Mutex<Vec<StepRecord>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let observer: StepObserver = Arc::new(move |r: &StepRecord| sink.lock().unwrap().push(r.clone()));
+        let exec = Executor::new(Arc::new(crate::tools::ToolRegistry::builtin()), Arc::new(EchoModel));
+        let run = exec.run(req, Some(observer)).await;
+        assert_eq!(run.status, RunStatus::Succeeded, "{:?}", run.error);
+        let seen = seen.lock().unwrap();
+        let phases: Vec<Option<crate::model::CallPhase>> = seen.iter().filter(|r| r.step_id == "write").map(|r| r.phase).collect();
+        assert_eq!(phases, vec![None, Some(crate::model::CallPhase::Reading), Some(crate::model::CallPhase::Writing), None], "running, reading, writing, done: {phases:?}");
+        let done = seen.iter().rfind(|r| r.step_id == "write").unwrap();
+        assert!(done.prompt_words.unwrap() >= 6, "{:?}", done.prompt_words);
+        assert_eq!(done.words_so_far, Some(5), "[echo:m] the quick brown fox");
+    }
+
     struct NoModels;
     #[async_trait::async_trait]
     impl ModelClient for NoModels {
@@ -1474,6 +1637,8 @@ outputs:
                 prompt_tokens: Some(10),
                 completion_tokens: Some(5),
                 completion_tokens_per_second: None,
+                load_ms: None,
+                prompt_ms: None,
             })
         }
         /// A letter histogram, so texts that share words land near each other.
@@ -2367,7 +2532,7 @@ outputs:
         async fn chat(&self, _model_id: &str, req: ChatRequest) -> Result<ChatResponse, ModelError> {
             let system = &req.messages[0].content;
             let last = req.messages.last().unwrap();
-            let reply = |content: String, tool_calls: Vec<crate::model::ToolCall>| ChatResponse { content, tool_calls, prompt_tokens: Some(1), completion_tokens: Some(1), completion_tokens_per_second: None };
+            let reply = |content: String, tool_calls: Vec<crate::model::ToolCall>| ChatResponse { content, tool_calls, prompt_tokens: Some(1), completion_tokens: Some(1), completion_tokens_per_second: None, load_ms: None, prompt_ms: None };
             if system.starts_with("CLASSIFY") {
                 let needs = last.content.contains('?');
                 return Ok(reply(format!("{{\"needsReply\": {needs}, \"category\": \"{}\"}}", if needs { "question" } else { "fyi" }), vec![]));

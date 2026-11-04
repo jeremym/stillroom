@@ -1,6 +1,7 @@
 import { fmtMs } from "../api";
 import { Glyph, inputGlyph, outputGlyph, stepGlyph } from "../brand";
-import { Help, fmtElapsed, useElapsed } from "@overtone-foundry/app-kit";
+import { Help, Progress, fmtElapsed, useElapsed } from "@overtone-foundry/app-kit";
+import { phaseLine } from "../components/Teletype";
 import { pickViewer } from "../viewers";
 import { whereWord } from "../models";
 import { stageOfStep } from "../stages";
@@ -159,6 +160,9 @@ function SingleRun({ r, kind }: { r: StepRecord; kind: string }) {
         {r.skipReason && status !== "needs_you" ? ` · ${r.skipReason}` : ""}
         {r.reusedFrom?.startsWith("keep:") ? " · kept: this stage's run keep was fresh, so nothing ran" : ""}
       </p>
+      {status === "running" && isModel && phaseLine(r) && (
+        <p className="muted phase-line"><Progress busy label="Where the model call is">{phaseLine(r)}</Progress></p>
+      )}
       {status === "needs_you" && <p>Your decision is waiting in the review panel below.</p>}
       {r.model && <p className="muted mono">{r.model}{r.promptPath ? ` · ${r.promptPath}` : ""}</p>}
       {r.error && <pre className="error">{r.error}</pre>}

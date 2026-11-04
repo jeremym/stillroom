@@ -133,6 +133,30 @@ pub struct ChatResponse {
     /// generation took (Ollama does). What this Mac manages with this model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_tokens_per_second: Option<f64>,
+    /// How long loading the model into memory took, in milliseconds, when the provider says
+    /// (Ollama does; zero when it was already loaded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_ms: Option<u64>,
+    /// How long reading the prompt took (prefill), in milliseconds, when the provider says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_ms: Option<u64>,
+}
+
+/// Where a model call is: loading the model into memory, reading the prompt (prefill), or
+/// writing the answer. The dead time before the first word is the first two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallPhase {
+    Loading,
+    Reading,
+    Writing,
+}
+
+/// What a streaming call reports as it goes: a phase change, or a piece of text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StreamEvent<'a> {
+    Phase(CallPhase),
+    Text(&'a str),
 }
 
 /// Tokens per second from a count and a duration in nanoseconds; `None` when either is missing
@@ -238,6 +262,20 @@ pub trait ModelClient: Send + Sync {
             on_delta(&resp.content);
         }
         Ok(resp)
+    }
+    /// Like `chat_stream`, but `on` also hears where the call is (loading, reading, writing)
+    /// before any text arrives. Clients that cannot tell say `Reading`, then `Writing` with the
+    /// first text.
+    async fn chat_events(&self, model_id: &str, req: ChatRequest, on: &(dyn for<'a> Fn(StreamEvent<'a>) + Send + Sync)) -> Result<ChatResponse, ModelError> {
+        on(StreamEvent::Phase(CallPhase::Reading));
+        let writing = std::sync::atomic::AtomicBool::new(false);
+        let on_delta = |text: &str| {
+            if !writing.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                on(StreamEvent::Phase(CallPhase::Writing));
+            }
+            on(StreamEvent::Text(text));
+        };
+        self.chat_stream(model_id, req, &on_delta).await
     }
     /// One vector per text, from an embedding model. Providers that cannot embed say so.
     async fn embed(&self, model_id: &str, _texts: Vec<String>) -> Result<Vec<Vec<f32>>, ModelError> {

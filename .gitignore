@@ -48,3 +48,4 @@ weights/
 # release packaging
 release/
 *.p12
+.claude/

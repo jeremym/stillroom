@@ -2,7 +2,7 @@
 
 use crate::provider::{Provider, ProviderStatus};
 use std::sync::Arc;
-use stillroom_core::model::{ChatRequest, ChatResponse, InstalledModel, ModelClient, ModelError};
+use stillroom_core::model::{ChatRequest, ChatResponse, InstalledModel, ModelClient, ModelError, StreamEvent};
 
 pub struct ModelRouter {
     providers: Vec<Arc<dyn Provider>>,
@@ -63,6 +63,12 @@ impl ModelClient for ModelRouter {
         let (pid, name) = Self::split(model_id).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
         let p = self.provider(pid).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
         p.chat_stream(name, req, on_delta).await.map_err(model_error)
+    }
+
+    async fn chat_events(&self, model_id: &str, req: ChatRequest, on: &(dyn for<'a> Fn(StreamEvent<'a>) + Send + Sync)) -> Result<ChatResponse, ModelError> {
+        let (pid, name) = Self::split(model_id).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
+        let p = self.provider(pid).ok_or_else(|| ModelError::UnknownProvider(model_id.into()))?;
+        p.chat_events(name, req, on).await.map_err(model_error)
     }
 
     async fn embed(&self, model_id: &str, texts: Vec<String>) -> Result<Vec<Vec<f32>>, ModelError> {

@@ -336,7 +336,7 @@ function App() {
       const e = ev.payload;
       setPlanStream((s) => reducePlan(s, e));
       if (e.kind === "phase") setPlanProgress(`${phaseWord({ phase: e.which, attempt: e.attempt, of: e.of }) ?? "Planning"}…`);
-      else if (e.kind !== "delta" && e.kind !== "done") setPlanProgress(
+      else if (e.kind !== "delta" && e.kind !== "done" && e.kind !== "model") setPlanProgress(
         e.kind === "choosing" ? "Choosing the stages…"
           : e.kind === "thinking" ? (e.attempt === 1 ? "Thinking about the steps…" : `Fixing the draft (try ${e.attempt} of ${e.of})…`)
           : e.kind === "checking" ? "Checking the draft…"

@@ -1,4 +1,4 @@
-import type { PlanEvent, PlanPhase } from "./types";
+import type { CallPhase, PlanEvent, PlanPhase } from "./types";
 import { problemTexts } from "./flow/findings";
 
 /* The planner's window, folded from `plan:progress` events: which call is in flight, how far along,
@@ -23,10 +23,12 @@ export interface PlanStreamState {
   lines: string[];
   /** What the checker found, when the current call is a fix round. */
   problems?: string[];
+  /** Where the model call is: loading the model, reading the prompt, writing. */
+  modelPhase?: CallPhase | null;
   done: boolean;
 }
 
-export const EMPTY_STREAM: PlanStreamState = { phase: null, attempt: 0, of: 0, elapsedMs: 0, tokens: 0, at: 0, text: "", lines: [], done: false };
+export const EMPTY_STREAM: PlanStreamState = { phase: null, attempt: 0, of: 0, elapsedMs: 0, tokens: 0, at: 0, text: "", lines: [], modelPhase: null, done: false };
 
 export function tailLines(text: string, keep = LINES_KEEP): string[] {
   if (!text) return [];
@@ -38,7 +40,9 @@ export function reducePlan(s: PlanStreamState, e: PlanEvent, now = Date.now()): 
   const clock = { elapsedMs: e.elapsedMs ?? s.elapsedMs, tokens: e.tokens ?? s.tokens, at: now };
   switch (e.kind) {
     case "phase":
-      return { ...s, ...clock, phase: e.which, attempt: e.attempt, of: e.of, text: "", lines: [], done: false, problems: e.which === "fix" ? s.problems : undefined };
+      return { ...s, ...clock, phase: e.which, attempt: e.attempt, of: e.of, text: "", lines: [], done: false, modelPhase: null, problems: e.which === "fix" ? s.problems : undefined };
+    case "model":
+      return { ...s, ...clock, modelPhase: e.phase };
     case "delta": {
       const text = (s.text + e.text).slice(-TEXT_KEEP);
       return { ...s, ...clock, text, lines: tailLines(text) };
@@ -66,6 +70,15 @@ export function phaseWord(s: Pick<PlanStreamState, "phase" | "attempt" | "of" | 
       const n = s.problems?.length ?? 0;
       return n > 0 ? `Fixing ${n} problem${n === 1 ? "" : "s"}` : "Fixing the draft";
     }
+    default: return null;
+  }
+}
+
+/** Where the model call is, in plain words; nothing once text is flowing, since the text says so. */
+export function modelPhaseWord(phase: CallPhase | null | undefined, subject = "the goal"): string | null {
+  switch (phase) {
+    case "loading": return "loading the model into memory";
+    case "reading": return `reading ${subject}`;
     default: return null;
   }
 }

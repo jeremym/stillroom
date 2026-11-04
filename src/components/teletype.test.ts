@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { linesFor } from "./Teletype";
+import { linesFor, phaseLine } from "./Teletype";
 import type { StepRecord } from "../types";
 
 const base: StepRecord = {
@@ -24,6 +24,16 @@ describe("linesFor", () => {
     expect(l.find((x) => x.mark === "↻")?.tone).toBe("dim");
     expect(l.find((x) => x.mark === "✗")?.text).toContain("boom");
     expect(l.find((x) => x.mark === "■")?.tone).toBe("amber");
+  });
+  it("says where a running model call is, under its start line", () => {
+    const running = { ...base, kind: "model", model: "ollama:q", status: "running" as const, finishedAt: null, durationMs: null };
+    expect(phaseLine({ ...running, phase: "loading" })).toBe("loading the model into memory · the first call after a while takes longest");
+    expect(phaseLine({ ...running, phase: "reading", promptWords: 2300 })).toBe("reading the prompt · 2,300 words");
+    expect(phaseLine({ ...running, phase: "writing", wordsSoFar: 140, wordsPerSecond: 18.2 })).toBe("writing · 140 words · 18.2 words/s");
+    expect(phaseLine({ ...running, phase: null })).toBeNull();
+    const l = linesFor([{ ...running, phase: "reading", promptWords: 12 }]);
+    expect(l.map((x) => x.mark)).toEqual(["▶", "…"]);
+    expect(l[1]).toMatchObject({ text: "reading the prompt · 12 words", tone: "dim", indent: true });
   });
   it("keeps a running step open with no end line", () => {
     const l = linesFor([{ ...base, status: "running", finishedAt: null, durationMs: null }]);

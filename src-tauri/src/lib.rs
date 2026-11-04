@@ -133,6 +133,16 @@ impl ModelClient for SpeedRecorder {
         self.record(model_id, &resp);
         Ok(resp)
     }
+    async fn chat_events(
+        &self,
+        model_id: &str,
+        req: stillroom_core::model::ChatRequest,
+        on: &(dyn for<'a> Fn(stillroom_core::model::StreamEvent<'a>) + Send + Sync),
+    ) -> Result<stillroom_core::model::ChatResponse, stillroom_core::model::ModelError> {
+        let resp = self.inner.chat_events(model_id, req, on).await?;
+        self.record(model_id, &resp);
+        Ok(resp)
+    }
     async fn embed(&self, model_id: &str, texts: Vec<String>) -> Result<Vec<Vec<f32>>, stillroom_core::model::ModelError> {
         self.inner.embed(model_id, texts).await
     }

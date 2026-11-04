@@ -329,7 +329,7 @@ impl Codex {
         if content.trim().is_empty() {
             return Err(ProviderError::Process("Codex finished without an answer".into()));
         }
-        Ok(ChatResponse { content, tool_calls: Vec::new(), prompt_tokens, completion_tokens, completion_tokens_per_second: None })
+        Ok(ChatResponse { content, tool_calls: Vec::new(), prompt_tokens, completion_tokens, completion_tokens_per_second: None, load_ms: None, prompt_ms: None })
     }
 }
 

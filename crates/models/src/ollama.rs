@@ -4,7 +4,7 @@
 
 use crate::provider::*;
 use serde::Deserialize;
-use stillroom_core::model::{tokens_per_second, ChatRequest, ChatResponse, InstalledModel, ToolCall};
+use stillroom_core::model::{tokens_per_second, CallPhase, ChatRequest, ChatResponse, InstalledModel, StreamEvent, ToolCall};
 use stillroom_core::recipe::Capability;
 
 pub struct Ollama {
@@ -124,10 +124,32 @@ struct ChatResponseWire {
     prompt_eval_count: Option<u64>,
     #[serde(default)]
     eval_count: Option<u64>,
-    /// How long writing the answer took, in nanoseconds (`prompt_eval_duration` is reading
-    /// time, which is not a speed the table shows). With `eval_count`, the speed.
+    /// How long writing the answer took, in nanoseconds. With `eval_count`, the speed.
     #[serde(default)]
     eval_duration: Option<u64>,
+    /// Nanoseconds spent loading the model into memory (zero when it was already there).
+    #[serde(default)]
+    load_duration: Option<u64>,
+    /// Nanoseconds spent reading the prompt (prefill).
+    #[serde(default)]
+    prompt_eval_duration: Option<u64>,
+}
+/// `/api/ps`: the models Ollama holds in memory right now.
+#[derive(Deserialize)]
+struct PsResponse {
+    #[serde(default)]
+    models: Vec<PsModel>,
+}
+#[derive(Deserialize)]
+struct PsModel {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    size_vram: Option<u64>,
 }
 #[derive(Deserialize)]
 struct WireMessage {
@@ -283,31 +305,85 @@ impl Provider for Ollama {
             prompt_tokens: wire.prompt_eval_count,
             completion_tokens: wire.eval_count,
             completion_tokens_per_second: tokens_per_second(wire.eval_count, wire.eval_duration),
+            load_ms: wire.load_duration.map(|ns| ns / 1_000_000),
+            prompt_ms: wire.prompt_eval_duration.map(|ns| ns / 1_000_000),
         })
     }
 
     /// `stream: true`: Ollama answers with one JSON object per line, each carrying a piece of the
     /// message; the last line (`done: true`) carries the token counts. `format` still applies.
     async fn chat_stream(&self, model: &str, req: ChatRequest, on_delta: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<ChatResponse, ProviderError> {
+        self.stream_chat(model, req, &|ev| if let StreamEvent::Text(t) = ev { on_delta(t) }).await
+    }
+
+    /// The phases come from Ollama itself: `/api/ps` says whether the model is already in memory
+    /// (loading, otherwise reading), and the first streamed text means writing. No warm-up call
+    /// is made, so a cold model waits once, not twice.
+    async fn chat_events(&self, model: &str, req: ChatRequest, on: &(dyn for<'a> Fn(StreamEvent<'a>) + Send + Sync)) -> Result<ChatResponse, ProviderError> {
+        let loaded = self.is_loaded(model).await.unwrap_or(true);
+        on(StreamEvent::Phase(if loaded { CallPhase::Reading } else { CallPhase::Loading }));
+        self.stream_chat(model, req, on).await
+    }
+}
+
+/// A model Ollama holds in memory right now, from `/api/ps`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedModel {
+    pub name: String,
+    pub size_bytes: Option<u64>,
+    /// How much of it sits on the GPU; less than `size_bytes` means part of it runs on the CPU.
+    pub vram_bytes: Option<u64>,
+}
+
+impl Ollama {
+    /// The models in memory right now. `None` when Ollama could not be asked in time.
+    pub async fn loaded_models(&self) -> Option<Vec<LoadedModel>> {
+        let ps: PsResponse = self.http.get(self.url("/api/ps")).timeout(std::time::Duration::from_millis(1500)).send().await.ok()?.error_for_status().ok()?.json().await.ok()?;
+        Some(ps.models.into_iter().map(|m| LoadedModel { name: if m.name.is_empty() { m.model } else { m.name }, size_bytes: m.size, vram_bytes: m.size_vram }).collect())
+    }
+
+    /// Whether `model` is in memory; `None` when Ollama could not say.
+    pub async fn is_loaded(&self, model: &str) -> Option<bool> {
+        let loaded = self.loaded_models().await?;
+        Some(loaded.iter().any(|m| same_model(&m.name, model)))
+    }
+
+    /// One streamed chat, with each phase change and each piece of text handed to `on`. Writing
+    /// starts with the first visible text.
+    async fn stream_chat(&self, model: &str, req: ChatRequest, on: &(dyn for<'a> Fn(StreamEvent<'a>) + Send + Sync)) -> Result<ChatResponse, ProviderError> {
         let body = chat_body(model, &req, true);
         let mut resp = self.send_chat(body).await?;
         let mut acc = StreamAccumulator::default();
         let mut buf = String::new();
+        let mut writing = false;
+        let mut hand = |text: &str| {
+            if !writing {
+                writing = true;
+                on(StreamEvent::Phase(CallPhase::Writing));
+            }
+            on(StreamEvent::Text(text));
+        };
         while let Some(chunk) = resp.chunk().await? {
             buf.push_str(&String::from_utf8_lossy(&chunk));
             while let Some(nl) = buf.find('\n') {
                 let line = buf[..nl].trim().to_string();
                 buf.drain(..=nl);
                 if let Some(text) = acc.take_line(&line)? {
-                    on_delta(&text);
+                    hand(&text);
                 }
             }
         }
         if let Some(text) = acc.take_line(buf.trim())? {
-            on_delta(&text);
+            hand(&text);
         }
         Ok(acc.finish())
     }
+}
+
+/// Ollama lists `qwen3:8b` as `qwen3:8b` and `qwen3` as `qwen3:latest`; a recipe may say either.
+fn same_model(a: &str, b: &str) -> bool {
+    let strip = |s: &str| s.strip_suffix(":latest").unwrap_or(s).to_string();
+    strip(a) == strip(b)
 }
 
 impl Ollama {
@@ -405,6 +481,10 @@ struct StreamLine {
     /// Nanoseconds spent writing the answer; on the `done` line.
     #[serde(default)]
     eval_duration: Option<u64>,
+    #[serde(default)]
+    load_duration: Option<u64>,
+    #[serde(default)]
+    prompt_eval_duration: Option<u64>,
 }
 #[derive(Deserialize)]
 struct StreamMessage {
@@ -427,6 +507,8 @@ struct StreamAccumulator {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     eval_nanos: Option<u64>,
+    load_nanos: Option<u64>,
+    prompt_nanos: Option<u64>,
     thinking_shown: bool,
     answer_shown: bool,
 }
@@ -453,6 +535,12 @@ impl StreamAccumulator {
         }
         if let Some(ns) = v.eval_duration {
             self.eval_nanos = Some(ns);
+        }
+        if let Some(ns) = v.load_duration {
+            self.load_nanos = Some(ns);
+        }
+        if let Some(ns) = v.prompt_eval_duration {
+            self.prompt_nanos = Some(ns);
         }
         let Some(m) = v.message else { return Ok(None) };
         self.tool_calls.extend(wire_tool_calls(m.tool_calls));
@@ -482,6 +570,8 @@ impl StreamAccumulator {
             prompt_tokens: self.prompt_tokens,
             completion_tokens: self.completion_tokens,
             completion_tokens_per_second: tokens_per_second(self.completion_tokens, self.eval_nanos),
+            load_ms: self.load_nanos.map(|ns| ns / 1_000_000),
+            prompt_ms: self.prompt_nanos.map(|ns| ns / 1_000_000),
         }
     }
 }
@@ -498,7 +588,7 @@ mod tests {
         "\n",
         r#"{"model":"t","message":{"role":"assistant","content":" 1}"},"done":false}"#,
         "\n\n",
-        r#"{"model":"t","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":12,"eval_count":3,"prompt_eval_duration":200000000,"eval_duration":50000000}"#,
+        r#"{"model":"t","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":12,"eval_count":3,"load_duration":1500000000,"prompt_eval_duration":200000000,"eval_duration":50000000}"#,
         "\n"
     );
 
@@ -579,6 +669,32 @@ mod tests {
             s.flush().unwrap();
         });
         format!("http://{addr}")
+    }
+
+    #[test]
+    fn a_model_is_the_same_with_or_without_latest() {
+        assert!(same_model("qwen3:latest", "qwen3"));
+        assert!(same_model("qwen3:8b", "qwen3:8b"));
+        assert!(!same_model("qwen3:8b", "qwen3:4b"));
+    }
+
+    #[tokio::test]
+    async fn a_streamed_call_says_writing_once_before_its_first_text_and_keeps_the_load_and_read_times() {
+        let ollama = Ollama::new(serve_once());
+        let seen = std::sync::Mutex::new(Vec::<String>::new());
+        let req = ChatRequest { messages: vec![stillroom_core::model::ChatMessage::new("user", "hi")], ..Default::default() };
+        let on = |ev: StreamEvent<'_>| {
+            seen.lock().unwrap().push(match ev {
+                StreamEvent::Phase(p) => format!("phase:{}", serde_json::to_value(p).unwrap().as_str().unwrap()),
+                StreamEvent::Text(t) => format!("text:{t}"),
+            })
+        };
+        let resp = ollama.stream_chat("t", req, &on).await.unwrap();
+        assert_eq!((resp.load_ms, resp.prompt_ms), (Some(1500), Some(200)));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0], "phase:writing");
+        assert_eq!(seen.iter().filter(|s| s.starts_with("phase:")).count(), 1);
+        assert!(seen[1].starts_with("text:"));
     }
 
     #[tokio::test]

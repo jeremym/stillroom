@@ -263,6 +263,8 @@ impl Provider for OpenAi {
             prompt_tokens: wire.usage.as_ref().and_then(|u| u.prompt_tokens),
             completion_tokens: wire.usage.as_ref().and_then(|u| u.completion_tokens),
             completion_tokens_per_second: None,
+            load_ms: None,
+            prompt_ms: None,
         })
     }
 }

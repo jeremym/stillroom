@@ -103,7 +103,21 @@ export interface StepRecord {
   skipReason?: string | null;
   /** For agent steps: every tool call the model made. */
   toolCalls?: ToolCallRecord[];
+  /** While a model step runs: where its call is. Cleared when the call ends. */
+  phase?: CallPhase | null;
+  /** Words in the prompt the model was sent. */
+  promptWords?: number | null;
+  /** Words written so far, then the total. */
+  wordsSoFar?: number | null;
+  /** Words per second while writing. */
+  wordsPerSecond?: number | null;
+  /** Milliseconds the provider spent loading the model and reading the prompt, when it says. */
+  loadMs?: number | null;
+  promptMs?: number | null;
 }
+
+/** Where a model call is: loading the model into memory, reading the prompt (prefill), or writing. */
+export type CallPhase = "loading" | "reading" | "writing";
 
 export interface ToolCallRecord {
   tool: string;
@@ -648,6 +662,8 @@ export type PlanEvent =
   | ({ kind: "fixing"; attempt: number; problems: (string | Finding)[] } & PlanClock)
   /** A model call starts; the window clears and the header names it. */
   | ({ kind: "phase"; which: PlanPhase; attempt: number; of: number } & PlanClock)
+  /** Where the model call is before and while text arrives. */
+  | ({ kind: "model"; phase: CallPhase } & PlanClock)
   /** More of what the model is writing, a few times a second at most. */
   | ({ kind: "delta"; text: string } & PlanClock)
   /** The planner is finished, saved or not. */

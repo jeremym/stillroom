@@ -64,6 +64,24 @@ pub struct StepRecord {
     /// For agent steps: every tool call the model made, in order.
     #[serde(default)]
     pub tool_calls: Vec<ToolCallRecord>,
+    /// While a model step runs: where its call is (loading the model, reading the prompt,
+    /// writing). Cleared when the call ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<crate::model::CallPhase>,
+    /// Words in the prompt the model was sent, counted before the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_words: Option<u64>,
+    /// Words written so far (about: counted from the stream), then the total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words_so_far: Option<u64>,
+    /// Words per second while writing, measured on this call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words_per_second: Option<f64>,
+    /// Milliseconds the provider spent loading the model and reading the prompt, when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

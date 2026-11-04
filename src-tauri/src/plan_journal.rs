@@ -156,6 +156,7 @@ impl EventLog {
                 self.note(*elapsed_ms, *tokens);
             }
             PlanEvent::Choosing { elapsed_ms, tokens }
+            | PlanEvent::Model { elapsed_ms, tokens, .. }
             | PlanEvent::Thinking { elapsed_ms, tokens, .. }
             | PlanEvent::Checking { elapsed_ms, tokens, .. }
             | PlanEvent::Done { elapsed_ms, tokens } => self.note(*elapsed_ms, *tokens),

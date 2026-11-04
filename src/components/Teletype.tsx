@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { shortModel, whereWord } from "../models";
 import { fmtMs, fmtTokens } from "../api";
-import type { Stage, StepRecord } from "../types";
+import type { CallPhase, Stage, StepRecord } from "../types";
 
 /* The teletype: the run as a typed log, one line per event as it happens. The table in TracePanel
    is the same facts for reading afterwards; this is for watching. */
@@ -16,6 +16,17 @@ function clock(iso: string | null): { at: number; time: string } {
 
 function kindWord(k: string) {
   return k === "model" ? "AI step" : k === "agent" ? "AI agent" : k === "tool" ? "program" : k === "map" ? "for each" : k === "review" ? "your approval" : k;
+}
+
+/** What a running model step is doing, in words: the phase, the words down, the pace. */
+export function phaseLine(r: Pick<StepRecord, "phase" | "promptWords" | "wordsSoFar" | "wordsPerSecond">): string | null {
+  const words = (n: number | null | undefined) => (n == null ? null : `${n.toLocaleString()} word${n === 1 ? "" : "s"}`);
+  switch (r.phase as CallPhase | null | undefined) {
+    case "loading": return "loading the model into memory · the first call after a while takes longest";
+    case "reading": return ["reading the prompt", words(r.promptWords)].filter(Boolean).join(" · ");
+    case "writing": return ["writing", words(r.wordsSoFar), r.wordsPerSecond ? `${r.wordsPerSecond} words/s` : null].filter(Boolean).join(" · ");
+    default: return null;
+  }
 }
 
 export function linesFor(records: StepRecord[], stages: Stage[] = []): Line[] {
@@ -49,7 +60,11 @@ export function linesFor(records: StepRecord[], stages: Stage[] = []): Line[] {
     for (const c of r.toolCalls ?? []) {
       out.push({ at: start.at + 1, time: "", mark: "", text: `${c.tool}  ${short(c.inputs)}  (${fmtMs(c.durationMs)})${c.error ? ` ✗ ${c.error}` : ""}`, tone: c.error ? "red" : "dim", indent: true });
     }
-    if (r.status === "running") continue;
+    if (r.status === "running") {
+      const line = phaseLine(r);
+      if (line) out.push({ at: start.at + 2, time: "", mark: "…", text: line, tone: "dim", indent: true });
+      continue;
+    }
     const end = clock(r.finishedAt ?? r.startedAt);
     const tokens = r.promptTokens != null ? ` · ${fmtTokens(r.promptTokens)} → ${fmtTokens(r.completionTokens ?? 0)} tokens` : "";
     if (r.status === "failed") out.push({ ...end, mark: "✗", text: `${where}${name} · ${r.error ?? "failed"}`, tone: "red" });

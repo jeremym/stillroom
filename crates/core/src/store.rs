@@ -895,6 +895,12 @@ mod tests {
             parent: None,
             skip_reason: None,
             tool_calls: vec![],
+            phase: None,
+            prompt_words: None,
+            words_so_far: None,
+            words_per_second: None,
+            load_ms: None,
+            prompt_ms: None,
         }
     }
 

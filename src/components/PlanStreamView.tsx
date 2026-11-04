@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtElapsed } from "@overtone-foundry/app-kit";
 import { Glyph } from "../brand";
-import { callWord, phaseWord, type PlanStreamState } from "../planStream";
+import { callWord, modelPhaseWord, phaseWord, type PlanStreamState } from "../planStream";
 
 /* The planner's window: a dim, read-only block in the mono face under Draft it. A header says which
    call is in flight, how long the plan has run, and how many tokens the model has written; under it,
@@ -15,7 +15,7 @@ export function planHeader(s: PlanStreamState, now: number): string | null {
   if (!word) return null;
   const live = !s.done && s.at > 0 ? Math.max(0, now - s.at) : 0;
   const secs = Math.round((s.elapsedMs + live) / 1000);
-  return [word, callWord(s), fmtElapsed(secs), `${s.tokens} tokens`].filter(Boolean).join(" · ");
+  return [word, callWord(s), s.done ? null : modelPhaseWord(s.modelPhase), fmtElapsed(secs), `${s.tokens} tokens`].filter(Boolean).join(" · ");
 }
 
 export function PlanStreamView({ state }: { state: PlanStreamState }) {

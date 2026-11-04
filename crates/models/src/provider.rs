@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use stillroom_core::model::{ChatRequest, ChatResponse, InstalledModel};
+use stillroom_core::model::{CallPhase, ChatRequest, ChatResponse, InstalledModel, StreamEvent};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
@@ -50,6 +50,19 @@ pub trait Provider: Send + Sync {
             on_delta(&resp.content);
         }
         Ok(resp)
+    }
+    /// Like `chat_stream`, but `on` also hears the call's phase (loading, reading, writing).
+    /// Providers that cannot tell say `Reading`, then `Writing` with the first text.
+    async fn chat_events(&self, model: &str, req: ChatRequest, on: &(dyn for<'a> Fn(StreamEvent<'a>) + Send + Sync)) -> Result<ChatResponse, ProviderError> {
+        on(StreamEvent::Phase(CallPhase::Reading));
+        let writing = std::sync::atomic::AtomicBool::new(false);
+        let on_delta = |text: &str| {
+            if !writing.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                on(StreamEvent::Phase(CallPhase::Writing));
+            }
+            on(StreamEvent::Text(text));
+        };
+        self.chat_stream(model, req, &on_delta).await
     }
     /// One vector per text. Only providers with embedding models implement it.
     async fn embed(&self, model: &str, _texts: Vec<String>) -> Result<Vec<Vec<f32>>, ProviderError> {

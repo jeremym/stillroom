@@ -334,6 +334,11 @@ div.consent-zone { margin: 10px 0 14px; }
 /* Where a running model call is (the step details): the bar at the heading size, not the display size. */
 .phase-line .progress { font-size: var(--size-h); }
 
+/* The reuse toggle with its "?" beside it, not under it. */
+.reuse-row { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
+.reuse-row > label { flex: 0 1 auto; }
+.reuse-row .help { margin-top: 2px; }
+
 /* Ask for a change (the Recipe card): the box, the change list, and a prompt before and after. */
 .ask-change textarea { width: 100%; margin: 4px 0; resize: vertical; }
 .change-result h3 { margin-top: 14px; }

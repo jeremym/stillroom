@@ -383,7 +383,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
         <p className="muted">No previous runs to estimate from. After the first run, Set up says what each stage took and which stages will not need to run again.</p>
       )}
 
-      <div className="row reuse-row" style={{ margin: "6px 0" }}>
+      <div className="reuse-row">
         <label className="row" style={{ margin: 0 }}>
           <input type="checkbox" checked={reuse} onChange={(e) => setReuse(e.target.checked)} />
           <span>Reuse unchanged steps <span className="muted">(selective rerun: an AI step whose prompt, model, and inputs are exactly as last time gives its last answer again)</span></span>

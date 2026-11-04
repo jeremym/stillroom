@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { toFindings } from "./flow/findings";
-import type { CodexStatus, Draft, DraftResponse, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, PermissionRow, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Schedule, Settings, ShelfState, ToolInfo, UpdateCheck, WatchView } from "./types";
+import type { CodexStatus, Draft, DraftResponse, EditOutcome, Finding, Grant, Hardware, ImportPreview, JournalEntry, KeepRecord, KeepState, ModelsResponse, PlanOutcome, PlannerPreview, PromptState, TryPlanningResult, TryResult, ModelUsage, PermissionEntry, PermissionRow, RecipeInfo, RecipesResponse, ResolutionPreview, Run, RunEstimate, RunSummary, RuntimeStatus, SaveResponse, Schedule, Settings, ShelfState, ToolInfo, UpdateCheck, WatchView } from "./types";
 
 export const api = {
   runtimeStatus: () => invoke<RuntimeStatus>("runtime_status"),
@@ -63,6 +63,9 @@ export const api = {
   /** Draft a recipe from a goal. Progress arrives as `plan:progress` events; Stop cancels. Nothing is saved. */
   planRecipe: (args: { goal: string; material?: string | null; id: string; name: string; icon?: string | null; model?: string | null }) =>
     invoke<PlanOutcome>("plan_recipe", { args }),
+  /** Ask for a change: the recipe as it is and an instruction go to the planner's model; the whole recipe with only
+   *  that change comes back, checked, with the changes in words. Progress arrives as `plan:progress`; Stop cancels. Nothing is saved. */
+  editRecipe: (args: { recipeId: string; instruction: string; model?: string | null }) => invoke<EditOutcome>("edit_recipe", { args }),
   /** Delete one of your recipes and the watches bound to it. Built-ins refuse. */
   deleteRecipe: (recipeId: string) => invoke<void>("delete_recipe", { recipeId }),
   /** A copy of a recipe under a new id and name, in your recipes folder. The engine writes where it

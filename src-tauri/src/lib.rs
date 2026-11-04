@@ -1407,6 +1407,7 @@ async fn try_planning(app: AppHandle, state: State<'_, AppState>, model_id: Stri
         tools: state.tools.catalog(),
         prompt: state.prompts.current_text("planner").map_err(err)?,
         strip_prompt: state.prompts.current_text("strip").map_err(err)?,
+        edit_prompt: state.prompts.current_text("edit").map_err(err)?,
         timeout: Some(TRY_PLANNING_CAP),
         cancel: Some(cancel),
         model_defaults: state.model_defaults(),
@@ -1467,6 +1468,7 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
         tools: state.tools.catalog(),
         prompt: state.prompts.current_text("planner").map_err(err)?,
         strip_prompt: state.prompts.current_text("strip").map_err(err)?,
+        edit_prompt: state.prompts.current_text("edit").map_err(err)?,
         timeout: state.model_timeout(),
         cancel: Some(cancel),
         model_defaults: state.model_defaults(),
@@ -1506,6 +1508,86 @@ async fn plan_recipe(app: AppHandle, state: State<'_, AppState>, args: PlanArgs)
             transcript: log.transcript,
             started_at,
             per_stage,
+        },
+    };
+    if let Err(e) = plan_journal::write(&state.plans_dir, &record) {
+        tracing::warn!("could not write the planner's journal: {e}");
+    }
+    out.map_err(err)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditArgs2 {
+    recipe_id: String,
+    /// What to change, in the user's words.
+    instruction: String,
+    /// A model to plan with this time; otherwise Settings, then Auto.
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// Ask for a change: the recipe as it is on disk and the instruction go to the planner's model;
+/// the whole recipe with only that change comes back, checked, with the changes in words.
+/// Progress arrives as `plan:progress` events; Stop ("plan") cancels. Nothing is written: the
+/// person saves the result as a copy or in place.
+#[tauri::command]
+async fn edit_recipe(app: AppHandle, state: State<'_, AppState>, args: EditArgs2) -> CmdResult<stillroom_core::planner::EditOutcome> {
+    let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("no recipe {}", args.recipe_id))?;
+    let before = Draft::read(&bundle.root).map_err(err)?;
+    let router = state.router();
+    let installed = router.list_all().await;
+    let pins = state.planner_pins(args.model);
+    let resolutions = resolve_slots_with(&planner_recipe(), &installed, &pins, &state.resolve_defaults()).map_err(err)?;
+    let model_id = resolutions.get(PLANNER_SLOT).map(|r| r.model_id.clone()).ok_or("no model for the planner")?;
+    let cancel = Cancel::new();
+    *state.plan_cancel.lock().map_err(err)? = Some(cancel.clone());
+    let planner = Planner {
+        library: Some(state.stage_library.clone()),
+        models: state.models(router),
+        model_id: model_id.clone(),
+        tools: state.tools.catalog(),
+        prompt: state.prompts.current_text("planner").map_err(err)?,
+        strip_prompt: state.prompts.current_text("strip").map_err(err)?,
+        edit_prompt: state.prompts.current_text("edit").map_err(err)?,
+        timeout: state.model_timeout(),
+        cancel: Some(cancel),
+        model_defaults: state.model_defaults(),
+        max_attempts: 3,
+        per_stage: false,
+    };
+    let log = Arc::new(Mutex::new(plan_journal::EventLog::default()));
+    let observer = {
+        let app = app.clone();
+        let log = log.clone();
+        Arc::new(move |e: PlanEvent| {
+            if let Ok(mut l) = log.lock() {
+                l.see(&e);
+            }
+            let _ = app.emit("plan:progress", e);
+        })
+    };
+    let started_at = chrono::Local::now();
+    let out = planner.edit(&before, &args.instruction, Some(observer)).await;
+    *state.plan_cancel.lock().map_err(err)? = None;
+    let request = PlanRequest { goal: format!("Change: {}", args.instruction.trim()), material: None, id: bundle.recipe.id.clone(), name: bundle.recipe.name.clone(), icon: bundle.recipe.icon.clone() };
+    let revisions: Vec<(String, u32)> = ["planner", "edit"].iter().filter_map(|n| state.prompts.state(n).ok().map(|s| (n.to_string(), s.current))).collect();
+    let log = log.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
+    let record = match &out {
+        Ok(o) => plan_journal::PlanRecord::from_outcome(&request, &o.outcome, revisions, log.fix_rounds, started_at),
+        Err(e) => plan_journal::PlanRecord {
+            request: request.clone(),
+            model_id,
+            prompt_revisions: revisions,
+            attempts: log.attempts,
+            duration_ms: log.last_elapsed_ms,
+            prompt_tokens: 0,
+            completion_tokens: log.tokens,
+            fix_rounds: log.fix_rounds,
+            result: plan_journal::PlanResult::Failed(e.to_string()),
+            transcript: log.transcript,
+            started_at,
+            per_stage: false,
         },
     };
     if let Err(e) = plan_journal::write(&state.plans_dir, &record) {
@@ -2426,6 +2508,7 @@ pub fn run() {
             preview_planner,
             try_planning,
             plan_recipe,
+            edit_recipe,
             keep_states,
             rebuild_keep,
             keep_journal,

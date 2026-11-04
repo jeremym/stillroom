@@ -116,6 +116,7 @@ async fn plan_a_recipe_against_local_ollama() {
         tools: tools.catalog(),
         prompt: PLANNER_PROMPT.into(),
         strip_prompt: stillroom_core::prompts::STRIP_PROMPT.into(),
+        edit_prompt: stillroom_core::prompts::EDIT_PROMPT.into(),
         timeout: Some(std::time::Duration::from_secs(900)),
         cancel: None,
         model_defaults: ModelDefaults::default(),

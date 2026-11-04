@@ -14,6 +14,7 @@ import { UsagePanel } from "./components/UsagePanel";
 import { RecipePage } from "./components/RecipePage";
 import { NewRecipe, type NewRecipeRequest } from "./components/NewRecipe";
 import { PlanNote, PlanStreamView } from "./components/PlanStreamView";
+import { AskForChange } from "./components/AskForChange";
 import { EMPTY_STREAM, phaseWord, reducePlan } from "./planStream";
 import { AskAgain } from "./components/AskAgain";
 import { FirstRun } from "./components/FirstRun";
@@ -958,6 +959,12 @@ function App() {
 
           {place === "door" && planNote && freshId === recipe?.id && <PlanNote note={planNote} transcript={planTranscript} />}
           {place === "door" && flowFor(recipe)}
+          {place === "door" && recipe && !running && (
+            <AskForChange recipe={recipe} planStream={planStream}
+              takenIds={[...(recipesRef.current?.recipes.map((x) => x.id) ?? []), ...(recipesRef.current?.reserved ?? [])]}
+              onStart={() => setPlanStream(EMPTY_STREAM)}
+              onSaved={(saved) => { setFreshId(null); refreshRecipes().then(() => { setRecipeId(saved.id); setPlace("recipe"); }).catch((e) => setError(String(e))); }} />
+          )}
 
           {error && <pre className="error">{error}</pre>}
         </div>

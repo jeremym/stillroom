@@ -715,3 +715,8 @@ export interface PlanOutcome {
   /** The custom stages were composed one call each (a small or tight model). */
   perStage?: boolean;
 }
+
+/** Ask for a change: the changed draft as a plan outcome, and what changed in words. */
+export interface EditOutcome extends PlanOutcome {
+  changes: string[];
+}

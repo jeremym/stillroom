@@ -334,6 +334,19 @@ div.consent-zone { margin: 10px 0 14px; }
 /* Where a running model call is (the step details): the bar at the heading size, not the display size. */
 .phase-line .progress { font-size: var(--size-h); }
 
+/* Ask for a change (the Recipe card): the box, the change list, and a prompt before and after. */
+.ask-change textarea { width: 100%; margin: 4px 0; resize: vertical; }
+.change-result h3 { margin-top: 14px; }
+.change-list { margin: 4px 0 10px; padding-left: 18px; }
+.change-list li { margin: 2px 0; }
+.plan-problems-list { margin: 4px 0 10px; padding-left: 18px; color: var(--amber); }
+.change-file { margin: 6px 0; }
+.change-file summary { cursor: pointer; color: var(--phos-dim); font-size: var(--size-small); }
+.change-side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
+.change-side-by-side pre { border: 1px solid var(--bezel); padding: 8px 10px; margin: 0; max-height: 320px; overflow: auto; }
+.change-after { border-color: var(--phos-dim) !important; }
+@media (max-width: 900px) { .change-side-by-side { grid-template-columns: 1fr; } }
+
 /* Permission rows on Set up: what this run touches, each folder tried before Run. */
 .perm-rows h3 { margin-bottom: 4px; }
 .perm-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; }

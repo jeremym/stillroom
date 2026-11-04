@@ -470,6 +470,8 @@ pub struct Planner {
     pub prompt: String,
     /// The strip prompt in use: the first, short call that only picks the stages.
     pub strip_prompt: String,
+    /// The edit prompt in use: changing a recipe from an instruction (Ask for a change).
+    pub edit_prompt: String,
     pub timeout: Option<Duration>,
     pub cancel: Option<Cancel>,
     pub model_defaults: ModelDefaults,
@@ -871,7 +873,185 @@ pub fn draft_from_answers(req: &PlanRequest, strip: Option<&str>, answer: Option
     }
 }
 
+/// What Ask for a change hands back: the changed draft as a plan outcome, and the changes in words.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditOutcome {
+    #[serde(flatten)]
+    pub outcome: PlanOutcome,
+    /// One line per change, for the person to read before saving.
+    pub changes: Vec<String>,
+}
+
+/// The differences between two drafts, in words: stages, inputs, steps, outputs, slots,
+/// permissions, and files. Empty means nothing changed.
+pub fn changes(before: &Draft, after: &Draft) -> Vec<String> {
+    let mut out = Vec::new();
+    let keys = |d: &Draft, section: &str| -> Vec<String> { d.yaml.get(section).and_then(Value::as_object).map(|o| o.keys().cloned().collect()).unwrap_or_default() };
+    let label = |d: &Draft, section: &str, k: &str| -> String {
+        d.yaml.get(section).and_then(|s| s.get(k)).and_then(|v| v.get("label").or_else(|| v.get("name"))).and_then(Value::as_str).map(|l| format!("{l} (`{k}`)")).unwrap_or_else(|| format!("`{k}`"))
+    };
+    let word = |n: usize, one: &str, many: &str| if n == 1 { one.to_string() } else { many.to_string() };
+    for (section, one, many) in [("inputs", "Input", "Inputs"), ("outputs", "Result", "Results"), ("modelSlots", "Model slot", "Model slots")] {
+        let (b, a) = (keys(before, section), keys(after, section));
+        let added: Vec<String> = a.iter().filter(|k| !b.contains(k)).map(|k| label(after, section, k)).collect();
+        let removed: Vec<String> = b.iter().filter(|k| !a.contains(k)).map(|k| label(before, section, k)).collect();
+        if !added.is_empty() {
+            out.push(format!("{} added: {}.", word(added.len(), one, many), added.join(", ")));
+        }
+        if !removed.is_empty() {
+            out.push(format!("{} removed: {}.", word(removed.len(), one, many), removed.join(", ")));
+        }
+    }
+    // Steps, loops included, by id; a renamed or rewired step counts as changed.
+    fn steps_of(v: &Value, out: &mut Vec<(String, Value)>) {
+        for s in v.get("steps").and_then(Value::as_array).into_iter().flatten() {
+            if let Some(id) = s.get("id").and_then(Value::as_str) {
+                out.push((id.to_string(), s.clone()));
+            }
+            steps_of(s, out);
+        }
+    }
+    let (mut b, mut a) = (Vec::new(), Vec::new());
+    steps_of(&before.yaml, &mut b);
+    steps_of(&after.yaml, &mut a);
+    let name_of = |s: &Value, id: &str| s.get("name").and_then(Value::as_str).map(|n| format!("{n} (`{id}`)")).unwrap_or_else(|| format!("`{id}`"));
+    let added: Vec<String> = a.iter().filter(|(id, _)| !b.iter().any(|(x, _)| x == id)).map(|(id, s)| name_of(s, id)).collect();
+    let removed: Vec<String> = b.iter().filter(|(id, _)| !a.iter().any(|(x, _)| x == id)).map(|(id, s)| name_of(s, id)).collect();
+    let changed: Vec<String> = a.iter().filter(|(id, s)| b.iter().any(|(x, t)| x == id && t != s)).map(|(id, s)| name_of(s, id)).collect();
+    if !added.is_empty() {
+        out.push(format!("{} added: {}.", word(added.len(), "Step", "Steps"), added.join(", ")));
+    }
+    if !removed.is_empty() {
+        out.push(format!("{} removed: {}.", word(removed.len(), "Step", "Steps"), removed.join(", ")));
+    }
+    if !changed.is_empty() {
+        out.push(format!("{} changed: {}.", word(changed.len(), "Step", "Steps"), changed.join(", ")));
+    }
+    // Stages by id.
+    let stages = |d: &Draft| -> Vec<(String, Value)> { d.yaml.get("stages").and_then(Value::as_array).into_iter().flatten().filter_map(|s| s.get("id").and_then(Value::as_str).map(|id| (id.to_string(), s.clone()))).collect() };
+    let (b, a) = (stages(before), stages(after));
+    let added: Vec<String> = a.iter().filter(|(id, _)| !b.iter().any(|(x, _)| x == id)).map(|(id, s)| name_of(s, id)).collect();
+    let removed: Vec<String> = b.iter().filter(|(id, _)| !a.iter().any(|(x, _)| x == id)).map(|(id, s)| name_of(s, id)).collect();
+    let changed: Vec<String> = a.iter().filter(|(id, s)| b.iter().any(|(x, t)| x == id && t != s)).map(|(id, s)| name_of(s, id)).collect();
+    if !added.is_empty() {
+        out.push(format!("{} added: {}.", word(added.len(), "Stage", "Stages"), added.join(", ")));
+    }
+    if !removed.is_empty() {
+        out.push(format!("{} removed: {}.", word(removed.len(), "Stage", "Stages"), removed.join(", ")));
+    }
+    if !changed.is_empty() {
+        out.push(format!("{} changed: {}.", word(changed.len(), "Stage", "Stages"), changed.join(", ")));
+    }
+    if before.yaml.get("permissions") != after.yaml.get("permissions") {
+        out.push("Permissions changed.".into());
+    }
+    for k in ["name", "description"] {
+        if before.yaml.get(k) != after.yaml.get(k) {
+            out.push(format!("The {k} changed."));
+        }
+    }
+    let added: Vec<&String> = after.files.keys().filter(|k| !before.files.contains_key(*k)).collect();
+    let removed: Vec<&String> = before.files.keys().filter(|k| !after.files.contains_key(*k)).collect();
+    let rewritten: Vec<&String> = after.files.iter().filter(|(k, v)| before.files.get(*k).is_some_and(|t| t != *v)).map(|(k, _)| k).collect();
+    for (list, what) in [(added, "added"), (removed, "removed"), (rewritten, "rewritten")] {
+        if !list.is_empty() {
+            out.push(format!("{} {what}: {}.", word(list.len(), "File", "Files"), list.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")));
+        }
+    }
+    out
+}
+
 impl Planner {
+    /// Ask for a change: the recipe as it is and one instruction go to the model; the whole
+    /// recipe with only that change comes back, checked and fixed like a new draft. The original
+    /// is never touched here; the caller saves the result, as a copy or in place.
+    pub async fn edit(&self, before: &Draft, instruction: &str, observer: Option<PlanObserver>) -> Result<EditOutcome, PlanError> {
+        let progress = Progress::new(observer);
+        let started = progress.started;
+        let known_tools: Vec<String> = self.tools.iter().map(|t| t.id.clone()).collect();
+        let lib = self.library.as_deref().filter(|l| !l.stages.is_empty());
+        let req = PlanRequest {
+            goal: instruction.trim().to_string(),
+            material: None,
+            id: before.id().unwrap_or("recipe").to_string(),
+            name: before.yaml.get("name").and_then(Value::as_str).unwrap_or("Recipe").to_string(),
+            icon: before.yaml.get("icon").and_then(Value::as_str).map(String::from),
+        };
+        let mut system = assemble_system_with(&self.prompt, &self.tools, lib);
+        system.push_str("\n\n## Changing a recipe\n\n");
+        system.push_str(self.edit_prompt.trim());
+        let mut user = format!("## The recipe as it is\n\n```json\n{}\n```\n", serde_json::to_string_pretty(&before.yaml).unwrap_or_default());
+        if !before.files.is_empty() {
+            user.push_str("\n## Its files\n");
+            for (path, text) in &before.files {
+                user.push_str(&format!("\n### {path}\n\n{}\n", text.trim_end()));
+            }
+        }
+        user.push_str(&format!("\n## The change asked for\n\n{}\n\nKeep the id `{}` and the name unless the change asks otherwise.\n", req.goal, req.id));
+        let mut messages = vec![ChatMessage::new("system", system), ChatMessage::new("user", user)];
+        let max = self.max_attempts.max(1);
+        let (mut prompt_tokens, mut completion_tokens) = (0u64, 0u64);
+        let mut best: Option<(Draft, Vec<String>)> = None;
+        let mut last_error = String::new();
+        let mut attempts = 0;
+        for attempt in 1..=max {
+            attempts = attempt;
+            progress.emit(|elapsed_ms, tokens| PlanEvent::Thinking { attempt, of: max, elapsed_ms, tokens });
+            let which = if attempt == 1 { PlanPhase::Steps } else { PlanPhase::Fix };
+            let resp = self.call(self.chat(messages.clone(), answer_schema()), &progress, which, attempt, max).await?;
+            prompt_tokens += resp.prompt_tokens.unwrap_or(0);
+            completion_tokens += resp.completion_tokens.unwrap_or(0);
+            if attempt == max {
+                progress.done();
+            }
+            progress.emit(|elapsed_ms, tokens| PlanEvent::Checking { attempt, elapsed_ms, tokens });
+            let problems = match compose(None, &resp.content, &req, lib) {
+                Ok((draft, mut problems)) => {
+                    problems.extend(draft.problems(&known_tools));
+                    let better = best.as_ref().map(|(_, p)| problems.len() < p.len()).unwrap_or(true);
+                    if better {
+                        best = Some((draft, problems.clone()));
+                    }
+                    problems
+                }
+                Err(e) => {
+                    last_error = e.clone();
+                    vec![format!("The answer was not the JSON object asked for: {e}")]
+                }
+            };
+            if problems.is_empty() {
+                if attempt < max {
+                    progress.done();
+                }
+                break;
+            }
+            if attempt < max {
+                progress.emit(|elapsed_ms, tokens| PlanEvent::Fixing { attempt, problems: problems.clone(), elapsed_ms, tokens });
+                messages.push(ChatMessage::new("assistant", resp.content));
+                let list = problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
+                messages.push(ChatMessage::new("user", format!("The changed recipe has these problems:\n{list}\n\nFix them and answer again with the whole corrected JSON object (recipe and every file).")));
+            }
+        }
+        let (draft, problems) = best.ok_or(PlanError::Unusable(last_error))?;
+        let changes = changes(before, &draft);
+        Ok(EditOutcome {
+            outcome: PlanOutcome {
+                draft,
+                problems,
+                schema_version: crate::migrate::CURRENT_SCHEMA_VERSION.into(),
+                attempts,
+                model_id: self.model_id.clone(),
+                prompt_tokens,
+                completion_tokens,
+                duration_ms: started.elapsed().as_millis() as u64,
+                transcript: progress.transcript(),
+                per_stage: false,
+            },
+            changes,
+        })
+    }
+
     /// One model call, streamed into `progress`: a Phase event first, Deltas as the text arrives,
     /// then the response. The timeout covers the whole call; Stop drops it mid-stream.
     async fn call(&self, req: ChatRequest, progress: &Progress, which: PlanPhase, attempt: u32, of: u32) -> Result<crate::model::ChatResponse, PlanError> {
@@ -1235,6 +1415,7 @@ mod tests {
         let p = Planner {
             library: None,
             strip_prompt: crate::prompts::STRIP_PROMPT.into(),
+            edit_prompt: crate::prompts::EDIT_PROMPT.into(),
             models: script.clone(),
             model_id: "ollama:test".into(),
             tools: ToolRegistry::builtin().catalog(),
@@ -1246,6 +1427,40 @@ mod tests {
             per_stage: false,
         };
         (p, script)
+    }
+
+    /// Ask for a change: the model gets the recipe and the instruction, the whole answer replaces
+    /// the draft, and the change list says what moved.
+    #[tokio::test]
+    async fn an_edit_returns_the_whole_recipe_and_says_what_changed() {
+        let before = Draft::read(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../recipes/summarize-file")).unwrap();
+        let mut after = before.yaml.clone();
+        // Drop the summary's description and add a step that counts words, feeding a new result.
+        after["steps"].as_array_mut().unwrap().push(json!({ "id": "count", "kind": "tool", "name": "Count the words", "tool": "list.table", "inputs": { "items": [], "columns": [] } }));
+        after["outputs"]["count"] = json!({ "from": "${steps.count.output}", "type": "table", "label": "Word count" });
+        let stage_n = after["stages"].as_array().map(Vec::len).unwrap_or(0);
+        if stage_n > 0 {
+            after["stages"][stage_n - 1]["steps"].as_array_mut().unwrap().push(json!("count"));
+            after["stages"][stage_n - 1]["outputs"].as_array_mut().unwrap().push(json!("count"));
+        }
+        let files: Vec<Value> = before.files.iter().map(|(p, t)| json!({ "path": p, "text": if p.ends_with(".md") { format!("{t}\nBe brief.") } else { t.clone() } })).collect();
+        let answer = json!({ "recipe": after, "files": files }).to_string();
+        let (p, script) = planner(vec![answer]);
+        let out = p.edit(&before, "Also count the words and keep the summary brief", None).await.unwrap();
+        assert!(out.outcome.problems.is_empty(), "{:?}", out.outcome.problems);
+        assert_eq!(out.outcome.draft.yaml["id"], before.yaml["id"], "the id stays");
+        assert!(out.outcome.draft.yaml["steps"].as_array().unwrap().iter().any(|s| s["id"] == "count"));
+        assert!(out.changes.iter().any(|c| c.starts_with("Result added: Word count (`count`)")), "{:?}", out.changes);
+        assert!(out.changes.iter().any(|c| c.starts_with("Step added: Count the words (`count`)")), "{:?}", out.changes);
+        assert!(out.changes.iter().any(|c| c.starts_with("Stage changed:")), "{:?}", out.changes);
+        assert!(out.changes.iter().any(|c| c.starts_with("File rewritten:") || c.starts_with("Files rewritten:")), "{:?}", out.changes);
+        let seen = script.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].messages[0].content.contains("## Changing a recipe") && seen[0].messages[0].content.contains("Keep everything the instruction does not touch"));
+        assert!(seen[0].messages[1].content.contains("## The recipe as it is") && seen[0].messages[1].content.contains("## The change asked for\n\nAlso count the words"));
+        assert!(seen[0].messages[1].content.contains("### prompts/"), "the files go along");
+        // Nothing changed: the list is empty.
+        assert!(changes(&before, &before).is_empty());
     }
 
     /// Per stage: two custom stages become two short calls, the second told what the first wrote,

@@ -23,6 +23,9 @@ pub struct BuiltinPrompt {
 /// The strip prompt as shipped (`prompts/strip.md`): the first, short planning call.
 pub static STRIP_PROMPT: &str = include_str!("../../../prompts/strip.md");
 
+/// The edit prompt as shipped (`prompts/edit.md`): changing a recipe from an instruction.
+pub static EDIT_PROMPT: &str = include_str!("../../../prompts/edit.md");
+
 pub const BUILTIN_PROMPTS: &[BuiltinPrompt] = &[
     BuiltinPrompt {
         name: "strip",
@@ -35,6 +38,12 @@ pub const BUILTIN_PROMPTS: &[BuiltinPrompt] = &[
         title: "Planner",
         purpose: "The second planning call: writes the steps, prompts, and outputs for the stages that are not ready-made. The list of tools and the answer format are appended at run time.",
         original: PLANNER_PROMPT,
+    },
+    BuiltinPrompt {
+        name: "edit",
+        title: "Edit",
+        purpose: "Ask for a change on the Recipe card: the recipe as it is and one instruction go in, the whole recipe with only that change comes out. The planner prompt's format section and the tool list are appended at run time.",
+        original: EDIT_PROMPT,
     },
 ];
 

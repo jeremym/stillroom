@@ -10,15 +10,18 @@ import { callWord, modelPhaseWord, phaseWord, type PlanStreamState } from "../pl
    is announced; the text would be noise to a screen reader. The clock ticks here between events, so it
    moves even while the model is silent. */
 
-export function planHeader(s: PlanStreamState, now: number): string | null {
-  const word = phaseWord(s);
+/** The header's words for an edit (Ask for a change) instead of a new draft. */
+export const EDIT_WORDS = { steps: "Rewriting the recipe", subject: "the recipe" };
+
+export function planHeader(s: PlanStreamState, now: number, words?: { steps?: string; subject?: string }): string | null {
+  const word = s.phase === "steps" && words?.steps ? words.steps : phaseWord(s);
   if (!word) return null;
   const live = !s.done && s.at > 0 ? Math.max(0, now - s.at) : 0;
   const secs = Math.round((s.elapsedMs + live) / 1000);
-  return [word, callWord(s), s.done ? null : modelPhaseWord(s.modelPhase), fmtElapsed(secs), `${s.tokens} tokens`].filter(Boolean).join(" · ");
+  return [word, callWord(s), s.done ? null : modelPhaseWord(s.modelPhase, words?.subject), fmtElapsed(secs), `${s.tokens} tokens`].filter(Boolean).join(" · ");
 }
 
-export function PlanStreamView({ state }: { state: PlanStreamState }) {
+export function PlanStreamView({ state, words }: { state: PlanStreamState; words?: { steps?: string; subject?: string } }) {
   const [now, setNow] = useState(() => Date.now());
   const live = !state.done && state.phase != null;
   useEffect(() => {
@@ -33,7 +36,7 @@ export function PlanStreamView({ state }: { state: PlanStreamState }) {
     const el = ref.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [state.text]);
-  const header = planHeader(state, now);
+  const header = planHeader(state, now, words);
   if (!header) return null;
   return (
     <div className="plan-stream">

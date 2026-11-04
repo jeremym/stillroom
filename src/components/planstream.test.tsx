@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { PlanNote, PlanStreamView, planHeader } from "./PlanStreamView";
+import { EDIT_WORDS, PlanNote, PlanStreamView, planHeader } from "./PlanStreamView";
 import { EMPTY_STREAM, type PlanStreamState } from "../planStream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -33,6 +33,9 @@ describe("PlanStreamView", () => {
   it("adds the time since the last event, and stops the clock and the caret when done", () => {
     expect(planHeader(strip, now + 5_400)).toBe("Choosing the stages · call 1 of 2 · 53 s · 612 tokens");
     expect(planHeader({ ...strip, done: true }, now + 5_400)).toBe("Choosing the stages · call 1 of 2 · 48 s · 612 tokens");
+    // An edit (Ask for a change) says what it is doing in its own words.
+    const edit = { ...strip, phase: "steps" as const, attempt: 1, of: 3, modelPhase: "reading" as const };
+    expect(planHeader(edit, now + 5_400, EDIT_WORDS)).toBe("Rewriting the recipe · call 1 of 3 · reading the recipe · 53 s · 612 tokens");
     act(() => root.render(<PlanStreamView state={{ ...strip, done: true }} />));
     expect(host.querySelector(".cursor")).toBeNull();
   });

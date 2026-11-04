@@ -911,6 +911,89 @@ pub struct EditOutcome {
     pub changes: Vec<String>,
 }
 
+/// A value with its object keys sorted at every level, so two spellings of the same thing compare equal.
+fn canonical(v: &Value) -> Value {
+    match v {
+        Value::Object(o) => {
+            let sorted: std::collections::BTreeMap<&String, Value> = o.iter().map(|(k, v)| (k, canonical(v))).collect();
+            Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect())
+        }
+        Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+        _ => v.clone(),
+    }
+}
+
+/// Whether two texts say the same thing: the same words with the same breaks, whatever the
+/// trailing spaces and blank lines; two JSON files are the same when they parse the same.
+fn same_text(a: &str, b: &str) -> bool {
+    if let (Ok(x), Ok(y)) = (serde_json::from_str::<Value>(a), serde_json::from_str::<Value>(b)) {
+        return canonical(&x) == canonical(&y);
+    }
+    let norm = |s: &str| s.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim().to_string();
+    norm(a) == norm(b)
+}
+
+/// After an edit: everything the model handed back unchanged in substance is put back exactly as
+/// it was, so a retyped prompt, a re-serialized schema, or a reordered step does not count as a
+/// change and the saved recipe keeps its original text; and a ready-made stage keeps its
+/// provenance (`source`) when the model dropped the block.
+pub fn keep_unchanged(before: &Draft, after: &mut Draft) {
+    for (path, text) in &before.files {
+        if let Some(now) = after.files.get_mut(path) {
+            if now != text && same_text(text, now) {
+                *now = text.clone();
+            }
+        }
+    }
+    fn restore_steps(before: &Value, after: &mut Value) {
+        let Some(list) = after.get_mut("steps").and_then(Value::as_array_mut) else { return };
+        let was: Vec<Value> = before.get("steps").and_then(Value::as_array).cloned().unwrap_or_default();
+        for s in list.iter_mut() {
+            let id = s.get("id").and_then(Value::as_str).map(String::from);
+            if let Some(b) = was.iter().find(|b| b.get("id").and_then(Value::as_str).map(String::from) == id) {
+                if canonical(b) == canonical(s) {
+                    *s = b.clone();
+                } else {
+                    restore_steps(b, s);
+                }
+            }
+        }
+    }
+    restore_steps(&before.yaml, &mut after.yaml);
+    let was_stages: Vec<Value> = before.yaml.get("stages").and_then(Value::as_array).cloned().unwrap_or_default();
+    if let Some(list) = after.yaml.get_mut("stages").and_then(Value::as_array_mut) {
+        for s in list.iter_mut() {
+            let id = s.get("id").and_then(Value::as_str).map(String::from);
+            let Some(b) = was_stages.iter().find(|b| b.get("id").and_then(Value::as_str).map(String::from) == id) else { continue };
+            if let (Some(src), Some(obj)) = (b.get("source"), s.as_object_mut()) {
+                obj.entry("source").or_insert_with(|| src.clone());
+            }
+            if canonical(b) == canonical(s) {
+                *s = b.clone();
+            }
+        }
+    }
+    for section in ["inputs", "outputs", "modelSlots"] {
+        let was = before.yaml.get(section).and_then(Value::as_object).cloned().unwrap_or_default();
+        if let Some(map) = after.yaml.get_mut(section).and_then(Value::as_object_mut) {
+            for (k, v) in map.iter_mut() {
+                if let Some(b) = was.get(k) {
+                    if canonical(b) == canonical(v) {
+                        *v = b.clone();
+                    }
+                }
+            }
+        }
+    }
+    for key in ["permissions", "description", "name"] {
+        if let (Some(b), Some(a)) = (before.yaml.get(key), after.yaml.get(key)) {
+            if canonical(b) == canonical(a) && b != a {
+                after.yaml[key] = b.clone();
+            }
+        }
+    }
+}
+
 /// The differences between two drafts, in words: stages, inputs, steps, outputs, slots,
 /// permissions, and files. Empty means nothing changed.
 pub fn changes(before: &Draft, after: &Draft) -> Vec<String> {
@@ -946,7 +1029,7 @@ pub fn changes(before: &Draft, after: &Draft) -> Vec<String> {
     let name_of = |s: &Value, id: &str| s.get("name").and_then(Value::as_str).map(|n| format!("{n} (`{id}`)")).unwrap_or_else(|| format!("`{id}`"));
     let added: Vec<String> = a.iter().filter(|(id, _)| !b.iter().any(|(x, _)| x == id)).map(|(id, s)| name_of(s, id)).collect();
     let removed: Vec<String> = b.iter().filter(|(id, _)| !a.iter().any(|(x, _)| x == id)).map(|(id, s)| name_of(s, id)).collect();
-    let changed: Vec<String> = a.iter().filter(|(id, s)| b.iter().any(|(x, t)| x == id && t != s)).map(|(id, s)| name_of(s, id)).collect();
+    let changed: Vec<String> = a.iter().filter(|(id, s)| b.iter().any(|(x, t)| x == id && canonical(t) != canonical(s))).map(|(id, s)| name_of(s, id)).collect();
     if !added.is_empty() {
         out.push(format!("{} added: {}.", word(added.len(), "Step", "Steps"), added.join(", ")));
     }
@@ -961,7 +1044,7 @@ pub fn changes(before: &Draft, after: &Draft) -> Vec<String> {
     let (b, a) = (stages(before), stages(after));
     let added: Vec<String> = a.iter().filter(|(id, _)| !b.iter().any(|(x, _)| x == id)).map(|(id, s)| name_of(s, id)).collect();
     let removed: Vec<String> = b.iter().filter(|(id, _)| !a.iter().any(|(x, _)| x == id)).map(|(id, s)| name_of(s, id)).collect();
-    let changed: Vec<String> = a.iter().filter(|(id, s)| b.iter().any(|(x, t)| x == id && t != s)).map(|(id, s)| name_of(s, id)).collect();
+    let changed: Vec<String> = a.iter().filter(|(id, s)| b.iter().any(|(x, t)| x == id && canonical(t) != canonical(s))).map(|(id, s)| name_of(s, id)).collect();
     if !added.is_empty() {
         out.push(format!("{} added: {}.", word(added.len(), "Stage", "Stages"), added.join(", ")));
     }
@@ -971,7 +1054,7 @@ pub fn changes(before: &Draft, after: &Draft) -> Vec<String> {
     if !changed.is_empty() {
         out.push(format!("{} changed: {}.", word(changed.len(), "Stage", "Stages"), changed.join(", ")));
     }
-    if before.yaml.get("permissions") != after.yaml.get("permissions") {
+    if before.yaml.get("permissions").map(canonical) != after.yaml.get("permissions").map(canonical) {
         out.push("Permissions changed.".into());
     }
     for k in ["name", "description"] {
@@ -981,7 +1064,7 @@ pub fn changes(before: &Draft, after: &Draft) -> Vec<String> {
     }
     let added: Vec<&String> = after.files.keys().filter(|k| !before.files.contains_key(*k)).collect();
     let removed: Vec<&String> = before.files.keys().filter(|k| !after.files.contains_key(*k)).collect();
-    let rewritten: Vec<&String> = after.files.iter().filter(|(k, v)| before.files.get(*k).is_some_and(|t| t != *v)).map(|(k, _)| k).collect();
+    let rewritten: Vec<&String> = after.files.iter().filter(|(k, v)| before.files.get(*k).is_some_and(|t| !same_text(t, v))).map(|(k, _)| k).collect();
     for (list, what) in [(added, "added"), (removed, "removed"), (rewritten, "rewritten")] {
         if !list.is_empty() {
             out.push(format!("{} {what}: {}.", word(list.len(), "File", "Files"), list.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")));
@@ -1061,7 +1144,8 @@ impl Planner {
                 messages.push(ChatMessage::new("user", format!("The changed recipe has these problems:\n{list}\n\nFix them and answer again with the whole corrected JSON object (recipe and every file).")));
             }
         }
-        let (draft, problems) = best.ok_or(PlanError::Unusable(last_error))?;
+        let (mut draft, problems) = best.ok_or(PlanError::Unusable(last_error))?;
+        keep_unchanged(before, &mut draft);
         let changes = changes(before, &draft);
         Ok(EditOutcome {
             outcome: PlanOutcome {
@@ -1489,6 +1573,39 @@ mod tests {
         assert!(seen[0].messages[1].content.contains("### prompts/"), "the files go along");
         // Nothing changed: the list is empty.
         assert!(changes(&before, &before).is_empty());
+    }
+
+    /// A retyped prompt, a re-serialized schema, a step with its keys in another order, and a
+    /// stage whose provenance the model dropped are not changes: the originals come back.
+    #[test]
+    fn what_came_back_the_same_in_substance_is_kept_exactly_as_it_was() {
+        let before = Draft {
+            yaml: json!({
+                "schemaVersion": "0", "id": "r", "name": "R", "description": "d",
+                "inputs": { "file": { "type": "file", "label": "A file" } },
+                "steps": [ { "id": "read", "kind": "tool", "tool": "file.read", "inputs": { "path": "${inputs.file}" } }, { "id": "say", "kind": "tool", "tool": "speech.synthesize", "inputs": { "text": "${steps.read.output.text}" } } ],
+                "outputs": { "text": { "from": "${steps.read.output}", "type": "text" } },
+                "stages": [ { "id": "read", "name": "Read", "steps": ["read", "say"], "outputs": ["text"], "source": { "stage": "summarize_file", "version": 1, "digest": "sha256:0" } } ]
+            }),
+            files: BTreeMap::from([("prompts/a.md".to_string(), "Read it.\n\nBe brief.\n".to_string()), ("schemas/a.json".to_string(), "{\"type\": \"object\", \"required\": [\"a\"]}".to_string())]),
+        };
+        let mut after = Draft {
+            yaml: json!({
+                "schemaVersion": "0", "id": "r", "name": "R", "description": "d",
+                "inputs": { "file": { "label": "A file", "type": "file" } },
+                "steps": [ { "kind": "tool", "id": "read", "inputs": { "path": "${inputs.file}" }, "tool": "file.read" } ],
+                "outputs": { "text": { "type": "text", "from": "${steps.read.output}" } },
+                "stages": [ { "id": "read", "name": "Read", "steps": ["read"], "outputs": ["text"] } ]
+            }),
+            files: BTreeMap::from([("prompts/a.md".to_string(), "Read it.  \n\nBe brief.".to_string()), ("schemas/a.json".to_string(), "{\n  \"required\": [\"a\"],\n  \"type\": \"object\"\n}".to_string())]),
+        };
+        keep_unchanged(&before, &mut after);
+        assert_eq!(after.files["prompts/a.md"], "Read it.\n\nBe brief.\n", "the retyped prompt comes back as it was");
+        assert_eq!(after.files["schemas/a.json"], before.files["schemas/a.json"]);
+        assert_eq!(after.yaml["steps"][0], before.yaml["steps"][0], "the reordered step comes back as it was");
+        assert_eq!(after.yaml["stages"][0]["source"], before.yaml["stages"][0]["source"], "provenance is kept");
+        let c = changes(&before, &after);
+        assert_eq!(c, vec!["Step removed: `say`.".to_string(), "Stage changed: Read (`read`).".to_string()], "{c:?}");
     }
 
     /// Per stage: two custom stages become two short calls, the second told what the first wrote,

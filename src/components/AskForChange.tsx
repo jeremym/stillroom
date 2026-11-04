@@ -6,7 +6,7 @@ import { problemTexts } from "../flow/findings";
 import { shortModel, whereWord } from "../models";
 import type { PlanStreamState } from "../planStream";
 import type { Draft, EditOutcome, RecipeInfo } from "../types";
-import { PlanNote, PlanStreamView } from "./PlanStreamView";
+import { EDIT_WORDS, PlanNote, PlanStreamView } from "./PlanStreamView";
 
 /* Ask for a change: tell the planner what is wrong with a recipe in words, read what it changed,
    then save the result as a copy (the original stays) or, for one of your own, in place. A built-in
@@ -99,7 +99,7 @@ export function AskForChange({ recipe, planStream, takenIds, onStart, onSaved }:
           : <button className="primary" disabled={!instruction.trim() || saving} onClick={plan}><Glyph name="ai" /> Plan the change</button>}
         {out && !running && <span className="muted">Changed by {shortModel(out.modelId)} ({whereWord(out.modelId)}) in {Math.round(out.durationMs / 1000)} s.</span>}
       </div>
-      {running && <PlanStreamView state={planStream} />}
+      {running && <PlanStreamView state={planStream} words={EDIT_WORDS} />}
       {error && <p className="error">{error}</p>}
       {out && !running && problems.length > 0 && (
         <>

@@ -1,6 +1,6 @@
 # Feedback, fit, and talking to the planner
 
-Status: proposal, revision 1, 2026-11-04, from Jeremy's test pass of 0.3.3 with a recipe of his own (Jeremy Learn Stuff, planner journal `plans/2026-11-04-115141-jeremy-learn-stuff.md`). Read `FIRST-RUN-PLAN.md` for the goal screen, `STAGES-PLAN.md` for stages and the stage library, `UI-PLAN.md` for the look. This plan covers five things Jeremy hit in one sitting: the dead time while a local model warms up, no idea whether this Mac can run the model it picked, a Set up form whose sections and labels do not read, permissions and required inputs that are unclear until Run refuses, and a planner that made every source required when the goal said "URLs or documents".
+Status: built, revision 2, 2026-11-04 (all five phases on the `feedback` branch; see §10), from Jeremy's test pass of 0.3.3 with a recipe of his own (Jeremy Learn Stuff, planner journal `plans/2026-11-04-115141-jeremy-learn-stuff.md`). Read `FIRST-RUN-PLAN.md` for the goal screen, `STAGES-PLAN.md` for stages and the stage library, `UI-PLAN.md` for the look. This plan covers five things Jeremy hit in one sitting: the dead time while a local model warms up, no idea whether this Mac can run the model it picked, a Set up form whose sections and labels do not read, permissions and required inputs that are unclear until Run refuses, and a planner that made every source required when the goal said "URLs or documents".
 
 ## 0. Vocabulary
 
@@ -184,3 +184,25 @@ A then B first: both are what Jeremy sees on every run. D fixes the recipe he is
 - The estimate defaults are guesses until measured; the words "a guess" stay on screen until a run replaces them.
 - `inputGroups` is a format change: a migration entry, the schema, `runtime.minVersion` 0.4.0 for recipes that carry it.
 - Edit by asking is one more place a small model can produce a broken draft; the checker and the change list are the guard, and the original is never touched.
+
+## 10. Status (2026-11-04)
+
+All five phases are built on the `feedback` branch, each its own commit, every check green (Rust 169 + 6 compat + 13 adapter tests, 165 frontend tests, `tsc`, the Vite build).
+
+| Phase | Commit | What landed | Verified |
+|---|---|---|---|
+| A. Words and rims | `10854dc` | Kit `Group` (amber rim, why line, aside) and `span.desc`/`span.req`; Set up as stage groups; descriptions under controls; Run names the stage, or "needs you in stages 1, 2, 4"; permission rows with a write probe (`core::probe`); "nothing kept yet · builds on the first run"; a kept stage that still needs you says so first | On screen, `docs/screenshots/feedback-setup-*.png` |
+| B. The waiting | `635de70` | `CallPhase` and `StreamEvent` in the model trait; Ollama asks `/api/ps` and reports loading / reading / writing with its load and read times; run steps stream; the record carries phase, prompt words, words so far, pace; the teletype's phase line, the step details' busy bar (kit `Progress busy`), the planner header's phase | Live: loading at 0 ms, writing at 2.05 s against Ollama's 1.71 s load + 0.27 s read (`crates/models/tests/phases_live.rs`) |
+| C. Fit and estimates | `e7a2c61` | quantization and loaded on a model, GPU on the hardware record; `Fit` (room / tight / too large) in reasons, candidates, Settings; prefill rate and load time recorded per model; `core::estimate` guesses a first run by stage; the two amber notices on Set up and the goal screen | Unit tests; this Mac (M3 Ultra) reads as GPU, 4 models with quantization |
+| D. Planner structure | `a13b977` | `inputGroups` in the format (schema, checker, engine, Set up, strip, 0.4.0 floor); `source` and `feeds` in the stage library; the strip prompt says both; one call per custom stage for a small or tight model; Jeremy's goal as a compat fixture | Fixture: links or folder either-or, cards fed from the brief; live replay of the goal in §10.1 |
+| E. Edit by asking | `867ac5f` | `edit` prompt, `Planner::edit`, `changes()`, the `edit_recipe` command and journal entry, the Ask for a change zone on the Recipe card with the change list, prompts before and after, Save as a copy, Save in place (own recipes only) | Unit and UI tests; a live edit waits for the screen |
+
+### 10.1 Live, the same afternoon
+
+- **Jeremy's goal through the planner** (headless harness, qwen3.8:27b-mlx, one strip call and one composing call): clean on the first try in 5 min 48 s. Links and the folder came out optional with one either-or group, the study cards read the brief and ask for no paste, the floor is 0.4.0. The composing call had re-declared a dead "Material for study cards" input because it was told the library stage's original inputs; it is now told what the expanded stage still asks for, and the merge drops an input nothing reads. The recorded answers are the compat fixture `two-call-links-or-folder-brief-cards.json`.
+- **Set up of that draft** (`docs/screenshots/feedback-setup-either-or.png`, `feedback-setup-guess.png`): both source stages amber with "Give at least one of these: Pages to read, Your documents. Either is fine; both is fine too.", the labels say "(optional)", the estimate says "about 6 min, a guess from this Mac and the models picked above" with every stage's share.
+- **Running** Describe a document on the README (`feedback-running-loading.png`, `feedback-running-writing.png`): "… loading the model into memory · the first call after a while takes longest" at 5 s, "… writing · 479 words · 43.4 words/s" at 17 s, done at 23 s.
+- **Settings › Models** (`feedback-settings-fit.png`): Fit says "fits with room" for three models and "fits, but tightly" for the 80 GB one on this 96 GB Mac; the quantization sits beside the size; the loaded model wears "in memory".
+- **Ask for a change** on the live draft (`feedback-ask-for-a-change.png`, `-running.png`): "Drop the voice script and its saved file; keep everything else as it is." The window said "reading the goal" at 9 s; the result is in §10.2.
+
+Decision 6 in practice: on this Mac every installed model has room (M3 Ultra), so per-stage planning will not trigger here; it is exercised by the unit test and waits for a smaller Mac or a pinned small model to be judged live.

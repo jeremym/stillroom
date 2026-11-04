@@ -651,7 +651,7 @@ fn get_settings(state: State<'_, AppState>) -> CmdResult<Value> {
 }
 
 /// The top-level settings Stillroom knows. Anything else in a patch is refused.
-const SETTING_KEYS: &[&str] = &["look", "ollama", "models", "pins", "firstRun", "codex", "openai", "planner", updates::SETTING];
+const SETTING_KEYS: &[&str] = &["look", "ollama", "models", "pins", "firstRun", "codex", "openai", "planner", "search", "vault", updates::SETTING];
 
 /// A service address as a setting: a web address (http or https) with a host, kept without any
 /// user name or password that was typed into it, and without a trailing slash. Empty means unset.
@@ -729,6 +729,18 @@ fn checked_setting(key: &str, value: &Value) -> CmdResult<Value> {
         "codex" => tidy(want_object(value)?, "path", &|s| checked_program("codex.path", s)),
         "ollama" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("ollama.baseUrl", s)),
         "openai" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("openai.baseUrl", s)),
+        "search" => tidy(want_object(value)?, "baseUrl", &|s| checked_service_url("search.baseUrl", s)),
+        "vault" => tidy(want_object(value)?, "path", &|s| {
+            let t = s.trim();
+            if t.is_empty() {
+                return Ok(None);
+            }
+            let p = stillroom_core::tools::normalize_path(t);
+            if !p.is_dir() {
+                return Err(format!("vault.path: {} is not a folder", p.display()));
+            }
+            Ok(Some(p.to_string_lossy().into_owned()))
+        }),
         _ => want_object(value).map(Value::Object),
     }
 }
@@ -2429,16 +2441,23 @@ pub fn run() {
             // An import the user never confirmed is forgotten after a day.
             stillroom_core::catalog::prune_quarantine(&quarantine_dir, std::time::Duration::from_secs(24 * 3600));
             let db_path = data_dir.join("stillroom.db");
-            let store = Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?;
+            let store = Arc::new(Mutex::new(Store::open(&db_path).map_err(|e| std::io::Error::other(e.to_string()))?));
             let mut roots = catalog_roots(app.handle());
             roots.push((user_recipes, RecipeSource::User));
             let library = RecipeLibrary::with_app_version(roots, env!("CARGO_PKG_VERSION"));
+            // The search service and the vault are read from Settings at each call, so a change takes at once.
+            let setting_text = |store: Arc<Mutex<Store>>, key: &'static str, field: &'static str| -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
+                Arc::new(move || store.lock().ok()?.settings().ok()?.get(key)?.get(field)?.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+            };
+            let search_url = setting_text(store.clone(), "search", "baseUrl");
+            let vault_text = setting_text(store.clone(), "vault", "path");
+            let tool_config = stillroom_core::tools::ToolConfig { search_url, vault_path: Arc::new(move || vault_text().map(PathBuf::from)) };
             app.manage(AppState {
-                store: Arc::new(Mutex::new(store)),
+                store,
                 secrets: Mutex::new(BTreeMap::new()),
                 current_cancel: Mutex::new(None),
                 plan_cancel: Mutex::new(None),
-                tools: Arc::new(ToolRegistry::builtin()),
+                tools: Arc::new(ToolRegistry::builtin_with(tool_config)),
                 library,
                 prompts: SystemPrompts::new(data_dir.join("prompts")),
                 db_path: db_path.to_string_lossy().into_owned(),

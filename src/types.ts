@@ -574,6 +574,10 @@ export interface Settings {
   openai?: { enabled?: boolean; baseUrl?: string; models?: string[] };
   /** Model pins per recipe: recipe id → slot → model id. */
   pins?: Record<string, Record<string, string>>;
+  /** A web search service (a SearXNG instance) for the web.search tool. Unset means the tool says so and stops. */
+  search?: { baseUrl?: string };
+  /** The Obsidian vault the vault.write and vault.list tools work in. Unset means they say so and stop. */
+  vault?: { path?: string };
   /** The planner: a pinned model, or none for Auto (local only); and what Try planning measured per model id. */
   planner?: { model?: string; measured?: Record<string, PlanMeasurement> };
   firstRun?: boolean;

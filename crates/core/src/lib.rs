@@ -22,11 +22,14 @@ pub mod recipe;
 pub mod refs;
 pub mod resolve;
 pub mod schedule;
+pub mod sheets;
 pub mod stagelib;
 pub mod store;
 pub mod tools;
 pub mod trace;
+pub mod vault;
 pub mod watch;
+pub mod web;
 
 pub use bundle::{RecipeBundle, RecipeInfo, RecipeSource};
 pub use cache::{CachedStep, MemoryCache, StepCache};

@@ -4,6 +4,7 @@ import { api } from "../api";
 import { WatchPanel } from "../components/WatchPanel";
 import { Glyph, Logo, type GlyphName } from "../brand";
 import { Tag, Toggle, Zone, applyLook, fmtElapsed, loadLook, useElapsed, type Look } from "@overtone-foundry/app-kit";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { rememberProviders, whereWord } from "../models";
 import { measuredTag } from "../planWith";
 import { PullModel } from "../components/PullModel";
@@ -81,6 +82,8 @@ export default function SettingsApp() {
   const refreshOaKey = useCallback(() => { api.hasSecret("openai.apiKey").then(setOaKeySet).catch(() => setOaKeySet(null)); }, []);
   useEffect(() => { if (section === "models") refreshOaKey(); }, [section, refreshOaKey]);
   useEffect(() => { setOaUrl(settings.openai?.baseUrl ?? ""); }, [settings.openai?.baseUrl]);
+  const [searchUrl, setSearchUrl] = useState("");
+  useEffect(() => { setSearchUrl(settings.search?.baseUrl ?? ""); }, [settings.search?.baseUrl]);
   const [tries, setTries] = useState<Record<string, { busy: boolean; result: TryResult | null }>>({});
   const tryModel = useCallback(async (id: string) => {
     setTries((t) => ({ ...t, [id]: { busy: true, result: null } }));
@@ -475,6 +478,18 @@ export default function SettingsApp() {
                 </>
               )}
             </Zone>
+
+            <Zone title="Web search" sub="optional · a search service for recipes that look things up">
+              <p className="muted">Stillroom ships no search of its own and holds no key. Give the address of a SearXNG instance you run or trust (its JSON format must be on), and the <span className="mono">web.search</span> tool finds pages through it; <span className="mono">http.fetch</span> then reads them under the recipe's own network permission. Without an address, a recipe that searches says so and stops.</p>
+              <div className="row field-row">
+                <div className="field">
+                  <label><strong>Address</strong></label>
+                  <input type="text" className="mono" value={searchUrl} onChange={(e) => setSearchUrl(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save({ search: { baseUrl: searchUrl.trim() || undefined } }); }} placeholder="https://searx.example.org" />
+                </div>
+                <button onClick={() => save({ search: { baseUrl: searchUrl.trim() || undefined } })}>Save</button>
+                {settings.search?.baseUrl && <button className="quiet" onClick={() => { setSearchUrl(""); save({ search: null }); }}>Forget</button>}
+              </div>
+            </Zone>
           </>
         )}
 
@@ -501,6 +516,16 @@ export default function SettingsApp() {
                 <button onClick={() => api.revealRecipesFolder().catch((e) => setError(String(e)))}>Show my recipes folder</button>
               </>
             ) : <p className="muted">…</p>}
+          </Zone>
+        )}
+        {section === "folders" && (
+          <Zone title="Obsidian vault" sub="optional · where recipes may write notes">
+            <p className="muted">Choose your vault's folder once, and a recipe that names Obsidian writes notes into it with front matter and <span className="mono">[[wikilinks]]</span> to related notes (the <span className="mono">vault.write</span> and <span className="mono">vault.list</span> tools). Choosing it here is the permission: nothing else may write there, and a recipe needs no folder input for it. Without a vault, such a recipe says so and stops.</p>
+            <div className="row">
+              <button onClick={() => openDialog({ directory: true, multiple: false, title: "Choose your Obsidian vault" }).then((p) => { if (typeof p === "string" && p) save({ vault: { path: p } }); }).catch((e) => setError(String(e)))}>Choose vault…</button>
+              <span className="mono">{settings.vault?.path ?? "no vault chosen"}</span>
+              {settings.vault?.path && <button className="quiet" onClick={() => save({ vault: null })}>Forget</button>}
+            </div>
           </Zone>
         )}
 

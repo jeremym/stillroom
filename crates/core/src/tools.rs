@@ -808,14 +808,76 @@ pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
 }
 
+/// What the tools that reach outside a run need from the app: where the search service is and
+/// where the Obsidian vault is, each read at call time so a change in Settings takes at once.
+#[derive(Clone)]
+pub struct ToolConfig {
+    pub search_url: crate::web::SearchUrl,
+    pub vault_path: crate::vault::VaultPath,
+}
+
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self { search_url: Arc::new(|| None), vault_path: Arc::new(|| None) }
+    }
+}
+
+/// `time.now`: the date and time right now, so a recipe never has a model guess the date.
+pub struct TimeNow;
+
+#[async_trait::async_trait]
+impl Tool for TimeNow {
+    fn id(&self) -> &str {
+        "time.now"
+    }
+
+    fn cacheable(&self) -> bool {
+        false
+    }
+
+    fn describe(&self) -> Option<ToolDescription> {
+        Some(ToolDescription {
+            description: "The date and time right now on this Mac. Use it wherever a date is written (a log entry, a file name, a heading) instead of letting a model guess.".into(),
+            returns: "`{ iso, date, time, weekday, month, year, timezone, unixSeconds }`; `date` is YYYY-MM-DD, `time` is HH:MM.".into(),
+            parameters: json!({ "type": "object", "properties": {} }),
+        })
+    }
+
+    async fn call(&self, _ctx: &ToolContext, _inputs: Value) -> Result<Value, ToolError> {
+        let now = chrono::Local::now();
+        Ok(json!({
+            "iso": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "date": now.format("%Y-%m-%d").to_string(),
+            "time": now.format("%H:%M").to_string(),
+            "weekday": now.format("%A").to_string(),
+            "month": now.format("%B").to_string(),
+            "year": now.format("%Y").to_string(),
+            "timezone": now.format("%Z").to_string(),
+            "unixSeconds": now.timestamp(),
+        }))
+    }
+}
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// The registry with every built-in tool.
+    /// Every tool, with the search service and the vault unset (tests, the harness).
     pub fn builtin() -> Self {
+        Self::builtin_with(ToolConfig::default())
+    }
+
+    /// Every tool, with where the search service and the Obsidian vault are.
+    pub fn builtin_with(config: ToolConfig) -> Self {
         let mut r = Self::new();
+        r.register(Arc::new(TimeNow));
+        r.register(Arc::new(crate::sheets::SheetRead));
+        r.register(Arc::new(crate::sheets::SheetWrite));
+        r.register(Arc::new(crate::web::WebSearch::new(config.search_url.clone())));
+        r.register(Arc::new(crate::vault::VaultWrite { vault: config.vault_path.clone() }));
+        r.register(Arc::new(crate::vault::VaultList { vault: config.vault_path.clone() }));
         r.register(Arc::new(FileRead::default()));
         r.register(Arc::new(ConceptMap));
         r.register(Arc::new(Speak));
@@ -1196,7 +1258,7 @@ impl Tool for FsList {
 /// `text`, optional `overwrite` (default false). Creates parent folders. Output `{ path, bytes }`.
 pub struct FsWrite;
 
-fn safe_file_name(raw: &str) -> String {
+pub fn safe_file_name(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ') { c } else { '_' })

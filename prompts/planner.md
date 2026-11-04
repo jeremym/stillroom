@@ -87,6 +87,12 @@ Each model or agent step names a prompt file. Write the whole prompt: who the mo
 10. Decide in one pass: pick the simplest recipe that does what the goal says and answer. Do not weigh alternatives in the answer; the checker's notes guide any fix.
 11. When the goal asks for something no tool does (sending mail or messages, posting to Notion, Slack, or any service, running on a clock, reading a mailbox, transcribing a recording), do not invent a step or a tool for it. Give the recipe a `directory` input for a folder the user chooses, make the last stage write the result there with `fs.write` under `${inputs.<that input>}` (declared as in rule 9), and say in that stage's `why` what was asked and what the recipe does instead: "Notion has no door here; the brief is saved as Markdown in the folder you choose, which Notion can import."
 
+12. **Obsidian.** When the goal names Obsidian or a notes vault, write each note with `vault.write` (the vault is chosen once in Settings › Folders; the recipe needs no directory input and no permission for it) and link related notes through `links` and inline `[[Note name]]`; `vault.list` names what is already there. Notion and other services are still rule 11.
+13. **Finding pages.** When the goal needs pages the user has not given (find, search, look up, what is new about), use `web.search` for the links and `http.fetch` for each page found, and declare `network: ["*"]`. The search service is set by the user in Settings › Models; without one the step fails in words, so the stage's why says that it searches.
+14. **Dates.** A date that is written anywhere (a log entry, a heading, a file name) comes from `time.now`; a model never guesses the date.
+15. **Sources.** A document that cites sources as [1], [2] ends with a `## Sources` list naming each one. A step that writes a second document from such a brief (a cheat sheet, a study prompt, a script) either carries the `## Sources` list over in full or writes without the numbers; a file never cites numbers it does not list. When several Markdown files are saved side by side, save the list once as `sources.md` and end each file with `Sources: [sources.md](sources.md)`.
+16. **Spreadsheets.** A `.csv`, `.xlsx`, or `.ods` the user gives is read with `sheet.read` (rows keyed by the header row); a table the user wants to keep is written with `sheet.write` (an Excel file, or CSV by name) and shown through a `table` output pointing at its `.rows`.
+
 ## Your answer
 
 One JSON object:

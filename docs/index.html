@@ -84,7 +84,7 @@
         <figure><img src="screenshots/feedback-recipe-card.png" alt="The recipe card: the strip of six stages above a map with inputs on the left, steps in the middle, results on the right" loading="lazy"><figcaption>The recipe card. Open the door whenever you like; edit on the map or by asking.</figcaption></figure>
       </div>
       <h3>What a recipe can do</h3>
-      <p>Read text, Markdown, PDF, and Word files. Fetch the pages you name and no others. Loop over a folder or a list of links. Ask a model for an answer in a fixed shape. Let an agent choose which files to look at, with a budget. Pause for your approval. Remember what it built between runs (an index, parsed pages, a log) and skip itself until its sources change. Draw a concept map, render a diagram, build a deck, read a script aloud in the Mac's own voice. Write files into a folder you chose.</p>
+      <p>Read text, Markdown, PDF, and Word files. Fetch the pages you name and no others. Loop over a folder or a list of links. Ask a model for an answer in a fixed shape. Let an agent choose which files to look at, with a budget. Pause for your approval. Remember what it built between runs (an index, parsed pages, a log) and skip itself until its sources change. Draw a concept map, render a diagram, build a deck, read a script aloud in the Mac's own voice. Read a spreadsheet and write one back as Excel or CSV. Put today's date on things. Write notes into your Obsidian vault with front matter and wikilinks, once you have pointed at the vault. Search the web through a search service you run or trust, if you set one. Write files into a folder you chose.</p>
     </section>
 
     <section class="zone" id="local">
@@ -93,6 +93,7 @@
         <span class="label">Models</span><span>Run in <a href="https://ollama.com">Ollama</a> on your Mac. Settings shows what this Mac can hold, how each model fits, and how fast it has been here.</span>
         <span class="label">Files</span><span>A recipe reads only what you choose and writes only to its own results and the folders you name. Set up tries every folder before Run and says so if one cannot be written.</span>
         <span class="label">Network</span><span>Only if a recipe declares it, and then only the hosts in the links you typed, checked on every redirect.</span>
+        <span class="label">Search</span><span>None, unless you give the address of a <a href="https://docs.searxng.org">SearXNG</a> instance you run or trust. Stillroom holds no key and ships no search of its own.</span>
         <span class="label">Cloud</span><span>Off. The Codex app on a ChatGPT plan, or any OpenAI-compatible service by key, can be turned on; a step on one is marked <span class="tag amber">cloud</span> everywhere it appears.</span>
         <span class="label">Reuse</span><span>An AI step whose prompt, model, settings, and inputs are exactly as last time gives its last answer again. Change one thing and that step and everything after it run fresh.</span>
       </div>

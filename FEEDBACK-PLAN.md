@@ -167,15 +167,15 @@ On the Recipe card, beside the editor, **Ask for a change**: a text box ("The qu
 
 A then B first: both are what Jeremy sees on every run. D fixes the recipe he is holding; C makes the waiting honest; E is the new way of working.
 
-## 8. Decisions to confirm
+## 8. Decisions (confirmed 2026-11-04)
 
-1. No warm-up call: report `loading` from `/api/ps` and the first chunk's arrival, never pre-load. (Keeps a cold model at one wait, not two.)
-2. The fit ceiling stays at 60 % of memory; "tight" starts at 40 %.
-3. Required is shown as a rim on the stage group plus `*` on the label; optional stages say "optional" in the head. No other marker.
-4. Descriptions go under the control at the small size, never inline after the label; this is a kit rule, so Settings follows too.
-5. Either-or is a recipe-level `inputGroups.anyOf`, written by `expand` when two source stages are picked; the planner never writes it by hand.
-6. Per-stage planning only for models the verdict calls small or tight, unless live runs show it is better for every model.
-7. Edit by asking returns a whole recipe and shows a change list; it never saves without a click, and never edits a built-in in place.
+1. **No warm-up call.** Report `loading` from `/api/ps` and the first chunk's arrival; never pre-load. One cold wait, not two. (Jeremy: yes.)
+2. **Fit is about the weights, not the prompt.** The verdict compares the model file to memory: room up to 40 %, tight to 60 %, too large past it (the ceiling Auto already uses). What the person types changes the *time*, not the fit: a vague goal makes a long answer, and that is what the estimate and the progress line are for, with a context-length note when the prompt plus the expected answer would not fit the slot's context window. (Jeremy left this to the plan.)
+3. **Required shows as an amber rim** on the stage group while something in it is empty, plus `*` on the label; optional stages say "optional" in the head. No other marker. (Jeremy: yes.)
+4. **Descriptions go under the control** at the small size, never inline after the label; a kit rule, so Settings follows. (Jeremy: yes.)
+5. **Either-or is `inputGroups.anyOf`**, written by `expand` when two source stages are picked; the planner never writes it by hand. (Jeremy: yes.)
+6. **Per-stage planning for small and tight models** (the fit verdict decides), the single second call for models with room; the plan journal records which mode ran, and if live runs show per-stage drafts cleaner for every model, it becomes the only mode. This is only the planner (drafting a recipe), not a run. (Jeremy left this to the plan.)
+7. **Edit by asking** returns a whole recipe, shows a change list in words, never saves without a click, and never edits a built-in in place: it makes a copy first. (Jeremy: exactly as envisioned.)
 
 ## 9. Risks
 

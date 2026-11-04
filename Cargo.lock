@@ -4401,7 +4401,7 @@ checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 
 [[package]]
 name = "stillroom"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4425,7 +4425,7 @@ dependencies = [
 
 [[package]]
 name = "stillroom-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "calamine",
@@ -4453,7 +4453,7 @@ dependencies = [
 
 [[package]]
 name = "stillroom-models"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "indexmap 2.14.2",

@@ -20,10 +20,85 @@ pub struct InstalledModel {
     /// in memory to run is about this much; see [`fits_in_memory`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
+    /// How the weights were shrunk ("Q4_K_M"), when the provider says. Smaller numbers are
+    /// smaller and faster, and a little less sharp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    /// Whether the model is in memory right now, when the provider can say (Ollama can).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded: Option<bool>,
     /// True when the model runs on this Mac. Auto never picks a model that is not local;
     /// a cloud model is used only through a pin or a default you set.
     #[serde(default = "yes")]
     pub local: bool,
+}
+
+/// How a model's weights sit in this Mac's memory. Below [`FIT_ROOM`] of memory there is room
+/// for the context and the rest of the Mac; up to [`MEMORY_CEILING`] it fits but tightly; past
+/// that it swaps and crawls. Unknown when either size is unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fit {
+    Room,
+    Tight,
+    TooLarge,
+    Unknown,
+}
+
+/// The share of memory under which a model has room to spare.
+pub const FIT_ROOM: f64 = 0.40;
+
+pub fn fit_of(size_bytes: Option<u64>, memory_bytes: Option<u64>) -> Fit {
+    match (size_bytes, memory_bytes) {
+        (Some(size), Some(memory)) => {
+            let share = size as f64 / memory as f64;
+            if share <= FIT_ROOM {
+                Fit::Room
+            } else if share <= MEMORY_CEILING {
+                Fit::Tight
+            } else {
+                Fit::TooLarge
+            }
+        }
+        _ => Fit::Unknown,
+    }
+}
+
+impl Fit {
+    /// The verdict in words, for a reason line or a table cell.
+    pub fn word(self) -> &'static str {
+        match self {
+            Fit::Room => "fits with room",
+            Fit::Tight => "fits, but tightly",
+            Fit::TooLarge => "larger than this Mac can hold comfortably",
+            Fit::Unknown => "size not known",
+        }
+    }
+}
+
+/// Bytes as people read them: "17 GB", "850 MB".
+pub fn size_word(bytes: u64) -> String {
+    if bytes >= 1 << 30 {
+        let gb = bytes as f64 / (1u64 << 30) as f64;
+        if gb >= 10.0 { format!("{} GB", gb.round() as u64) } else { format!("{gb:.1} GB") }
+    } else {
+        format!("{} MB", bytes >> 20)
+    }
+}
+
+/// The amber line for a model that does not fit, or `None`.
+pub fn fit_notice(m: &InstalledModel, memory_bytes: Option<u64>) -> Option<String> {
+    if !m.local || fit_of(m.size_bytes, memory_bytes) != Fit::TooLarge {
+        return None;
+    }
+    let size = size_word(m.size_bytes?);
+    let room = size_word(model_ceiling_bytes(memory_bytes)?);
+    Some(format!("{} is {size}; this Mac holds about {room} comfortably. It will run, but slowly. Pin a smaller model, or let Auto choose.", m.name))
+}
+
+/// The amber line for a Mac without a GPU Ollama can use, or `None`.
+pub fn gpu_notice(h: &Hardware) -> Option<String> {
+    (h.gpu == Some(false)).then(|| "This Mac has no GPU Ollama can use, so every model runs on the CPU alone. Expect minutes where a Mac with Apple silicon takes seconds.".to_string())
 }
 
 fn yes() -> bool {
@@ -182,6 +257,9 @@ pub struct Hardware {
     pub gpu_cores: Option<u32>,
     /// CPU cores, `hw.ncpu`.
     pub cpu_cores: Option<u32>,
+    /// A GPU Ollama can use: Apple silicon yes, an Intel Mac no; `None` when it could not be told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<bool>,
     /// The most a model's weights may take and still run comfortably: [`MEMORY_CEILING`] of memory.
     pub model_ceiling_bytes: Option<u64>,
 }
@@ -196,12 +274,24 @@ pub fn detect_hardware() -> Hardware {
     let gpu_cores = command_output("/usr/sbin/ioreg", &["-rc", "AGXAccelerator", "-d", "1"])
         .and_then(|s| parse_ioreg_gpu_cores(&s))
         .or_else(|| command_output("/usr/sbin/system_profiler", &["SPDisplaysDataType", "-json"]).and_then(|s| parse_profiler_gpu_cores(&s)));
+    let chip = sysctl("machdep.cpu.brand_string").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     Hardware {
-        chip: sysctl("machdep.cpu.brand_string").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        gpu: gpu_from(chip.as_deref(), gpu_cores),
+        chip,
         memory_bytes,
         gpu_cores,
         cpu_cores: sysctl("hw.ncpu").and_then(|s| s.trim().parse().ok()),
         model_ceiling_bytes: model_ceiling_bytes(memory_bytes),
+    }
+}
+
+/// Apple silicon has a GPU Ollama uses through Metal; an Intel Mac does not. Failing a chip
+/// name, a core count says.
+pub fn gpu_from(chip: Option<&str>, gpu_cores: Option<u32>) -> Option<bool> {
+    match chip {
+        Some(c) if c.contains("Apple") => Some(true),
+        Some(c) if c.contains("Intel") => Some(false),
+        _ => gpu_cores.map(|n| n > 0),
     }
 }
 
@@ -307,6 +397,8 @@ mod tests {
             context_window: None,
             parameter_size: size.map(String::from),
             size_bytes: None,
+            quantization: None,
+            loaded: None,
             local: true,
         }
     }

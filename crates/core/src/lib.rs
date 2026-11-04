@@ -8,6 +8,7 @@ pub mod cache;
 pub mod catalog;
 pub mod consent;
 pub mod draft;
+pub mod estimate;
 pub mod executor;
 pub mod keep;
 pub mod library;

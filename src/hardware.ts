@@ -1,4 +1,4 @@
-import type { Hardware, ModelSpeed } from "./types";
+import type { Fit, Hardware, ModelSpeed } from "./types";
 import { memoryWord } from "./planWith";
 
 /* This Mac: the facts Settings › Models says before the model table, so a model can be weighed
@@ -21,6 +21,22 @@ export function thisMacParts(h: Hardware | null | undefined): string[] {
 export function thisMacLine(h: Hardware | null | undefined): string | null {
   const parts = thisMacParts(h);
   return parts.length ? parts.join(" · ") : null;
+}
+
+/** The share of memory under which a model has room to spare, and the ceiling past which it swaps (the engine's numbers). */
+export const FIT_ROOM = 0.4;
+export const FIT_CEILING = 0.6;
+
+/** How a model's weights sit in this Mac's memory, the engine's verdict mirrored for the table. */
+export function fitOf(sizeBytes: number | null | undefined, memoryBytes: number | null | undefined): Fit {
+  if (sizeBytes == null || memoryBytes == null || memoryBytes <= 0) return "unknown";
+  const share = sizeBytes / memoryBytes;
+  return share <= FIT_ROOM ? "room" : share <= FIT_CEILING ? "tight" : "too_large";
+}
+
+/** The verdict in words. */
+export function fitWord(fit: Fit): string {
+  return fit === "room" ? "fits with room" : fit === "tight" ? "fits, but tightly" : fit === "too_large" ? "too large for this Mac" : "size not known";
 }
 
 /** "66 tok/s" (whole numbers past 10, one decimal under), or "—" when the model has not answered yet. */

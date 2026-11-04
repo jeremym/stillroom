@@ -115,7 +115,8 @@ export const api = {
   listRuns: (limit = 20) => invoke<RunSummary[]>("list_runs", { limit }),
   getRun: (id: string) => invoke<Run | null>("get_run", { id }),
   usage: () => invoke<ModelUsage[]>("usage"),
-  estimate: (recipeId: string) => invoke<RunEstimate | null>("estimate", { recipeId }),
+  /** What a run will take: from earlier runs, else a guess from the models these pins and inputs would use. */
+  estimate: (recipeId: string, pins?: Record<string, string>, inputs?: Record<string, unknown>) => invoke<RunEstimate | null>("estimate", { recipeId, pins, inputs }),
   /** What a run with these inputs would touch, one row per permission entry, every chosen folder tried. */
   probePermissions: (recipeId: string, inputs: Record<string, unknown>) => invoke<PermissionRow[]>("probe_permissions", { recipeId, inputs }),
   /** Save text where the user chooses. The save dialog runs on the Rust side; the webview never names a path.

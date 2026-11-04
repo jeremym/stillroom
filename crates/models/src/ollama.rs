@@ -109,6 +109,8 @@ struct TagModel {
 struct TagDetails {
     #[serde(default)]
     parameter_size: Option<String>,
+    #[serde(default)]
+    quantization_level: Option<String>,
 }
 #[derive(Deserialize)]
 struct ShowResponse {
@@ -258,6 +260,7 @@ impl Provider for Ollama {
             .json()
             .await?;
 
+        let loaded = self.loaded_models().await;
         let mut out = Vec::with_capacity(tags.models.len());
         for m in tags.models {
             let show: ShowResponse = self
@@ -281,12 +284,15 @@ impl Provider for Ollama {
                 .find(|(k, _)| k.ends_with(".context_length"))
                 .and_then(|(_, v)| v.as_u64());
 
+            let name = m.name.clone();
             out.push(InstalledModel {
                 id: format!("ollama:{}", m.name),
                 provider: "ollama".into(),
                 name: m.name,
                 capabilities: caps,
                 context_window,
+                loaded: loaded.as_ref().map(|l| l.iter().any(|x| same_model(&x.name, &name))),
+                quantization: m.details.as_ref().and_then(|d| d.quantization_level.clone()),
                 parameter_size: m.details.and_then(|d| d.parameter_size),
                 size_bytes: m.size,
                 local: true,

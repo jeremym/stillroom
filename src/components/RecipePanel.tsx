@@ -142,8 +142,17 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
     setWatchInput(folderInputs[0] ?? "");
     setScheduleOpen(false);
     setScheduled(null);
-    api.estimate(recipe.id).then(setEstimate).catch(() => setEstimate(null));
   }, [recipe.id]);
+
+  // What the run will take: from earlier runs, else a guess from the models these pins would use and
+  // the inputs typed so far (a list of links sizes a loop). Asked again a moment after either changes.
+  useEffect(() => {
+    let live = true;
+    const h = window.setTimeout(() => {
+      Promise.resolve().then(() => api.estimate(recipe.id, pins, inputs)).then((e) => { if (live) setEstimate(e); }).catch(() => { if (live) setEstimate(null); });
+    }, 250);
+    return () => { live = false; window.clearTimeout(h); };
+  }, [recipe.id, pins, inputs]);
 
   // What Auto would really pick, right now, with these pins and the user's defaults.
   useEffect(() => {
@@ -283,6 +292,7 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
       })}
 
       <h3>Models for this run <span className="muted">(model slots)</span></h3>
+      {(preview?.notices ?? []).map((n) => <p key={n} className="notice"><Glyph name="warning" /> {n}</p>)}
       {unfillable.some(([, s]) => s.requires.includes("embedding")) && (
         <p className="hint-line"><Glyph name="warning" /> This recipe needs an embedding model (one that turns text into numbers for search). None is installed. In Settings › Models, pull <span className="mono">nomic-embed-text</span> or <span className="mono">bge-m3</span>, then come back.</p>
       )}
@@ -347,7 +357,11 @@ export function RecipePanel({ recipes, recipe, onSelect, pins, onPins, models, r
         const names = skipped.map((e) => recipe.stages.find((st) => st.id === e.id)?.name ?? e.id);
         return (
         <div className="muted estimate">
-          <span>Expect about {aboutMs(Math.max(0, estimate.avgDurationMs - skipMs))} and {fmtTokens(estimate.avgPromptTokens + estimate.avgCompletionTokens)} tokens, from the last {estimate.basedOnRuns} run{estimate.basedOnRuns === 1 ? "" : "s"}{names.length ? ` (${names.join(" and ")} ${names.length === 1 ? "is" : "are"} kept and will not run)` : ""}.</span>
+          <span>
+            {estimate.guessed
+              ? <>Expect about {aboutMs(Math.max(0, estimate.avgDurationMs - skipMs))}, a guess from this Mac and the models picked above (how big they are, how fast they have been here, how much the recipe reads and writes). The first run replaces it with what really happened.</>
+              : <>Expect about {aboutMs(Math.max(0, estimate.avgDurationMs - skipMs))} and {fmtTokens(estimate.avgPromptTokens + estimate.avgCompletionTokens)} tokens, from the last {estimate.basedOnRuns} run{estimate.basedOnRuns === 1 ? "" : "s"}{names.length ? ` (${names.join(" and ")} ${names.length === 1 ? "is" : "are"} kept and will not run)` : ""}.</>}
+          </span>
           {estimate.stages.length > 0 && (
             <span className="estimate-stages">
               {estimate.stages.map((e) => {

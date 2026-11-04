@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtSpeed, speedOf, thisMacLine } from "./hardware";
+import { fitOf, fitWord, fmtSpeed, speedOf, thisMacLine } from "./hardware";
 
 const GB = 2 ** 30;
 
@@ -13,6 +13,14 @@ describe("This Mac", () => {
     );
     expect(thisMacLine({ chip: null, memoryBytes: null, gpuCores: null, cpuCores: null, modelCeilingBytes: null })).toBeNull();
     expect(thisMacLine(null)).toBeNull();
+  });
+  it("says how a model sits in memory: room under 40 %, tight to 60 %, too large past that", () => {
+    expect(fitOf(10 * GB, 36 * GB)).toBe("room");
+    expect(fitOf(20 * GB, 36 * GB)).toBe("tight");
+    expect(fitOf(30 * GB, 36 * GB)).toBe("too_large");
+    expect(fitOf(null, 36 * GB)).toBe("unknown");
+    expect(fitOf(10 * GB, null)).toBe("unknown");
+    expect(["room", "tight", "too_large", "unknown"].map((f) => fitWord(f as never))).toEqual(["fits with room", "fits, but tightly", "too large for this Mac", "size not known"]);
   });
   it("words a speed, or a dash before the model has answered", () => {
     expect(fmtSpeed(66.4)).toBe("66 tok/s");

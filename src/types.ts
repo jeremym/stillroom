@@ -9,6 +9,12 @@ export interface InstalledModel {
   capabilities: Capability[];
   contextWindow: number | null;
   parameterSize: string | null;
+  /** The weights on disk, in bytes, when the provider says. */
+  sizeBytes?: number | null;
+  /** How the weights were shrunk ("Q4_K_M"), when the provider says. */
+  quantization?: string | null;
+  /** Whether the model is in memory right now, when the provider can say. */
+  loaded?: boolean | null;
   /** True when the model runs on this Mac. */
   local: boolean;
 }
@@ -44,6 +50,10 @@ export interface TryResult {
 /** What one model managed last time it answered on this Mac. */
 export interface ModelSpeed {
   tokensPerSecond: number;
+  /** How fast it read the prompt (prefill), when the provider said. */
+  prefillTokensPerSecond?: number | null;
+  /** How long the last cold load took, in seconds. */
+  loadSeconds?: number | null;
   /** When, RFC 3339. */
   at: string;
 }
@@ -63,6 +73,8 @@ export interface Hardware {
   memoryBytes: number | null;
   gpuCores: number | null;
   cpuCores: number | null;
+  /** A GPU Ollama can use (Apple silicon); false on an Intel Mac; null when it could not be told. */
+  gpu?: boolean | null;
   /** The most a model's weights may take and still run comfortably (60 % of memory). */
   modelCeilingBytes: number | null;
 }
@@ -433,6 +445,8 @@ export interface RunEstimate {
   avgDurationMs: number;
   /** One line per stage that has run before: what it took when it did. */
   stages: StageEstimate[];
+  /** Nothing has run yet: the numbers are a guess from the model, this Mac, and the recipe's shape. */
+  guessed?: boolean;
 }
 
 /** What one stage took, averaged over the runs in which it really ran; `once` means it is kept
@@ -584,7 +598,12 @@ export interface PullEvent {
 export interface ResolutionPreview {
   resolutions: Record<string, { slot: string; modelId: string; via: "pinned" | "default" | "recommended" | "capability" }>;
   problems: Record<string, string>;
+  /** Amber lines worth reading before Run: a model larger than this Mac holds comfortably, a Mac with no GPU. */
+  notices?: string[];
 }
+
+/** How a model's weights sit in this Mac's memory. */
+export type Fit = "room" | "tight" | "too_large" | "unknown";
 
 export interface PermissionEntry {
   id: string;
@@ -622,6 +641,8 @@ export interface PlannerCandidate {
   sizeBytes: number | null;
   /** Whether the weights fit comfortably in this Mac's memory (at most about 60 % of RAM). */
   fits: boolean;
+  /** The finer verdict: room (under 40 %), tight (to 60 %), too large, or unknown. */
+  fit?: Fit;
   /** Auto's order, 1 first. */
   rank: number;
   /** What Try planning measured, if it ran. */
@@ -640,6 +661,8 @@ export interface PlannerPreview {
   memoryBytes: number | null;
   /** Every model that could plan, in Auto's order; cloud ones last, flagged local: false. */
   candidates: PlannerCandidate[];
+  /** An amber line about the pick: too large for this Mac, or a Mac with no GPU. */
+  notice?: string | null;
 }
 
 /** Try planning's answer: the planner's first call on a fixed sample goal, timed and checked. */

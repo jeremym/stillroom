@@ -95,13 +95,7 @@ pub fn seconds_words(ms: u64) -> String {
 /// memory (or runs in the cloud), that it answers in a fixed shape, and what Try planning
 /// measured (or that nothing has).
 pub fn planning_reason(m: &InstalledModel, memory_bytes: Option<u64>, measured: Option<&Measured>) -> String {
-    let fit = if !m.local {
-        "runs in the cloud, used only when you choose it"
-    } else if fits_in_memory(m.size_bytes, memory_bytes) {
-        "fits in memory"
-    } else {
-        "larger than this Mac can hold comfortably"
-    };
+    let fit = if !m.local { "runs in the cloud, used only when you choose it" } else { crate::model::fit_of(m.size_bytes, memory_bytes).word() };
     let shape = "answers in a fixed shape (JSON)";
     let timing = match measured {
         Some(m) if m.clean => format!("planned clean in {}", seconds_words(m.ms)),
@@ -309,6 +303,8 @@ mod tests {
             context_window: Some(32_000),
             parameter_size: Some(size.into()),
             size_bytes: None,
+            quantization: None,
+            loaded: None,
             local: true,
         }
     }
@@ -419,7 +415,7 @@ outputs:
         let ranked = rank_for_planning(&models, &BTreeMap::new(), Some(100 << 30));
         assert_eq!(ids(&ranked), vec!["qwen3:32b", "glm-4.7-flash", "gpt-oss:20b", "gemma3:27b", "qwen3-coder:30b", "mistral-small:24b", "llama3.1:8b"]);
         assert_eq!(ranked.iter().map(|(_, r, _)| *r).collect::<Vec<_>>(), (1..=7).collect::<Vec<u32>>());
-        assert_eq!(ranked[0].2, "fits in memory, answers in a fixed shape (JSON), not yet measured");
+        assert_eq!(ranked[0].2, "fits with room, answers in a fixed shape (JSON), not yet measured");
     }
 
     #[test]
@@ -444,9 +440,9 @@ outputs:
         ]);
         let ranked = rank_for_planning(&models, &measured, Some(100 << 30));
         assert_eq!(ids(&ranked), vec!["gemma3:27b", "llama3.1:8b", "qwen3:32b", "glm-4.7-flash"]);
-        assert_eq!(ranked[1].2, "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s");
-        assert_eq!(ranked[2].2, "fits in memory, answers in a fixed shape (JSON), planned clean in 2 m 10 s");
-        assert_eq!(ranked[3].2, "fits in memory, answers in a fixed shape (JSON), the last trial plan had problems, after 20 s");
+        assert_eq!(ranked[1].2, "fits with room, answers in a fixed shape (JSON), planned clean in 48 s");
+        assert_eq!(ranked[2].2, "fits with room, answers in a fixed shape (JSON), planned clean in 2 m 10 s");
+        assert_eq!(ranked[3].2, "fits with room, answers in a fixed shape (JSON), the last trial plan had problems, after 20 s");
     }
 
     #[test]

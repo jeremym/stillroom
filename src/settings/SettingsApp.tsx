@@ -8,7 +8,7 @@ import { rememberProviders, whereWord } from "../models";
 import { measuredTag } from "../planWith";
 import { PullModel } from "../components/PullModel";
 import { PromptEditor } from "../components/PromptEditor";
-import { fmtSpeed, speedOf, thisMacLine } from "../hardware";
+import { fitOf, fitWord, fmtSpeed, speedOf, thisMacLine } from "../hardware";
 import type { CodexStatus, Hardware, InstalledModel, ModelsResponse, PermissionEntry, PlanMeasurement, RecipesResponse, RuntimeStatus, Schedule, Settings, TryPlanningResult, TryResult, UpdateCheck, WatchView } from "../types";
 import { whenWord } from "../schedules";
 import { updateWord } from "../updates";
@@ -272,12 +272,13 @@ export default function SettingsApp() {
                 <>
                   <p className="muted planner-note">Not every model plans well; the planner (what drafts a recipe from a goal) uses the fastest clean one unless you pin another. <strong>Try planning</strong> measures a model on a sample goal.</p>
                   <table>
-                    <thead><tr><th>Model</th><th>Size</th><th>Context</th><th title="Tokens per second the model managed last time on this Mac">Speed</th><th>Can</th><th></th><th></th></tr></thead>
+                    <thead><tr><th>Model</th><th>Size</th><th title="How the weights sit in this Mac's memory: room under 40 %, tight to 60 %, too large past that">Fit</th><th>Context</th><th title="Tokens per second the model managed last time on this Mac">Speed</th><th>Can</th><th></th><th></th></tr></thead>
                     <tbody>
                       {installed.map((m) => (
                         <tr key={m.id}>
-                          <td className="mono">{m.name}</td>
-                          <td>{m.parameterSize ?? ""}</td>
+                          <td className="mono">{m.name}{m.loaded ? <> <span className="tag live">in memory</span></> : null}</td>
+                          <td>{[m.parameterSize, m.quantization].filter(Boolean).join(" · ")}</td>
+                          <td className={fitOf(m.sizeBytes, hardware?.memoryBytes) === "too_large" ? "amber" : undefined}>{m.local ? fitWord(fitOf(m.sizeBytes, hardware?.memoryBytes)) : "cloud"}</td>
                           <td>{m.contextWindow ? `${Math.round(m.contextWindow / 1024)}k` : ""}</td>
                           <td className="speed">{speedOf(models?.speeds, m.id)}</td>
                           <td><span className="caps">{m.capabilities.map((c) => <span key={c} className="tag">{c.replace(/_/g, " ")}</span>)}</span></td>

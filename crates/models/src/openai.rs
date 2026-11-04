@@ -202,6 +202,8 @@ impl Provider for OpenAi {
                 context_window: None,
                 parameter_size: None,
                 size_bytes: None,
+                quantization: None,
+                loaded: None,
                 local,
             })
             .collect())

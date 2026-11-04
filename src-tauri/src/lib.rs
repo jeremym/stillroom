@@ -67,6 +67,12 @@ const SPEED_FIELD: &str = "speed";
 #[serde(rename_all = "camelCase")]
 struct ModelSpeed {
     tokens_per_second: f64,
+    /// How fast it read the prompt (prefill), when the provider said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefill_tokens_per_second: Option<f64>,
+    /// How long the last cold load took, in seconds, when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    load_seconds: Option<f64>,
     /// When, RFC 3339.
     at: String,
 }
@@ -82,16 +88,23 @@ struct SpeedRecorder {
 impl SpeedRecorder {
     fn record(&self, model_id: &str, resp: &stillroom_core::model::ChatResponse) {
         let Some(tps) = resp.completion_tokens_per_second.filter(|t| t.is_finite() && *t > 0.0) else { return };
+        let prefill = match (resp.prompt_tokens, resp.prompt_ms) {
+            (Some(t), Some(ms)) if ms > 0 && t > 0 => Some(t as f64 / (ms as f64 / 1000.0)),
+            _ => None,
+        };
+        // A load under a quarter second is a model already in memory, not a load.
+        let load = resp.load_ms.filter(|ms| *ms >= 250).map(|ms| ms as f64 / 1000.0);
         if let Ok(store) = self.store.lock() {
-            if let Err(e) = record_speed(&store, model_id, tps) {
+            if let Err(e) = record_speed(&store, model_id, tps, prefill, load) {
                 tracing::warn!("could not record {model_id}'s speed: {e}");
             }
         }
     }
 }
 
-/// Write `models.speed.<model id>` without touching the rest of `models`.
-fn record_speed(store: &Store, model_id: &str, tokens_per_second: f64) -> Result<(), stillroom_core::store::StoreError> {
+/// Write `models.speed.<model id>` without touching the rest of `models`. A prefill rate or a
+/// load time not measured this call keeps the last one.
+fn record_speed(store: &Store, model_id: &str, tokens_per_second: f64, prefill: Option<f64>, load_seconds: Option<f64>) -> Result<(), stillroom_core::store::StoreError> {
     let mut models = match store.get_setting(MODELS_SETTING)? {
         Some(Value::Object(o)) => o,
         _ => serde_json::Map::new(),
@@ -100,7 +113,14 @@ fn record_speed(store: &Store, model_id: &str, tokens_per_second: f64) -> Result
     if !speed.is_object() {
         *speed = Value::Object(Default::default());
     }
-    let entry = ModelSpeed { tokens_per_second: (tokens_per_second * 10.0).round() / 10.0, at: chrono::Utc::now().to_rfc3339() };
+    let before: Option<ModelSpeed> = speed.get(model_id).cloned().and_then(|v| serde_json::from_value(v).ok());
+    let round = |x: f64| (x * 10.0).round() / 10.0;
+    let entry = ModelSpeed {
+        tokens_per_second: round(tokens_per_second),
+        prefill_tokens_per_second: prefill.map(round).or(before.as_ref().and_then(|b| b.prefill_tokens_per_second)),
+        load_seconds: load_seconds.map(round).or(before.as_ref().and_then(|b| b.load_seconds)),
+        at: chrono::Utc::now().to_rfc3339(),
+    };
     speed.as_object_mut().expect("just made an object").insert(model_id.to_string(), serde_json::to_value(entry)?);
     store.set_setting(MODELS_SETTING, &Value::Object(models))
 }
@@ -486,13 +506,17 @@ async fn list_models(state: State<'_, AppState>) -> CmdResult<ModelsResponse> {
 /// not be read is null.
 #[tauri::command]
 async fn hardware() -> CmdResult<Hardware> {
+    Ok(hardware_facts().await)
+}
+
+/// The hardware, read once (system_profiler can take seconds, so off the UI thread) and kept.
+async fn hardware_facts() -> Hardware {
     static HARDWARE: std::sync::OnceLock<Hardware> = std::sync::OnceLock::new();
     if let Some(h) = HARDWARE.get() {
-        return Ok(h.clone());
+        return h.clone();
     }
-    // system_profiler can take seconds; keep it off the UI thread.
     let h = tokio::task::spawn_blocking(stillroom_core::model::detect_hardware).await.unwrap_or_default();
-    Ok(HARDWARE.get_or_init(|| h).clone())
+    HARDWARE.get_or_init(|| h).clone()
 }
 
 /// What Settings shows about the Codex CLI, independent of the opt-in.
@@ -557,6 +581,10 @@ struct ResolutionPreview {
     resolutions: BTreeMap<String, stillroom_core::Resolution>,
     /// Slot → why it cannot be filled.
     problems: BTreeMap<String, String>,
+    /// Amber lines worth reading before Run: a picked model larger than this Mac holds
+    /// comfortably, a Mac with no GPU. Each once.
+    #[serde(default)]
+    notices: Vec<String>,
 }
 
 /// What each slot would get if the recipe ran right now, with these pins, the user's defaults,
@@ -566,7 +594,7 @@ async fn preview_resolution(state: State<'_, AppState>, args: PreviewArgs) -> Cm
     let bundle = state.library.find(&args.recipe_id).ok_or_else(|| format!("recipe {} not found", args.recipe_id))?;
     let installed = state.router().list_all().await;
     let defaults = state.resolve_defaults();
-    let mut out = ResolutionPreview { resolutions: BTreeMap::new(), problems: BTreeMap::new() };
+    let mut out = ResolutionPreview { resolutions: BTreeMap::new(), problems: BTreeMap::new(), notices: Vec::new() };
     for (name, slot) in &bundle.recipe.model_slots {
         let mut one = bundle.recipe.clone();
         one.model_slots = [(name.clone(), slot.clone())].into_iter().collect();
@@ -580,6 +608,18 @@ async fn preview_resolution(state: State<'_, AppState>, args: PreviewArgs) -> Cm
                 out.problems.insert(name.clone(), e.to_string());
             }
         }
+    }
+    let hw = hardware_facts().await;
+    let mut seen = std::collections::BTreeSet::new();
+    for res in out.resolutions.values() {
+        if let Some(m) = installed.iter().find(|m| m.id == res.model_id) {
+            if seen.insert(m.id.clone()) {
+                out.notices.extend(stillroom_core::model::fit_notice(m, hw.memory_bytes));
+            }
+        }
+    }
+    if !out.resolutions.is_empty() {
+        out.notices.extend(stillroom_core::model::gpu_notice(&hw));
     }
     Ok(out)
 }
@@ -751,6 +791,7 @@ mod planner_preview_tests {
             }),
             problem: None,
             memory_bytes: Some(36 << 30),
+            notice: None,
             candidates: vec![
                 PlannerCandidate {
                     model_id: "ollama:glm-4.7-flash".into(),
@@ -758,6 +799,7 @@ mod planner_preview_tests {
                     parameter_size: Some("29.9B".into()),
                     size_bytes: Some(20 << 30),
                     fits: true,
+                    fit: stillroom_core::model::Fit::Tight,
                     rank: 1,
                     measured_ms: Some(48_000),
                     measured_clean: Some(true),
@@ -770,6 +812,7 @@ mod planner_preview_tests {
                     parameter_size: Some("80B".into()),
                     size_bytes: Some(49 << 30),
                     fits: false,
+                    fit: stillroom_core::model::Fit::TooLarge,
                     rank: 2,
                     measured_ms: None,
                     measured_clean: None,
@@ -785,9 +828,9 @@ mod planner_preview_tests {
                 "problem": null,
                 "memoryBytes": 38654705664u64,
                 "candidates": [
-                    { "modelId": "ollama:glm-4.7-flash", "name": "glm-4.7-flash", "parameterSize": "29.9B", "sizeBytes": 21474836480u64, "fits": true, "rank": 1, "measuredMs": 48000, "measuredClean": true,
+                    { "modelId": "ollama:glm-4.7-flash", "name": "glm-4.7-flash", "parameterSize": "29.9B", "sizeBytes": 21474836480u64, "fits": true, "fit": "tight", "rank": 1, "measuredMs": 48000, "measuredClean": true,
                       "reason": "fits in memory, answers in a fixed shape (JSON), planned clean in 48 s", "local": true },
-                    { "modelId": "ollama:qwen3-coder:80b", "name": "qwen3-coder:80b", "parameterSize": "80B", "sizeBytes": 52613349376u64, "fits": false, "rank": 2, "measuredMs": null, "measuredClean": null,
+                    { "modelId": "ollama:qwen3-coder:80b", "name": "qwen3-coder:80b", "parameterSize": "80B", "sizeBytes": 52613349376u64, "fits": false, "fit": "too_large", "rank": 2, "measuredMs": null, "measuredClean": null,
                       "reason": "larger than this Mac can hold comfortably, answers in a fixed shape (JSON), not yet measured", "local": true }
                 ]
             })
@@ -833,8 +876,8 @@ mod settings_tests {
     fn a_models_speed_is_recorded_and_read_back_without_touching_the_rest() {
         let store = Store::open_in_memory().unwrap();
         store.set_setting(MODELS_SETTING, &json!({ "preference": "speed", "timeoutSecs": 30 })).unwrap();
-        record_speed(&store, "ollama:qwen3:8b", 66.44).unwrap();
-        record_speed(&store, "ollama:gemma3:12b", 41.0).unwrap();
+        record_speed(&store, "ollama:qwen3:8b", 66.44, Some(812.3), Some(1.7)).unwrap();
+        record_speed(&store, "ollama:gemma3:12b", 41.0, None, None).unwrap();
         let models = store.get_setting(MODELS_SETTING).unwrap().unwrap();
         assert_eq!(models["preference"], "speed", "the user's defaults stay");
         assert_eq!(models["timeoutSecs"], 30);
@@ -843,9 +886,11 @@ mod settings_tests {
         assert_eq!(speeds.len(), 2);
         assert_eq!(speeds["ollama:gemma3:12b"].tokens_per_second, 41.0);
         assert!(speeds["ollama:gemma3:12b"].at.starts_with("20"));
-        // A later answer replaces the earlier one for that model.
-        record_speed(&store, "ollama:qwen3:8b", 70.0).unwrap();
-        assert_eq!(speeds_of(&store)["ollama:qwen3:8b"].tokens_per_second, 70.0);
+        // A later answer replaces the earlier one for that model; a prefill rate or a load time it did not
+        // measure (the model was already in memory) keeps the last one.
+        record_speed(&store, "ollama:qwen3:8b", 70.0, None, None).unwrap();
+        let q = &speeds_of(&store)["ollama:qwen3:8b"];
+        assert_eq!((q.tokens_per_second, q.prefill_tokens_per_second, q.load_seconds), (70.0, Some(812.3), Some(1.7)));
         assert!(speeds_of(&Store::open_in_memory().unwrap()).is_empty(), "nothing recorded yet: an empty table");
     }
 
@@ -1121,10 +1166,53 @@ fn probe_permissions(state: State<'_, AppState>, recipe_id: String, inputs: inde
     Ok(stillroom_core::probe::probe_permissions(&bundle.recipe, &inputs))
 }
 
+/// What a run will take: from earlier runs when there are any, else a guess from the models a
+/// run would use, what this Mac has managed with them, and the recipe's shape (marked `guessed`).
 #[tauri::command]
-fn estimate(state: State<'_, AppState>, recipe_id: String) -> CmdResult<Option<RunEstimate>> {
-    let stages = state.library.find(&recipe_id).map(|b| b.info().stages).unwrap_or_default();
-    state.store.lock().map_err(err)?.estimate_for_recipe(&recipe_id, &stages).map_err(err)
+async fn estimate(state: State<'_, AppState>, recipe_id: String, pins: Option<BTreeMap<String, String>>, inputs: Option<indexmap::IndexMap<String, Value>>) -> CmdResult<Option<RunEstimate>> {
+    let Some(bundle) = state.library.find(&recipe_id) else { return Ok(None) };
+    let stages = bundle.info().stages;
+    let (from_runs, history) = {
+        let store = state.store.lock().map_err(err)?;
+        (store.estimate_for_recipe(&recipe_id, &stages).map_err(err)?, store.step_history(&recipe_id).map_err(err)?)
+    };
+    if from_runs.is_some() {
+        return Ok(from_runs);
+    }
+    let installed = state.router().list_all().await;
+    let defaults = state.resolve_defaults();
+    let Ok(resolved) = resolve_slots_with(&bundle.recipe, &installed, &pins.unwrap_or_default(), &defaults) else { return Ok(None) };
+    let resolutions: BTreeMap<String, String> = resolved.into_iter().map(|(k, r)| (k, r.model_id)).collect();
+    let speeds = state.store.lock().map(|s| speeds_of(&s)).unwrap_or_default();
+    let models: BTreeMap<String, stillroom_core::estimate::ModelFacts> = installed
+        .iter()
+        .filter(|m| resolutions.values().any(|id| id == &m.id))
+        .map(|m| {
+            let sp = speeds.get(&m.id);
+            (
+                m.id.clone(),
+                stillroom_core::estimate::ModelFacts {
+                    size_bytes: m.size_bytes,
+                    loaded: m.loaded.unwrap_or(false),
+                    tokens_per_second: sp.map(|s| s.tokens_per_second),
+                    prefill_tokens_per_second: sp.and_then(|s| s.prefill_tokens_per_second),
+                    load_seconds: sp.and_then(|s| s.load_seconds),
+                },
+            )
+        })
+        .collect();
+    let hw = hardware_facts().await;
+    let inputs = inputs.unwrap_or_default();
+    let g = stillroom_core::estimate::GuessInput {
+        recipe: &bundle.recipe,
+        prompts: &bundle.prompts,
+        inputs: &inputs,
+        resolutions: &resolutions,
+        models: &models,
+        machine: stillroom_core::estimate::Machine { gpu: hw.gpu.unwrap_or(true) },
+        history: &history,
+    };
+    Ok(Some(stillroom_core::estimate::guess_run(&g)))
 }
 
 /// Write an artifact to a path the user chose in a save dialog.
@@ -1180,6 +1268,9 @@ struct PlannerPreview {
     /// Every model that could plan, best first: the local ones in Auto's order, then any cloud
     /// model you have turned on (never an automatic pick), for the picker.
     candidates: Vec<PlannerCandidate>,
+    /// An amber line about the pick: too large for this Mac, or a Mac with no GPU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notice: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1203,6 +1294,8 @@ struct PlannerCandidate {
     size_bytes: Option<u64>,
     /// Whether the weights fit comfortably in this Mac's memory (at most 60 % of RAM).
     fits: bool,
+    /// The finer verdict: room, tight, too large, or unknown.
+    fit: stillroom_core::model::Fit,
     /// Auto's order, 1 first.
     rank: u32,
     /// What Try planning measured, if it ran: how long, and whether the answer checked clean.
@@ -1237,6 +1330,7 @@ async fn preview_planner(state: State<'_, AppState>, model: Option<String>) -> C
         parameter_size: m.parameter_size.clone(),
         size_bytes: m.size_bytes,
         fits: stillroom_core::model::fits_in_memory(m.size_bytes, facts.memory_bytes),
+        fit: stillroom_core::model::fit_of(m.size_bytes, facts.memory_bytes),
         rank,
         measured_ms: facts.measured.get(&m.id).map(|x| x.ms),
         measured_clean: facts.measured.get(&m.id).map(|x| x.clean),
@@ -1267,9 +1361,15 @@ async fn preview_planner(state: State<'_, AppState>, model: Option<String>) -> C
                 };
                 PlannerResolution { slot: res.slot, model_id: res.model_id, via: res.via, reason }
             });
-            PlannerPreview { resolution, problem: None, memory_bytes: facts.memory_bytes, candidates }
+            let hw = hardware_facts().await;
+            let notice = resolution
+                .as_ref()
+                .and_then(|r| installed.iter().find(|m| m.id == r.model_id))
+                .and_then(|m| stillroom_core::model::fit_notice(m, hw.memory_bytes))
+                .or_else(|| stillroom_core::model::gpu_notice(&hw));
+            PlannerPreview { resolution, problem: None, memory_bytes: facts.memory_bytes, candidates, notice }
         }
-        Err(e) => PlannerPreview { resolution: None, problem: Some(e.to_string()), memory_bytes: facts.memory_bytes, candidates },
+        Err(e) => PlannerPreview { resolution: None, problem: Some(e.to_string()), memory_bytes: facts.memory_bytes, candidates, notice: None },
     })
 }
 

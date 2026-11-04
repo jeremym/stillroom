@@ -113,6 +113,10 @@ pub struct RunEstimate {
     /// One line per stage that has actually run before: what it took when it did.
     #[serde(default)]
     pub stages: Vec<StageEstimate>,
+    /// True when nothing has run yet and the numbers come from the model, this Mac, and the
+    /// recipe's shape (see `estimate`), not from runs.
+    #[serde(default)]
+    pub guessed: bool,
 }
 
 /// What one stage took, averaged over the runs in which it really ran (a stage served from
@@ -491,7 +495,24 @@ impl Store {
             avg_completion_tokens: sum(&|r| r.steps.iter().filter_map(|s| s.completion_tokens).sum()),
             avg_duration_ms: sum(&|r| r.steps.iter().filter_map(|s| s.duration_ms).sum()),
             stages,
+            guessed: false,
         }))
+    }
+
+    /// What each model step of a recipe wrote on average, over every earlier run of any outcome:
+    /// the one number a guess most wants, since it says how long the answers tend to be.
+    pub fn step_history(&self, recipe_id: &str) -> Result<std::collections::HashMap<String, u64>, StoreError> {
+        let mut sums: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+        for r in self.all_runs()?.into_iter().filter(|r| r.recipe_id == recipe_id) {
+            for s in r.steps.iter().filter(|s| s.reused_from.is_none()) {
+                if let Some(t) = s.completion_tokens {
+                    let e = sums.entry(s.step_id.clone()).or_insert((0, 0));
+                    e.0 += t;
+                    e.1 += 1;
+                }
+            }
+        }
+        Ok(sums.into_iter().map(|(k, (t, n))| (k, t / n.max(1))).collect())
     }
 
     pub fn cache_get(&self, key: &str) -> Result<Option<CachedStep>, StoreError> {

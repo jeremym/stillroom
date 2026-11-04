@@ -18,6 +18,10 @@ describe("costLine", () => {
     expect(c.text).toBe("9.3 GB · fits in memory · the last trial plan took 48 s and checked clean");
     expect(c.amber).toBe(false);
   });
+  it("says room or tight when the engine gives the finer verdict", () => {
+    expect(costLine(candidate({ sizeBytes: 9.3 * GB, fit: "room" }), MAC_36).fit).toBe("fits with room");
+    expect(costLine(candidate({ sizeBytes: 20 * GB, fit: "tight" }), MAC_36).fit).toBe("fits, but tightly");
+  });
   it("does not fit: amber, the size against this Mac's memory, and the way out", () => {
     const c = costLine(candidate({ fits: false }), MAC_36);
     expect(c.text).toBe("29.9 GB on a 36 GB Mac: larger than this Mac holds comfortably; a smaller model plans in a fraction of the time · not yet measured");

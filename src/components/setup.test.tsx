@@ -2,14 +2,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { PermissionRow, RecipeInfo } from "../types";
+import type { PermissionRow, RecipeInfo, ResolutionPreview, RunEstimate } from "../types";
 
 // The engine is not here; Set up's calls land on this mock instead.
 const probe = vi.fn<(id: string, inputs: Record<string, unknown>) => Promise<PermissionRow[]>>(() => Promise.resolve([]));
+const estimate = vi.fn<() => Promise<RunEstimate | null>>(() => Promise.resolve(null));
+const previewResolution = vi.fn<() => Promise<ResolutionPreview>>(() => Promise.resolve({ resolutions: {}, problems: {} }));
 vi.mock("../api", () => ({
   api: {
-    estimate: vi.fn(() => Promise.resolve(null)),
-    previewResolution: vi.fn(() => Promise.resolve({ resolutions: {}, problems: {} })),
+    estimate: (...a: unknown[]) => (estimate as unknown as (...a: unknown[]) => Promise<RunEstimate | null>)(...a),
+    previewResolution: () => previewResolution(),
     probePermissions: (id: string, inputs: Record<string, unknown>) => probe(id, inputs),
   },
   fmtTokens: (n: number) => String(n),
@@ -116,6 +118,17 @@ describe("Set up as stage groups", () => {
     expect(rows[3]).toBe("Nothing else is touched.");
     expect(run().textContent).toBe("Run · cannot write Where to save");
     expect(run().disabled).toBe(true);
+  });
+
+  it("says a guessed estimate is a guess, by stage, and shows the engine's notices above the models", async () => {
+    estimate.mockResolvedValue({ basedOnRuns: 0, avgPromptTokens: 800, avgCompletionTokens: 400, avgDurationMs: 6 * 60_000, guessed: true, stages: [{ id: "brief", basedOnRuns: 0, avgDurationMs: 6 * 60_000, avgTokens: 1200, once: false }] });
+    previewResolution.mockResolvedValue({ resolutions: {}, problems: {}, notices: ["qwen3:27b is 17 GB; this Mac holds about 14 GB comfortably. It will run, but slowly. Pin a smaller model, or let Auto choose."] });
+    render(recipe());
+    await settle();
+    expect(estimate).toHaveBeenCalledWith("learn", {}, expect.any(Object));
+    expect(host.querySelector(".estimate")?.textContent).toContain("Expect about 6 min, a guess from this Mac and the models picked above");
+    expect(host.querySelector(".estimate")?.textContent).toContain("Write the brief · about 6 min");
+    expect(host.querySelector(".notice")?.textContent).toContain("qwen3:27b is 17 GB");
   });
 
   it("falls back to the one-line description when the engine cannot be asked", async () => {

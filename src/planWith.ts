@@ -52,7 +52,7 @@ export function costLine(c: PlannerCandidate, memoryBytes: number | null | undef
     fit = "runs in the cloud: what you type leaves this Mac";
     amber = true;
   } else if (c.fits) {
-    fit = "fits in memory";
+    fit = c.fit === "tight" ? "fits, but tightly" : c.fit === "room" ? "fits with room" : "fits in memory";
   } else {
     const where = memoryBytes != null ? ` on a ${memoryWord(memoryBytes)} Mac` : "";
     fit = `${size ?? "its size"}${where}: larger than this Mac holds comfortably; a smaller model plans in a fraction of the time`;

@@ -192,6 +192,7 @@ export function NewRecipe({ recipes, reserved = [], busy, error, progress, probl
                 {picked && <Tag tone={isLocalModel(picked.modelId) ? undefined : "amber"}>{whereWord(picked.modelId)}</Tag>}
                 {preview?.problem && <span className="muted">{preview.problem}. Install a model in Settings › Models.</span>}
               </div>
+              {!model && preview?.notice && <p className="notice"><Glyph name="warning" /> {preview.notice}</p>}
               {chosen && cost && (
                 <p className={`plan-cost ${cost.amber ? "amber" : "muted"}`} data-testid="plan-cost">
                   {!model && picked
